@@ -1,0 +1,13 @@
+{
+  "name": "@local/dsh-vgs-agents",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent presets for the VGS (Space Engineers grid logic editor) project: architect, programmer, reviewer.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
+

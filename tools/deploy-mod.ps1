@@ -1,0 +1,90 @@
+<#
+.SYNOPSIS
+    Copies the mod into the Space Engineers local mod folder.
+
+.DESCRIPTION
+    Space Engineers does not load mods from the game installation. It reads them from
+    %APPDATA%\SpaceEngineers\Mods\<folder>\, and only when the folder is enabled in the
+    world's mod list. This script mirrors src\VGS.Mod into that folder so the game picks up
+    the current sources on the next world load.
+
+    It is a mirror, not a merge: files removed from src are removed from the deployed copy.
+    That is intentional — a stale .cs left behind would still be compiled by the game and
+    would produce confusing duplicate-type errors.
+
+    The script refuses to run while SpaceEngineers.exe is running, because the game compiles
+    the sources at load time and a half-copied folder produces an unhelpful compile error
+    inside the game instead of here.
+
+.PARAMETER Source
+    Mod source folder. Defaults to src\VGS.Mod in this repository.
+
+.PARAMETER ModsRoot
+    Space Engineers mods folder. Defaults to %APPDATA%\SpaceEngineers\Mods.
+
+.PARAMETER FolderName
+    Deployed folder name. Changing it creates a second mod entry in the game's list, so keep
+    it stable once the world references it.
+
+.PARAMETER Force
+    Deploy even when SpaceEngineers.exe appears to be running.
+
+.EXAMPLE
+    pwsh -File tools/deploy-mod.ps1
+
+.EXAMPLE
+    pwsh -File tools/deploy-mod.ps1 -FolderName VGS-dev -Force
+#>
+[CmdletBinding()]
+param(
+    [string] $Source,
+    [string] $ModsRoot = (Join-Path $env:APPDATA 'SpaceEngineers\Mods'),
+    [string] $FolderName = 'VGS',
+    [switch] $Force
+)
+
+$ErrorActionPreference = 'Stop'
+
+$repo = Split-Path -Parent $PSScriptRoot
+if (-not $Source) { $Source = Join-Path $repo 'src\VGS.Mod' }
+
+if (-not (Test-Path $Source)) { throw "Mod source not found: $Source" }
+if (-not (Test-Path $ModsRoot)) { throw "Mods folder not found: $ModsRoot" }
+
+# The game must not be running: it holds the compiled sources and would race the copy.
+$running = Get-Process -Name 'SpaceEngineers' -ErrorAction SilentlyContinue
+if ($running -and -not $Force) {
+    throw "SpaceEngineers.exe is running (PID $($running.Id -join ', ')). Close the game, or pass -Force if you know the game is only at the main menu."
+}
+
+# Sanity check before copying: the game only compiles .cs under Data\Scripts.
+$scriptRoot = Join-Path $Source 'Data\Scripts\VGS'
+if (-not (Test-Path $scriptRoot)) {
+    throw "Expected mod sources under Data\Scripts\VGS — not found in $Source"
+}
+$csCount = (Get-ChildItem $scriptRoot -Recurse -Filter '*.cs').Count
+if ($csCount -eq 0) { throw "No .cs files under $scriptRoot" }
+
+$target = Join-Path $ModsRoot $FolderName
+Write-Host "Source : $Source"
+Write-Host "Target : $target"
+Write-Host "Files  : $csCount .cs"
+
+# Mirror: delete the deployed copy first so removed files do not linger.
+if (Test-Path $target) {
+    Remove-Item -Path $target -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+Copy-Item -Path (Join-Path $Source '*') -Destination $target -Recurse -Force
+
+# metadata.mod is optional in current builds but harmless and helps identify the version in
+# bug reports; warn if it is missing rather than failing.
+if (-not (Test-Path (Join-Path $target 'metadata.mod'))) {
+    Write-Warning 'metadata.mod is missing from the deployed mod; the game will still load it, but bug reports lose the version string.'
+}
+
+$deployed = (Get-ChildItem (Join-Path $target 'Data\Scripts\VGS') -Recurse -Filter '*.cs').Count
+Write-Host ''
+Write-Host "Deployed $deployed .cs file(s)." -ForegroundColor Green
+Write-Host 'Next: enable the mod in the world''s mod list, load the world, then run tools\tail-mod-log.ps1'

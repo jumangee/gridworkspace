@@ -1,0 +1,155 @@
+---
+name: vgs-programmer
+description: Use when writing or changing C# code for the VGS Space Engineers mod — adding mod sources, fixing a compile error against the game assemblies, wiring terminal controls, drawing an in-game screen, or debugging a runtime exception from the game log. Covers the build/verify loop and the Space Engineers API traps that cost the most time.
+---
+
+# VGS programmer
+
+You write the C# mod. This skill is the checklist plus the traps; the code lives in
+`src/VGS.Mod/Data/Scripts/VGS/`.
+
+## 1. The loop
+
+```powershell
+# Type-check against the real game assemblies. This is the primary gate.
+pwsh -File tools/verify-compile.ps1
+
+# Static quality gate: layering, C# 7.3, guards, draw-path allocation.
+pwsh -File tools/review-check.ps1
+
+# Deploy to the game's local mod folder for an in-game run.
+pwsh -File tools/deploy-mod.ps1
+
+# Watch the mod's own log lines while testing.
+pwsh -File tools/tail-mod-log.ps1
+```
+
+`verify-compile.ps1` uses the same Roslyn family the game uses, with `-nostdlib+` and .NET
+Framework 4.x references, so an overload that resolves here resolves in game. A green run
+is necessary, not sufficient: it proves the code is *callable*, not that it behaves.
+
+`review-check.ps1` encodes the mechanical half of code review. Run it before handing the
+change over — a finding you fix yourself is cheaper than one the reviewer sends back.
+
+## 2. Structure you must respect
+
+```
+Vgs.Core/   VgsLog, VgsSession, VgsConstants, VgsText   — no game logic
+Vgs.Model/  Node, Port, Edge, GridGraph, BlockPortCatalog — no Sandbox.* references
+Vgs.Game/   GridGraphBuilder, VgsTerminalControls        — the only world access
+Vgs.Ui/     VgsEditorScreen                              — draws cached data only
+```
+
+Adding a `using Sandbox.ModAPI;` to `Vgs.Model` is a layering violation, not a shortcut.
+The model layer is the only part that can be reasoned about without launching the game.
+
+## 3. API traps that cost the most time
+
+Each of these was hit while building the skeleton.
+
+**`netstandard.dll` is a required reference.** The game assemblies are built against
+`netstandard`, so omitting it produces hundreds of bogus *"The type 'Object' is defined in
+an assembly that is not referenced"* errors. `verify-compile.ps1` already includes it.
+
+**`MyObjectBuilder_SessionComponent` lives in `VRage.Game`, not `VRage.Game.Components`.**
+`using VRage.Game;` is required.
+
+**`MyGuiScreenBase` has no parameterless constructor.** The only reachable one is
+`protected MyGuiScreenBase(Vector2? position, Vector4? backgroundColor, Vector2? size,
+bool isTopMostScreen, string backgroundTexture, float backgroundTransition,
+float guiTransition, MyGuiSlot? gamepadSlot)`. Named arguments are the readable way to call it.
+
+**`IMyTerminalBlock.BlockDefinition` is a `SerializableDefinitionId` struct, not a reference.**
+`!= null` does not compile. Check `string.IsNullOrEmpty(block.BlockDefinition.SubtypeName)`.
+
+**`IMyPlayer.PlayerID` is obsolete**; use `IdentityId` (a `long`) and pass it to
+`HasPlayerAccess(long, ...)`.
+
+**`MyScreenManager` exposes only a debug *string* dump of the screen stack**, not the
+screens. Track your own open screen in a static field instead of searching for it.
+
+**`MyScreenSpace*` coordinates are the safe-GUI area, not the window.** 0..1 spans
+`min(W, 4H/3)` centred horizontally (a 4:3 box), full height; the game computes it in
+`MyGuiManager.UpdateScreenSize` from `m_safeGuiRectangle`. Drawing 0..1 therefore leaves bars
+on a 16:9/16:10 monitor. `VgsScreenDraw` converts client-area coordinates to that space via
+`MyScreenSpace.GetSafeGuiArea()`; do not call `MyScreenSpace*` around it. `TryGetCursorPosition`
+returns the cursor in the same safe-GUI space, so it needs the inverse conversion. See
+[ADR-0009](../../docs/adr/0009-screen-coordinate-space.md).
+
+**`MyScreenSpaceText.Measure` returns a *normalized* size, not pixels.** It ends in
+`GetNormalizedSizeFromScreenSize`, i.e. the value is already divided by the safe-GUI size.
+`MeasurePixels` is the pixel variant. Applying `PixelSizeToNormalized` to `Measure` shrinks the
+result by the safe width — that is how right-aligned text ended up outside the panel.
+
+**Terminal controls must be registered after the block definitions exist.** Registering in
+`Init()` silently loses the control on some load orders. `VgsSessionComponent` retries in
+`UpdateAfterSimulation` — keep that pattern.
+
+**Always unregister global hooks in `UnloadData`.** Leaving `CustomControlGetter` attached
+keeps a delegate pointing at a dead session component after the player returns to the main
+menu, and the next session throws on it.
+
+## 4. Defensive rules for game-facing code
+
+A mod exception can break the whole session update, so every entry point from the game is a
+boundary:
+
+```csharp
+public override void UpdateAfterSimulation()
+{
+    try { /* work */ }
+    catch (Exception e) { VgsLog.Error("update failed", e); }
+}
+```
+
+- Guard every `IMyTerminalBlock`/`IMyCubeGrid` read: the entity can be destroyed between
+  frames, and `EntityId` values can be stale.
+- Re-validate with `MyAPIGateway.Entities.TryGetEntityById` before using a cached entity.
+- Never allocate in `Draw()` or a per-frame update. No LINQ, no closures, no
+  `string.Format` in a loop; cache the formatted string and rebuild only on change.
+- Log through `VgsLog` (`Info`/`Warn`/`Error`/`Throttled`/`Debug`), never
+  `MyLog.Default.WriteLine` directly. `Throttled` exists for conditions that can be true
+  every frame.
+- Never `catch { }` around game calls that matter; catch, log once, and degrade.
+
+## 5. Comment standard
+
+Say *why*, not *what*. The code already says what it does.
+
+```csharp
+// Bad: increments the frame counter
+Frame++;
+
+// Good: the counter drives VgsLog.Throttled, which must survive the session and reset on
+// unload — a per-subsystem counter would reset whenever a subsystem was rebuilt.
+Frame++;
+```
+
+Non-obvious constraints, verified API behaviour and rejected alternatives belong in a
+comment next to the code they constrain.
+
+## 6. Before you report done
+
+1. `verify-compile.ps1` prints `COMPILE OK`.
+2. `review-check.ps1` prints `REVIEW OK — no findings`.
+3. No new `using` in `Vgs.Model` that references the game.
+4. Every new public type has an XML doc comment explaining its role.
+5. No unguarded game call at a boundary.
+6. If behaviour is user-visible, hand the reviewer a list of what to click and what to expect.
+7. If the change contradicts an ADR, **stop and raise it**. Do not implement around the
+   decision, and do not edit the ADR yourself — that is the architect's call, and the
+   contradiction goes through the joint review in `docs/review/joint-review.md`.
+
+## 7. Working with the reviewer
+
+The reviewer judges two things: whether the code does what the architecture said, and whether
+it is good C#. Expect findings in both categories.
+
+- Fix blockers; they mean the change cannot merge.
+- For a major finding you disagree with, answer with a fact (a measurement, a dump, a log
+  line), not an opinion. If the disagreement is really about the decision rather than the
+  code, it escalates to a joint review — that is a normal outcome, not a failure.
+- `// review:allow R0NN <reason>` is for a rule that genuinely does not apply on that line.
+  Write the reason so the next reader does not have to re-derive it. Suppressing to make the
+  gate quiet is a defect.
+
