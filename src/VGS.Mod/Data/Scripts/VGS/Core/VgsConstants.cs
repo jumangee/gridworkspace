@@ -53,10 +53,111 @@ namespace Vgs.Core
         /// <summary>Multiplicative zoom step per mouse-wheel notch.</summary>
         public const float ZoomStep = 1.12f;
 
+        // ---- Block card ----
+        //
+        // The card is a label, not a panel: one line of name, one line of subtype, nothing
+        // else. Ports live *outside* it, as bars stacked underneath (see below), which is why
+        // the card can be this short and why a block with forty actions still looks small.
+
         /// <summary>Size of a block card at zoom 1, in normalized units.</summary>
         public const float NodeWidth = 0.16f;
-        public const float NodeHeight = 0.075f;
-        public const float NodeCornerRadius = 0.004f;
+        public const float NodeHeight = 0.036f;
+
+        /// <summary>Text scales on the card. Small on purpose: the card is a label.</summary>
+        public const float NodeTitleScale = 0.56f;
+        public const float NodeSubtitleScale = 0.44f;
+
+        // ---- Ports ----
+        //
+        // A port is a rectangle hanging under the card, one per connection group. Both
+        // directions are the full width of the card and touch each other with no gap, so a
+        // card with ports reads as one column: card, then its port bars, flush.
+        //
+        //   * output bar — dot inside, near its RIGHT edge (lines leave from there);
+        //   * input bar  — dot inside, near its LEFT edge (lines arrive there).
+        //
+        // The dot is *inside* the bar on purpose. An overhanging dot looks like a separate
+        // control and is drawn outside the shape it belongs to; inside, it reads as a socket
+        // and the bar's border closes around it.
+
+        /// <summary>
+        /// Width of a port bar at zoom 1. Equal to the card's width: a port belongs to the
+        /// block, so it is as wide as the block is.
+        /// </summary>
+        public const float PortBarWidth = NodeWidth;
+
+        /// <summary>Height of a port bar at zoom 1.</summary>
+        public const float PortBarHeight = 0.018f;
+
+        /// <summary>
+        /// Vertical gap between stacked bars. Zero: the bars are drawn as one flush column,
+        /// which is what makes a two-port stack read as a stack rather than as two cards.
+        /// </summary>
+        public const float PortBarGap = 0f;
+
+        /// <summary>
+        /// Radius of the connection dot, in the vertical units of the layout. The horizontal
+        /// extent is derived from the client aspect ratio at draw time so the dot is round on
+        /// screen — see <c>VgsScreenDraw.Disc</c> and <c>PortGeometry.TryPortDot</c>.
+        /// </summary>
+        public const float PortDotRadius = 0.0042f;
+
+        /// <summary>Vertical distance between an input stack and an output stack on one card.</summary>
+        public const float PortStackSpacing = 0f;
+
+        /// <summary>Padding of a port label inside its bar.</summary>
+        public const float PortLabelPadding = 0.006f;
+
+        // ---- "+" button (bind mode) ----
+        //
+        // Drawn inverted: a solid white disc with the plus knocked out in the card's own
+        // colour. Inverted because it must not read as part of the card, and because a dark
+        // glyph on white stays legible at every zoom while a light glyph on dark does not.
+
+        /// <summary>Button diameter as a fraction of the card height.</summary>
+        public const float PlusButtonHeightRatio = 0.75f;
+
+        /// <summary>Radius of the round "+" button, derived from the card height.</summary>
+        public const float PlusButtonRadius = NodeHeight * PlusButtonHeightRatio * 0.5f;
+
+        /// <summary>
+        /// Distance from the card's right edge to the button's right edge, so the circle sits
+        /// inside the card instead of straddling its border.
+        /// </summary>
+        public const float PlusButtonRightMargin = 0.006f;
+
+        /// <summary>Gap between the "+" button and the card's text.</summary>
+        public const float PlusButtonTextGap = 0.004f;
+
+        /// <summary>Arm length of the plus, as a fraction of the button diameter.</summary>
+        public const float PlusArmRatio = 0.75f;
+
+        /// <summary>Stroke thickness of the plus, as a fraction of the button diameter.</summary>
+        public const float PlusStrokeRatio = 0.14f;
+
+        // ---- Connection lines ----
+
+        /// <summary>Thickness of a connection line.</summary>
+        public const float LineThickness = 0.0016f;
+
+        /// <summary>
+        /// Horizontal clearance between a dot and the vertical run of its route. The dot sits
+        /// inside the bar, so the gutter has to clear the bar's edge as well, or the vertical
+        /// run would be hidden under the card it belongs to. See <c>EdgeRouting</c>.
+        /// </summary>
+        public const float LineGutter = 0.014f;
+
+        /// <summary>Hard cap on drawn connections; protects the frame budget on a dense graph.</summary>
+        public const int MaxRenderedEdges = 600;
+
+        // ---- Action menu (opened by clicking a target while in bind mode) ----
+
+        public const float ActionMenuWidth = 0.22f;
+        public const float ActionMenuRowHeight = 0.023f;
+        public const float ActionMenuTitleHeight = 0.026f;
+
+        /// <summary>Rows shown at once. Longer action lists are scrolled with the wheel.</summary>
+        public const int ActionMenuMaxRows = 9;
 
         /// <summary>Distance in normalized units a pointer must travel before it counts as a drag.</summary>
         public const float DragThreshold = 0.0025f;
@@ -86,22 +187,33 @@ namespace Vgs.Core
         // Editor chrome
         public const string EditorTitle = "Grid setup";
         public const string CloseButton = "Закрыть";
-        public const string Hint = "ЛКМ — выбрать · перетащить · колесо — масштаб · ПКМ/средняя — панорама · Esc — закрыть";
+        public const string Hint =
+            "ЛКМ — выбрать · перетащить · «+» — режим привязки · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
         public const string GridFallbackName = "Grid";
+
+        // Bind mode: the round "+" turns the pointer into a live line from a source port
+        // until the user picks a target or cancels with the right mouse button.
+        public const string BindHint = "Режим привязки: нажмите блок-получатель · ПКМ — отмена";
+
+        // Action menu
+        public const string ActionMenuTitleFormat = "Действие для «{0}»";
+        public const string ActionMenuEmpty = "Нет доступных действий";
+
+        /// <summary>
+        /// Suffix on a menu row whose action already has sources. Input ports are shared, so
+        /// the row must stay usable — this only tells the user that choosing it adds another
+        /// line to an input that is already driven.
+        /// </summary>
+        public const string ActionMenuFanInFormat = "  ·  источников: {0}";
 
         // Status bar. Format arguments are documented at each use site: keeping the pattern
         // here means the wording is translated in one place, and the caller can cache the
         // formatted result instead of rebuilding it every frame.
         public const string StatusFormat = "Блоков: {0}   ·   Связей: {1}   ·   Масштаб: {2}%";
         public const string CullingFormat = "Показано {0} из {1} блоков — увеличьте масштаб";
-
-        // Node subtitles
-        public const string InputsLabel = "входы";
-        public const string OutputsLabel = "выходы";
-        public const string NoPorts = "нет терминала";
 
         // Errors
         public const string ErrOpenScreen = "Не удалось открыть редактор";

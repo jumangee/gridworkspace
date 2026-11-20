@@ -20,6 +20,7 @@ Two questions, in this order:
 ```powershell
 pwsh -File tools/verify-compile.ps1     # must be COMPILE OK before any review
 pwsh -File tools/review-check.ps1       # static rules R001–R010
+pwsh -File tools/offline-check.ps1      # graph and geometry logic, no game needed
 ```
 
 Never review code that does not compile: the compiler is a cheaper reviewer than you are, and
@@ -29,6 +30,15 @@ its findings are unambiguous.
 empty catch, guarded entry points, public mutability, draw-path allocation). A clean run
 means those are satisfied — not that the change is good. Your judgement is for everything
 else.
+
+`offline-check.ps1` is the only gate that tests *behaviour*. It runs the model and the two
+geometry types without starting the game and asserts the properties the picture depends on:
+port slots are 0..n−1 with no holes, fan-in yields one bar per input, fan-out yields one bar
+per output, the input stack does not overlap the output stack, dots coincide with what hit
+testing reports, and routes are orthogonal and arrive moving right. **When a change touches
+`GridGraph`, `PortGeometry` or `EdgeRouting`, check that a matching assertion exists** — a new
+rule with no assertion is a rule verified only by a human in the game, which is exactly what
+this gate exists to avoid.
 
 A `// review:allow R0NN <reason>` comment suppresses one rule on one line. **Verify the
 reason.** A suppression whose reason is wrong is a finding in itself; the gate reports a bare
@@ -165,6 +175,7 @@ blocker slips through.
 ### Gate results
 - verify-compile: COMPILE OK
 - review-check: 0 errors, N warnings
+- offline-check: OFFLINE OK — N checks
 
 ### What I did not check
 - <e.g. in-game behaviour, multiplayer sync — and who should>

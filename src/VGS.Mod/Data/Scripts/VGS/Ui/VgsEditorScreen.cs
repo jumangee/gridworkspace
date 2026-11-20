@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using Sandbox.ModAPI;
 using VRage.Game.ModAPI;
-using VRage.Utils;
 using VRageMath;
 using Vgs.Core;
 using Vgs.Game;
@@ -11,7 +10,8 @@ using Vgs.Model;
 namespace Vgs.Ui
 {
     /// <summary>
-    /// Full-screen grid logic editor (roadmap stage 1, with the stage-2 canvas).
+    /// Full-screen grid logic editor: block cards, connections between them, and the binding
+    /// gesture that creates those connections.
     ///
     /// <b>Base class.</b> This derives from <see cref="MyModScreen"/>, the API Keen added in
     /// 1.211 for mod-defined screens, not from <c>MyGuiScreenBase</c>. That is not a style
@@ -21,27 +21,35 @@ namespace Vgs.Ui
     /// "The type or member 'MyGuiScreenBase' is prohibited". <see cref="MyModScreen"/> lives
     /// in <c>Sandbox.ModAPI</c>, which is whitelisted wholesale.
     ///
-    /// Design notes that matter for whoever extends this:
+    /// <b>Interaction model</b> (three modes, one pointer):
     ///
-    ///  * <b>One screen, self-drawn canvas.</b> The canvas is painted in
-    ///    <see cref="OnDraw"/> through <see cref="VgsScreenDraw"/>. There are no stock
-    ///    controls to compose: the whitelisted screen-space API offers filled quads and text
-    ///    only, so even the Close button is drawn and hit-tested here.
+    ///  * <i>idle</i> — left button selects and drags cards, right/middle button pans, wheel
+    ///    zooms. Clicking the round "+" on a card switches to bind mode.
+    ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
+    ///    The button does not have to be held. Left click on another card opens the action
+    ///    menu for it; right click cancels; left click elsewhere cancels.
+    ///  * <i>menu</i> — a list of the target's terminal actions. Left click on a row creates
+    ///    the connection and leaves bind mode; right click cancels bind mode; wheel scrolls
+    ///    long lists; left click anywhere else closes the menu but keeps bind mode.
     ///
-    ///  * <b>Client-area coordinates.</b> Every rectangle in this file is 0..1 of the window,
-    ///    which is what the player thinks of as the screen and what keeps the layout
-    ///    resolution independent. <see cref="VgsScreenDraw"/> converts to the space the
-    ///    screen-space API actually uses — the safe-GUI rectangle, a centred 4:3 box — so no
-    ///    code here deals with that difference (ADR-0009).
+    /// The mode is explicit state (<see cref="_bindSource"/>, <see cref="_menuTarget"/>)
+    /// rather than a boolean per button, because the three modes are mutually exclusive: a
+    /// drag started while binding would fight the line for the pointer, and a pan started
+    /// while the menu is open would move the world out from under it.
     ///
-    ///  * <b>No per-frame world access, no per-frame allocation.</b> Block data is read once
-    ///    into a <see cref="GridGraph"/>; drawing only reads that snapshot. Text that changes
-    ///    rarely (status line, culling notice) is formatted once and reused — <see cref="OnDraw"/>
-    ///    runs every frame, and rebuilding those strings there is a measurable cost on a
-    ///    large grid.
+    /// <b>Client-area coordinates.</b> Every rectangle in this file is 0..1 of the window,
+    /// which is what the player thinks of as the screen and what keeps the layout resolution
+    /// independent. <see cref="VgsScreenDraw"/> converts to the space the screen-space API
+    /// actually uses — the safe-GUI rectangle, a centred 4:3 box — so no code here deals with
+    /// that difference (ADR-0009).
     ///
-    ///  * <b>Every override is guarded.</b> These methods are called by the game; an
-    ///    exception escaping one of them breaks the session, not just this screen.
+    /// <b>No per-frame world access, no per-frame allocation.</b> Block data is read once
+    /// into a <see cref="GridGraph"/>; drawing only reads that snapshot. Text that changes
+    /// rarely (status line, culling notice, menu title) is formatted when it changes and
+    /// reused — <see cref="OnDraw"/> runs every frame.
+    ///
+    /// <b>Every override is guarded.</b> These methods are called by the game; an exception
+    /// escaping one of them breaks the session, not just this screen.
     /// </summary>
     public sealed class VgsEditorScreen : MyModScreen
     {
@@ -53,10 +61,25 @@ namespace Vgs.Ui
         private static readonly Color ColNode = new Color(38, 45, 58, 255);
         private static readonly Color ColNodeBorder = new Color(70, 84, 105, 255);
         private static readonly Color ColNodeSelected = new Color(255, 170, 60, 255);
+        private static readonly Color ColNodeHover = new Color(110, 190, 255, 255);
         private static readonly Color ColText = new Color(226, 232, 240, 255);
         private static readonly Color ColTextDim = new Color(140, 152, 170, 255);
         private static readonly Color ColPortIn = new Color(110, 190, 255, 255);
+        private static readonly Color ColPortInFill = new Color(28, 44, 62, 255);
         private static readonly Color ColPortOut = new Color(120, 220, 160, 255);
+        private static readonly Color ColPortOutFill = new Color(26, 48, 38, 255);
+        private static readonly Color ColLine = new Color(120, 220, 160, 190);
+        private static readonly Color ColLinePending = new Color(255, 170, 60, 235);
+
+        // The "+" button is drawn inverted: a near-white disc with the plus cut out in the
+        // card's own colour (ColNode). White because a control that starts a modal gesture has
+        // to be the brightest thing on the canvas; inverted because a light glyph on a dark
+        // disc disappears at low zoom, while a dark glyph on white stays legible.
+        private static readonly Color ColPlusFill = new Color(244, 247, 252, 255);
+        private static readonly Color ColPlusFillHot = new Color(255, 214, 140, 255);
+        private static readonly Color ColMenu = new Color(26, 32, 42, 250);
+        private static readonly Color ColMenuBorder = new Color(90, 106, 130, 255);
+        private static readonly Color ColMenuRowHot = new Color(52, 66, 88, 255);
         private static readonly Color ColBottomBar = new Color(24, 29, 38, 255);
 
         /// <summary>
@@ -82,13 +105,48 @@ namespace Vgs.Ui
         private Vector2 _camera = Vector2.Zero;
         private float _zoom = 1f;
 
-        // Interaction state.
+        // Interaction state: idle (all null), bind, or menu.
         private Node _draggedNode;
         private Vector2 _dragGrabOffset;
         private bool _dragging;
         private bool _panning;
         private Vector2 _panAnchor;
         private Node _selected;
+
+        /// <summary>Source card of a bind in progress. Non-null means bind mode is active.</summary>
+        private Node _bindSource;
+
+        /// <summary>Card whose action menu is open. Non-null implies bind mode.</summary>
+        private Node _menuTarget;
+
+        /// <summary>Actions offered for the open menu, in terminal order. Reused between opens.</summary>
+        private readonly List<Port> _menuRows = new List<Port>();
+
+        /// <summary>
+        /// Row captions, parallel to <see cref="_menuRows"/>.
+        ///
+        /// Pre-formatted when the menu opens rather than in the draw pass: the caption carries
+        /// the current fan-in count, and building it per frame would allocate once per row per
+        /// frame for as long as the menu is open.
+        /// </summary>
+        private readonly List<string> _menuLabels = new List<string>();
+
+        private int _menuScroll;
+        private int _menuHoverRow = -1;
+        private Vector2 _menuAnchorScreen;
+
+        /// <summary>Cursor position in client-area units, cached by the input pass for drawing.</summary>
+        private Vector2 _mouse;
+
+        private bool _mouseValid;
+        private Node _hoverNode;
+        private Node _hoverPlus;
+
+        /// <summary>
+        /// Scratch buffer for wire routes. Reused so that drawing a connection allocates
+        /// nothing once the list has grown to its longest route.
+        /// </summary>
+        private readonly List<Vector4> _route = new List<Vector4>(8);
 
         // Refresh throttling: the grid can change at any time, but re-reading it every
         // frame would dominate the frame budget on a large ship.
@@ -104,6 +162,9 @@ namespace Vgs.Ui
         private string _cullText;
         private int _cullKeyDrawn = -1;
         private int _cullKeyTotal = -1;
+
+        /// <summary>Menu title, formatted once when the menu opens. Draw only reads it.</summary>
+        private string _menuTitle;
 
         /// <summary>
         /// Header label for the grid, resolved once by <see cref="ResolveGridName"/>.
@@ -269,6 +330,8 @@ namespace Vgs.Ui
             {
                 // Nothing is laid out in advance: every rectangle is derived from the current
                 // client area at draw time, so a resolution change needs no recalculation.
+                // The only cached screen-space value is the menu anchor, and the menu rectangle
+                // is re-clamped into the canvas on every access for exactly this reason.
             }
             catch (Exception e)
             {
@@ -280,7 +343,14 @@ namespace Vgs.Ui
         {
             try
             {
-                // Returning true lets the screen close on Esc.
+                // Esc exits the deepest mode first — cancelling a bind is what the player
+                // expects from Escape — and only closes the editor when there is none.
+                if (_menuTarget != null || _bindSource != null)
+                {
+                    CancelBind();
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception e)
@@ -298,9 +368,18 @@ namespace Vgs.Ui
 
                 _draggedNode = null;
                 _selected = null;
+                _bindSource = null;
+                _menuTarget = null;
+                _menuRows.Clear();
+                _menuLabels.Clear();
+                _menuTitle = null;
                 _statusText = null;
                 _cullText = null;
                 _gridNameCache = null;
+                _hoverNode = null;
+                _hoverPlus = null;
+                _mouseValid = false;
+                _route.Clear();
 
                 if (!isUnloading) VgsLog.Info("editor closed");
             }
@@ -331,6 +410,66 @@ namespace Vgs.Ui
             topLeft = new Vector2(
                 1f - VgsConstants.CloseButtonRightMargin - size.X,
                 1f - VgsConstants.BottomBarHeight * 0.5f - size.Y * 0.5f);
+        }
+
+        /// <summary>
+        /// Rectangle of the action menu, in client-area coordinates.
+        ///
+        /// Computed on every access from the anchor and the current row count, and clamped
+        /// into the canvas. Both the draw pass and the input pass call this one method, so the
+        /// rows the user clicks are the rows that were drawn — the classic source of "the
+        /// click lands one row off" is two copies of this arithmetic diverging.
+        /// </summary>
+        private void GetMenuRect(out Vector2 topLeft, out Vector2 size)
+        {
+            Vector2 canvasTopLeft, canvasSize;
+            GetCanvasRect(out canvasTopLeft, out canvasSize);
+
+            int rows = VisibleMenuRows;
+            size = new Vector2(
+                VgsConstants.ActionMenuWidth,
+                VgsConstants.ActionMenuTitleHeight + rows * VgsConstants.ActionMenuRowHeight);
+
+            const float margin = 0.01f;
+            const float offset = 0.012f;
+
+            float maxX = canvasTopLeft.X + canvasSize.X - size.X - margin;
+            float maxY = canvasTopLeft.Y + canvasSize.Y - size.Y - margin;
+
+            float x = _menuAnchorScreen.X + offset;
+            float y = _menuAnchorScreen.Y + offset;
+
+            if (x > maxX) x = maxX;
+            if (y > maxY) y = maxY;
+            if (x < canvasTopLeft.X + margin) x = canvasTopLeft.X + margin;
+            if (y < canvasTopLeft.Y + margin) y = canvasTopLeft.Y + margin;
+
+            topLeft = new Vector2(x, y);
+        }
+
+        private void GetMenuRowRect(int index, out Vector2 topLeft, out Vector2 size)
+        {
+            Vector2 menuTopLeft, menuSize;
+            GetMenuRect(out menuTopLeft, out menuSize);
+
+            size = new Vector2(menuSize.X, VgsConstants.ActionMenuRowHeight);
+            topLeft = new Vector2(
+                menuTopLeft.X,
+                menuTopLeft.Y + VgsConstants.ActionMenuTitleHeight + index * VgsConstants.ActionMenuRowHeight);
+        }
+
+        /// <summary>
+        /// Rows the menu shows at once — including the single informational row drawn when the
+        /// target has no actions at all.
+        /// </summary>
+        private int VisibleMenuRows
+        {
+            get
+            {
+                int count = _menuRows.Count;
+                if (count < 1) return 1;
+                return count < VgsConstants.ActionMenuMaxRows ? count : VgsConstants.ActionMenuMaxRows;
+            }
         }
 
         // ------------------------------------------------------------------ update
@@ -372,11 +511,56 @@ namespace Vgs.Ui
                 }
 
                 GridGraphBuilder.Refresh(_graph, _grid);
+                ValidateInteractionState();
             }
             catch (Exception e)
             {
                 VgsLog.Error("editor refresh failed", e);
             }
+        }
+
+        /// <summary>
+        /// Drops references to nodes the refresh has removed.
+        ///
+        /// A refresh can delete the block the user is currently dragging, binding from, or
+        /// picking an action for. Those fields are plain references, so they stay valid as
+        /// objects after the node leaves the graph — which means the draw path would happily
+        /// keep painting a card that no longer exists. The check is by entity id because that
+        /// is the graph's own identity for a node.
+        /// </summary>
+        private void ValidateInteractionState()
+        {
+            if (_selected != null && !_graph.Contains(_selected.EntityId)) _selected = null;
+            if (_draggedNode != null && !_graph.Contains(_draggedNode.EntityId)) _draggedNode = null;
+
+            if (_bindSource != null && !_graph.Contains(_bindSource.EntityId)) CancelBind();
+
+            if (_menuTarget != null)
+            {
+                if (!_graph.Contains(_menuTarget.EntityId) || !SamePorts(_menuRows, _menuTarget.Actions))
+                {
+                    // The menu is bound to specific port objects; if the target's action list
+                    // was rebuilt they are stale, and a click would connect the wrong action.
+                    CancelBind();
+                    return;
+                }
+
+                // The fan-in counts in the captions are a snapshot. A refresh can change them
+                // (another block was ground down), and a caption that lies about how many
+                // sources an action already has is worse than a caption built twice a second
+                // while a menu is open. This runs in Update, never in Draw.
+                FillMenuRows(_menuTarget);
+            }
+        }
+
+        private static bool SamePorts(List<Port> rows, List<Port> ports)
+        {
+            if (rows.Count != ports.Count) return false;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (!ReferenceEquals(rows[i], ports[i])) return false;
+            }
+            return true;
         }
 
         // ------------------------------------------------------------------ input
@@ -392,9 +576,16 @@ namespace Vgs.Ui
                 if (MyAPIGateway.Input == null) return;
 
                 Vector2 mouse;
-                if (!VgsScreenDraw.TryCursor(out mouse)) return;
+                _mouseValid = VgsScreenDraw.TryCursor(out mouse);
+                if (!_mouseValid) return;
+
+                _mouse = mouse;
 
                 if (HandleCloseButton(mouse)) return;
+
+                if (_menuTarget != null) { HandleMenuInput(mouse); return; }
+                if (_bindSource != null) { HandleBindInput(mouse); return; }
+
                 HandleCanvasInput(mouse);
             }
             catch (Exception e)
@@ -412,9 +603,7 @@ namespace Vgs.Ui
             Vector2 buttonTopLeft, buttonSize;
             GetCloseButtonRect(out buttonTopLeft, out buttonSize);
 
-            _closeHot =
-                mouse.X >= buttonTopLeft.X && mouse.X <= buttonTopLeft.X + buttonSize.X &&
-                mouse.Y >= buttonTopLeft.Y && mouse.Y <= buttonTopLeft.Y + buttonSize.Y;
+            _closeHot = PortGeometry.Contains(buttonTopLeft, buttonSize, mouse);
 
             if (!_closeHot || !MyAPIGateway.Input.IsNewLeftMousePressed()) return false;
 
@@ -427,9 +616,7 @@ namespace Vgs.Ui
             Vector2 canvasTopLeft, canvasSize;
             GetCanvasRect(out canvasTopLeft, out canvasSize);
 
-            bool insideCanvas =
-                mouse.X >= canvasTopLeft.X && mouse.X <= canvasTopLeft.X + canvasSize.X &&
-                mouse.Y >= canvasTopLeft.Y && mouse.Y <= canvasTopLeft.Y + canvasSize.Y;
+            bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
             // ---- zoom ----
             if (insideCanvas)
@@ -477,10 +664,22 @@ namespace Vgs.Ui
 
             if (_panning && !rightDown && !middleDown) _panning = false;
 
-            // ---- selection / drag (left button) ----
+            // ---- hover: the "+" button and the card under the pointer ----
+            UpdateHover(mouse, canvasTopLeft, canvasSize);
+
             if (leftNew && insideCanvas)
             {
                 Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+                // The "+" wins over the card underneath: it sits on the card's right edge and
+                // starting a drag instead of a bind would be maddening.
+                Node plus = HitTestPlus(graphPos);
+                if (plus != null)
+                {
+                    BeginBind(plus);
+                    return;
+                }
+
                 Node hit = HitTest(graphPos);
                 _selected = hit;
 
@@ -512,6 +711,294 @@ namespace Vgs.Ui
             }
         }
 
+        /// <summary>
+        /// Input while a bind is in progress: the pointer picks the target instead of dragging
+        /// or panning. The right button cancels — which is why the right button cannot pan
+        /// here; the middle button still does.
+        /// </summary>
+        private void HandleBindInput(Vector2 mouse)
+        {
+            bool rightNew = MyAPIGateway.Input.IsNewRightMousePressed();
+            if (rightNew)
+            {
+                CancelBind();
+                return;
+            }
+
+            Vector2 canvasTopLeft, canvasSize;
+            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
+
+            // Middle-button pan keeps working so the user can reach a target off-screen
+            // without losing the bind.
+            bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
+            if (insideCanvas && middleDown)
+            {
+                if (!_panning)
+                {
+                    _panning = true;
+                    _panAnchor = mouse;
+                }
+                else
+                {
+                    _camera -= (mouse - _panAnchor) / _zoom;
+                    _panAnchor = mouse;
+                }
+                return;
+            }
+            if (_panning && !middleDown) _panning = false;
+
+            Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+            // A pointer over the header or the bottom bar is not over a card, even if a card
+            // happens to be scrolled underneath: the bars are chrome, and the click there is
+            // a click on chrome.
+            _hoverNode = insideCanvas ? HitTest(graphPos) : null;
+            _hoverPlus = null;
+
+            if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
+
+            Node target = _hoverNode;
+            if (target == null)
+            {
+                // Clicking the void abandons the bind, the same way a rubber band in any
+                // editor is dropped by clicking on nothing.
+                CancelBind();
+                return;
+            }
+
+            if (ReferenceEquals(target, _bindSource))
+            {
+                VgsLog.Debug("bind rejected: source and target are the same block");
+                return;
+            }
+
+            OpenActionMenu(target, mouse);
+        }
+
+        /// <summary>Input while the action menu is open.</summary>
+        private void HandleMenuInput(Vector2 mouse)
+        {
+            if (MyAPIGateway.Input.IsNewRightMousePressed())
+            {
+                CancelBind();
+                return;
+            }
+
+            int hoverRow = MenuRowAt(mouse);
+            _menuHoverRow = hoverRow;
+
+            int wheel = MyAPIGateway.Input.DeltaMouseScrollWheelValue();
+            if (wheel != 0) ScrollMenu(wheel > 0 ? -1 : 1);
+
+            if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
+
+            Vector2 menuTopLeft, menuSize;
+            GetMenuRect(out menuTopLeft, out menuSize);
+            bool insideMenu = PortGeometry.Contains(menuTopLeft, menuSize, mouse);
+
+            if (!insideMenu)
+            {
+                // A click next to the menu is a miss, not a decision: close the menu but keep
+                // the bind, so a near-miss does not cost the user the source they picked.
+                CloseActionMenu();
+                return;
+            }
+
+            if (_menuRows.Count == 0)
+            {
+                // The target offers no actions at all, so this bind can never complete. Say so
+                // and drop the whole gesture rather than leaving an unclickable menu on screen.
+                VgsLog.Debug("bind cancelled: target has no terminal actions");
+                CancelBind();
+                return;
+            }
+
+            if (hoverRow < 0) return;   // title strip
+
+            Port action = _menuRows[hoverRow];
+            if (TryCompleteBind(action))
+            {
+                CloseActionMenu();
+                CancelBind();
+            }
+        }
+
+        // ------------------------------------------------------------------ bind mode
+
+        private void BeginBind(Node source)
+        {
+            if (source == null) return;
+
+            Port primary = source.PrimaryEvent;
+            if (primary == null)
+            {
+                VgsLog.Debug("bind not started: block exposes no events");
+                return;
+            }
+
+            _bindSource = source;
+            _selected = source;
+            _dragging = false;
+            _draggedNode = null;
+            _panning = false;
+            CloseActionMenu();
+
+            VgsLog.Debug("bind started from " + source.EntityId + " via " + primary.Key);
+        }
+
+        private void CancelBind()
+        {
+            if (_bindSource != null) VgsLog.Debug("bind cancelled");
+            _bindSource = null;
+            _hoverNode = null;
+            _panning = false;
+            CloseActionMenu();
+        }
+
+        private void OpenActionMenu(Node target, Vector2 mouse)
+        {
+            if (target == null) return;
+
+            _menuTarget = target;
+            _menuAnchorScreen = mouse;
+            _menuScroll = 0;
+            _menuHoverRow = -1;
+
+            // The target card keeps the hover outline while its menu is open, so it is obvious
+            // which of several similar blocks the list belongs to.
+            _hoverNode = target;
+            _hoverPlus = null;
+
+            _menuRows.Clear();
+            _menuLabels.Clear();
+
+            FillMenuRows(target);
+
+            // Formatted once, here, because DrawActionMenu runs every frame and string.Format
+            // in a draw path is an allocation per frame for as long as the menu is open.
+            _menuTitle = string.Format(VgsText.ActionMenuTitleFormat, target.DisplayName);
+
+            VgsLog.Debug("action menu for " + target.EntityId + ": " + _menuRows.Count + " action(s)");
+        }
+
+        /// <summary>
+        /// Fills the menu rows and their captions for one target.
+        ///
+        /// Called when the menu opens and again on every grid refresh while it stays open,
+        /// because the captions carry the current fan-in count. Both call sites are outside the
+        /// draw path on purpose: <see cref="DrawActionMenu"/> must only read these lists.
+        /// </summary>
+        private void FillMenuRows(Node target)
+        {
+            _menuRows.Clear();
+            _menuLabels.Clear();
+            if (target == null) return;
+
+            for (int i = 0; i < target.Actions.Count; i++)
+            {
+                Port action = target.Actions[i];
+                _menuRows.Add(action);
+
+                // Input ports are shared, so an action that already has sources is still a
+                // valid choice — the row says how many lines are already there instead of
+                // being disabled. A disabled row would also make the menu jump as soon as the
+                // user connected something.
+                int fanIn = _graph.CountEdgesToInput(target.EntityId, action.Key);
+                _menuLabels.Add(fanIn > 0
+                    ? action.DisplayName + string.Format(VgsText.ActionMenuFanInFormat, fanIn)
+                    : action.DisplayName);
+            }
+
+            // The row count can shrink under an open menu; the scroll offset must not point
+            // past the end, or the last rows become unreachable.
+            int maxScroll = _menuRows.Count - VgsConstants.ActionMenuMaxRows;
+            if (maxScroll < 0) maxScroll = 0;
+            if (_menuScroll > maxScroll) _menuScroll = maxScroll;
+        }
+
+        private void CloseActionMenu()
+        {
+            _menuTarget = null;
+            _menuRows.Clear();
+            _menuLabels.Clear();
+            _menuTitle = null;
+            _menuHoverRow = -1;
+            _menuScroll = 0;
+        }
+
+        private void ScrollMenu(int delta)
+        {
+            int maxScroll = _menuRows.Count - VgsConstants.ActionMenuMaxRows;
+            if (maxScroll < 0) maxScroll = 0;
+
+            _menuScroll += delta;
+            if (_menuScroll > maxScroll) _menuScroll = maxScroll;
+            if (_menuScroll < 0) _menuScroll = 0;
+        }
+
+        /// <summary>
+        /// Index of the action row under the pointer, or -1. Returns an index into
+        /// <see cref="_menuRows"/> (already offset by the scroll position).
+        /// </summary>
+        private int MenuRowAt(Vector2 mouse)
+        {
+            if (_menuRows.Count == 0) return -1;
+
+            Vector2 menuTopLeft, menuSize;
+            GetMenuRect(out menuTopLeft, out menuSize);
+            if (!PortGeometry.Contains(menuTopLeft, menuSize, mouse)) return -1;
+
+            float local = mouse.Y - menuTopLeft.Y - VgsConstants.ActionMenuTitleHeight;
+            if (local < 0f) return -1;
+
+            int row = (int)(local / VgsConstants.ActionMenuRowHeight);
+            if (row < 0 || row >= VisibleMenuRows) return -1;
+
+            int index = row + _menuScroll;
+            return index < _menuRows.Count ? index : -1;
+        }
+
+        /// <summary>
+        /// Creates the connection the bind was aiming at.
+        ///
+        /// Returns true when the user's intent is satisfied — including the case where the
+        /// connection already exists. That case is not an error to report and not a reason to
+        /// keep the menu open: the user asked for "timer drives this reactor", and after the
+        /// call it does. Returning false there would leave a menu that silently ignores clicks,
+        /// which reads as a broken screen.
+        /// </summary>
+        private bool TryCompleteBind(Port action)
+        {
+            Node source = _bindSource;
+            Node target = _menuTarget;
+            if (source == null || target == null || action == null) return false;
+
+            Port primary = source.PrimaryEvent;
+            if (primary == null) return false;
+
+            if (_graph.HasEdge(source.EntityId, primary.Key, target.EntityId, action.Key))
+            {
+                VgsLog.Debug("bind already satisfied: " + primary.Key + " -> " + action.Key);
+                return true;
+            }
+
+            if (!_graph.TryConnect(source.EntityId, primary.Key, target.EntityId, action.Key))
+            {
+                VgsLog.Warn("bind rejected by graph: " + primary.Key + " -> " + action.Key);
+                return false;
+            }
+
+            // The new connection changes which port bars exist, so the stacks are recomputed.
+            _graph.LayoutPorts();
+
+            VgsLog.Info("connected " + source.EntityId + " (" + primary.Key + ") -> "
+                        + target.EntityId + " (" + action.Key + ")");
+            return true;
+        }
+
+        // ------------------------------------------------------------------ hit testing
+
         /// <summary>Converts a normalized screen point to graph space.</summary>
         private Vector2 ScreenToGraph(Vector2 screenPoint, Vector2 canvasTopLeft)
         {
@@ -524,21 +1011,52 @@ namespace Vgs.Ui
             return (graphPoint - _camera) * _zoom + canvasTopLeft;
         }
 
-        /// <summary>Topmost node under a graph-space point, or null.</summary>
+        /// <summary>Topmost node under a graph-space point, or null. Ports count as the node.</summary>
         private Node HitTest(Vector2 graphPoint)
         {
             IList<Node> nodes = _graph.Nodes;
             // Iterate backwards so the visually topmost (last drawn) node wins.
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
-                Node n = nodes[i];
-                if (graphPoint.X >= n.Position.X && graphPoint.X <= n.Position.X + VgsConstants.NodeWidth &&
-                    graphPoint.Y >= n.Position.Y && graphPoint.Y <= n.Position.Y + VgsConstants.NodeHeight)
-                {
-                    return n;
-                }
+                if (PortGeometry.HitNode(nodes[i], graphPoint)) return nodes[i];
             }
             return null;
+        }
+
+        /// <summary>Topmost node whose "+" button is under the pointer, or null.</summary>
+        private Node HitTestPlus(Vector2 graphPoint)
+        {
+            float aspect = VgsScreenDraw.ClientAspect;
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                if (PortGeometry.HitPlusButton(nodes[i], graphPoint, aspect)) return nodes[i];
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Refreshes the hover targets used for the highlight of a card and of its "+".
+        ///
+        /// Hover is recomputed from the pointer every input pass rather than cached until a
+        /// move event: the canvas pans and zooms under a still pointer, so "under the pointer"
+        /// changes without the pointer moving.
+        /// </summary>
+        private void UpdateHover(Vector2 mouse, Vector2 canvasTopLeft, Vector2 canvasSize)
+        {
+            if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse))
+            {
+                _hoverNode = null;
+                _hoverPlus = null;
+                return;
+            }
+
+            Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+            _hoverPlus = HitTestPlus(graphPos);
+
+            // A card under the "+" is not "hovered": the button is the thing about to be
+            // clicked, and highlighting the card as well would suggest a drag.
+            _hoverNode = _hoverPlus == null ? HitTest(graphPos) : null;
         }
 
         // ------------------------------------------------------------------ drawing
@@ -558,9 +1076,17 @@ namespace Vgs.Ui
 
                 DrawBackdrop(canvasTopLeft, canvasSize);
                 DrawGrid(canvasTopLeft, canvasSize);
+
+                // Order matters: lines go under the cards so a connection never crosses a
+                // block's text; cards go under their own port bars.
+                DrawEdges(canvasTopLeft, canvasSize);
+                DrawPendingLine(canvasTopLeft, canvasSize);
                 DrawNodes(canvasTopLeft, canvasSize);
+
                 DrawBottomBar();
                 DrawHeader();
+
+                if (_menuTarget != null) DrawActionMenu();
             }
             catch (Exception e)
             {
@@ -618,11 +1144,89 @@ namespace Vgs.Ui
                 if (y > size.Y) break;
                 if (y < 0f) continue;
 
-                Color c = (row % majorEvery == 0) ? ColGridMajor : ColGridMinor;
+                Color c = (row % 5 == 0) ? ColGridMajor : ColGridMinor;
                 VgsScreenDraw.Rect(
                     new Vector2(topLeft.X, topLeft.Y + y),
                     new Vector2(size.X, Hairline),
                     c);
+            }
+        }
+
+        /// <summary>
+        /// Draws every connection as an orthogonal route from an output dot to an input dot.
+        ///
+        /// A connection whose ports have no drawing slot (the block has more ports than
+        /// <see cref="GridGraph.MaxPortsPerSide"/>) is skipped: it exists in the graph but has
+        /// no dot to attach to, and drawing it from nowhere would be a lie.
+        /// </summary>
+        private void DrawEdges(Vector2 topLeft, Vector2 size)
+        {
+            IList<Edge> edges = _graph.Edges;
+            int drawn = 0;
+
+            for (int i = 0; i < edges.Count && drawn < VgsConstants.MaxRenderedEdges; i++)
+            {
+                Edge edge = edges[i];
+
+                Node source = _graph.GetNode(edge.SourceEntityId);
+                Node target = _graph.GetNode(edge.TargetEntityId);
+                if (source == null || target == null) continue;
+
+                Port outPort = source.FindEvent(edge.SourcePortKey);
+                Port inPort = target.FindAction(edge.TargetPortKey);
+                if (outPort == null || inPort == null) continue;
+
+                Vector2 from, to;
+                float aspect = VgsScreenDraw.ClientAspect;
+                if (!PortGeometry.TryPortDot(source, outPort, aspect, out from)) continue;
+                if (!PortGeometry.TryPortDot(target, inPort, aspect, out to)) continue;
+
+                DrawRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
+                          ColLine, topLeft, size);
+                drawn++;
+            }
+        }
+
+        /// <summary>
+        /// Draws the live line from the source card to the pointer while binding.
+        ///
+        /// It starts at the dot the connection *will* get, not at the pointer's origin, so the
+        /// moment the connection is made nothing jumps: the port bar appears exactly where the
+        /// line already was.
+        /// </summary>
+        private void DrawPendingLine(Vector2 topLeft, Vector2 size)
+        {
+            if (_bindSource == null || !_mouseValid) return;
+
+            Vector2 from;
+            if (!PortGeometry.TryPendingSourceDot(_bindSource, _bindSource.PrimaryEvent,
+                                                  VgsScreenDraw.ClientAspect, out from)) return;
+
+            Vector2 start = GraphToScreen(from, topLeft);
+            Vector2 end = _mouse;
+
+            DrawRoute(start, end, ColLinePending, topLeft, size);
+
+            // A dot under the cursor makes the line read as "attached to the pointer" rather
+            // than as a line that happens to end there.
+            VgsScreenDraw.Disc(end, VgsConstants.PortDotRadius * _zoom, topLeft, size, ColLinePending);
+        }
+
+        private void DrawRoute(Vector2 from, Vector2 to, Color color, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            // The dots are already in screen space, so the gutter has to be too. It is a graph
+            // constant scaled by zoom, which keeps the clearance between a dot and its vertical
+            // run the same fraction of a card at every zoom level (ADR-0010).
+            EdgeRouting.Build(from, to, VgsConstants.LineGutter * _zoom, _route);
+
+            for (int i = 0; i < _route.Count; i++)
+            {
+                Vector4 segment = _route[i];
+                VgsScreenDraw.Segment(
+                    new Vector2(segment.X, segment.Y),
+                    new Vector2(segment.Z, segment.W),
+                    VgsConstants.LineThickness,
+                    clipTopLeft, clipSize, color);
             }
         }
 
@@ -642,12 +1246,12 @@ namespace Vgs.Ui
             {
                 Node n = nodes[i];
                 Vector2 screen = GraphToScreen(n.Position, topLeft);
-                Vector2 nodeSize = new Vector2(VgsConstants.NodeWidth * _zoom, VgsConstants.NodeHeight * _zoom);
+                Vector2 nodeSize = new Vector2(VgsConstants.NodeWidth, PortGeometry.TotalHeight(n)) * _zoom;
 
                 if (screen.X > size.X || screen.Y > size.Y) continue;
                 if (screen.X + nodeSize.X < 0f || screen.Y + nodeSize.Y < 0f) continue;
 
-                DrawNode(n, screen, nodeSize);
+                DrawNode(n, screen, topLeft, size);
                 drawn++;
             }
 
@@ -660,46 +1264,242 @@ namespace Vgs.Ui
             }
         }
 
-        private void DrawNode(Node node, Vector2 screenPos, Vector2 size)
+        /// <summary>
+        /// Draws one card: name, subtype, the optional "+", and its port bars.
+        ///
+        /// The card is deliberately just a label. Ports are drawn *outside* it, as bars
+        /// hanging underneath, and only the ones the user has actually connected — which is
+        /// what keeps a block with forty terminal actions the same size as a block with four
+        /// (see <see cref="PortGeometry"/>).
+        /// </summary>
+        private void DrawNode(Node node, Vector2 screenPos, Vector2 clipTopLeft, Vector2 clipSize)
         {
             bool selected = ReferenceEquals(node, _selected);
+            bool hovered = ReferenceEquals(node, _hoverNode);
 
-            VgsScreenDraw.Rect(screenPos, size, ColNode);
-            VgsScreenDraw.Border(screenPos, size, selected ? ColNodeSelected : ColNodeBorder,
-                                 selected ? Hairline * 2f : Hairline);
+            Vector2 cardSize = new Vector2(VgsConstants.NodeWidth, VgsConstants.NodeHeight) * _zoom;
 
-            // Ports: a short tick per port on the left (inputs) and right (outputs) edge.
-            // Drawn before the text so the label sits on top.
-            DrawPorts(node, screenPos, size);
+            // The card is a single filled rectangle. The port bars are separate rectangles
+            // below it and must *not* be covered by this fill, or the stack would read as one
+            // tall block instead of as ports attached to the card's bottom edge.
+            VgsScreenDraw.RectClipped(screenPos, cardSize, clipTopLeft, clipSize, ColNode);
 
-            // Title.
-            float titleScale = 0.62f * Math.Min(1.6f, Math.Max(0.75f, _zoom));
-            VgsScreenDraw.Text(node.DisplayName, screenPos + new Vector2(size.X * 0.06f, size.Y * 0.18f),
-                               titleScale, ColText);
+            Color border = selected ? ColNodeSelected : (hovered ? ColNodeHover : ColNodeBorder);
+            VgsScreenDraw.BorderClipped(screenPos, cardSize, clipTopLeft, clipSize, border,
+                                        selected ? Hairline * 2f : Hairline);
 
-            // Subtitle: subtype plus a port summary, which is what tells the user at a glance
-            // whether this block can participate in the logic at all. Precomputed by the
-            // graph builder — formatting it here would allocate per node per frame.
-            VgsScreenDraw.Text(node.Subtitle, screenPos + new Vector2(size.X * 0.06f, size.Y * 0.52f),
-                               titleScale * 0.78f, ColTextDim);
-        }
+            float zoomText = CardTextScale;
+            float pad = cardSize.X * 0.05f;
+            float textRight = cardSize.X - pad;
 
-        private static void DrawPorts(Node node, Vector2 screenPos, Vector2 size)
-        {
-            float tick = Math.Max(0.0035f, 0.006f * size.X / VgsConstants.NodeWidth);
-
-            for (int i = 0; i < node.Inputs.Count; i++)
+            // The "+" occupies the right end of the card, so the labels must stop before it
+            // instead of running underneath a circle that is drawn on top of them.
+            //
+            // The button is round on *screen*, which makes it an ellipse in layout units: its
+            // horizontal half-extent is radius × aspect, not radius. Reserving the vertical
+            // radius would leave the text running under the circle on any window that is not
+            // square — which is every window.
+            if (node.CanSourceEvents)
             {
-                float y = screenPos.Y + size.Y * node.Inputs[i].Anchor;
-                VgsScreenDraw.Rect(new Vector2(screenPos.X - tick * 0.5f, y - tick * 0.5f),
-                                   new Vector2(tick, tick), ColPortIn);
+                Vector2 plusCenter;
+                if (PortGeometry.TryPlusButton(node, VgsScreenDraw.ClientAspect, out plusCenter))
+                {
+                    float plusHalfWidth = VgsScreenDraw.AspectX(VgsConstants.PlusButtonRadius);
+                    float plusLeftInCard = plusCenter.X - node.Position.X - plusHalfWidth;
+                    textRight = (plusLeftInCard - VgsConstants.PlusButtonTextGap) * _zoom;
+                }
             }
 
-            for (int i = 0; i < node.Outputs.Count; i++)
+            float textWidth = textRight - pad;
+            if (textWidth < 0f) textWidth = 0f;
+
+            VgsScreenDraw.Text(node.DisplayName,
+                               screenPos + new Vector2(pad, cardSize.Y * 0.08f),
+                               VgsConstants.NodeTitleScale * zoomText, ColText, textWidth);
+
+            VgsScreenDraw.Text(node.SubtypeId,
+                               screenPos + new Vector2(pad, cardSize.Y * 0.52f),
+                               VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
+
+            DrawPortBars(node, clipTopLeft, clipSize);
+
+            // The "+" is drawn last so it is never covered by a port bar of a neighbouring
+            // card that happens to be drawn later.
+            if (node.CanSourceEvents) DrawPlusButton(node, clipTopLeft, clipSize);
+        }
+
+        /// <summary>
+        /// Draws the round "+" that starts bind mode: a solid white disc with the plus knocked
+        /// out in the card's own colour.
+        ///
+        /// Round, not a square, because it must not read as part of the card: it is a control
+        /// that starts a modal gesture, and the one thing the user must never do is drag the
+        /// card when they meant to drag a connection.
+        ///
+        /// The plus is <b>geometry, not a glyph</b>. A font glyph is positioned by its baseline
+        /// and carries side bearings, so "centred" text is never exactly centred — which is the
+        /// defect this replaces. Two rectangles, both built around the same centre, are centred
+        /// by construction at every zoom and cost no font lookup.
+        /// </summary>
+        private void DrawPlusButton(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            Vector2 center;
+            if (!PortGeometry.TryPlusButton(node, VgsScreenDraw.ClientAspect, out center)) return;
+
+            Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
+            float radius = VgsConstants.PlusButtonRadius * _zoom;
+            float diameter = radius * 2f;
+
+            bool hot = ReferenceEquals(node, _hoverPlus);
+            VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
+                               hot ? ColPlusFillHot : ColPlusFill);
+
+            // The plus is cut out of the disc in the card's colour, so it reads as a hole in a
+            // white button rather than as a second element on top of one.
+            Color glyph = ColNode;
+
+            float arm = diameter * VgsConstants.PlusArmRatio;
+            float stroke = diameter * VgsConstants.PlusStrokeRatio;
+
+            // Horizontal arm. Its length is a Y measurement, so its X width goes through the
+            // aspect correction; without it the plus would be stretched across the card.
+            float armWidth = VgsScreenDraw.AspectX(arm);
+            float strokeWidth = VgsScreenDraw.AspectX(stroke);
+
+            VgsScreenDraw.RectClipped(
+                new Vector2(screenCenter.X - armWidth * 0.5f, screenCenter.Y - stroke * 0.5f),
+                new Vector2(armWidth, stroke),
+                clipTopLeft, clipSize, glyph);
+
+            VgsScreenDraw.RectClipped(
+                new Vector2(screenCenter.X - strokeWidth * 0.5f, screenCenter.Y - arm * 0.5f),
+                new Vector2(strokeWidth, arm),
+                clipTopLeft, clipSize, glyph);
+        }
+
+        /// <summary>
+        /// Zoom factor for text that lives on the canvas (card labels, port labels).
+        ///
+        /// Clamped on both ends and, crucially, <b>below</b> the old floor of 0.75: the card is
+        /// now half as tall as it was, and two lines of text at the old floor overflow it once
+        /// the user zooms out to <see cref="VgsConstants.MinZoom"/>. Text that is unreadable but
+        /// inside its box is a better failure than text that is unreadable and spills over its
+        /// neighbours.
+        /// </summary>
+        private float CardTextScale
+        {
+            get
             {
-                float y = screenPos.Y + size.Y * node.Outputs[i].Anchor;
-                VgsScreenDraw.Rect(new Vector2(screenPos.X + size.X - tick * 0.5f, y - tick * 0.5f),
-                                   new Vector2(tick, tick), ColPortOut);
+                if (_zoom < 0.55f) return 0.55f;
+                if (_zoom > 1.6f) return 1.6f;
+                return _zoom;
+            }
+        }
+
+        /// <summary>
+        /// Draws the port bars of one card: outputs first (flush with the card), then inputs
+        /// (inset), each with its dot and its label.
+        /// </summary>
+        private void DrawPortBars(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            for (int i = 0; i < node.Events.Count; i++) DrawPortBar(node, node.Events[i], clipTopLeft, clipSize);
+            for (int i = 0; i < node.Actions.Count; i++) DrawPortBar(node, node.Actions[i], clipTopLeft, clipSize);
+        }
+
+        private void DrawPortBar(Node node, Port port, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (port.Slot < 0) return;
+
+            Vector2 topLeft, size;
+            if (!PortGeometry.TryPortBarRect(node, port, out topLeft, out size)) return;
+
+            Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
+            Vector2 screenSize = size * _zoom;
+
+            bool output = port.Direction == PortDirection.Output;
+            Color fill = output ? ColPortOutFill : ColPortInFill;
+            Color edge = output ? ColPortOut : ColPortIn;
+
+            VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, fill);
+            VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, edge, Hairline);
+
+            // Label, clipped to the bar so a long action name cannot spill over the next card.
+            // The dot sits *inside* the bar now, so the label has to keep clear of it: an
+            // output bar's text is pushed in from the right, an input bar's from the left.
+            float dotSpace = VgsConstants.PortDotRadius * VgsScreenDraw.ClientAspect * 2f;
+            float pad = VgsConstants.PortLabelPadding * _zoom;
+            float dotPad = dotSpace * _zoom + pad;
+
+            float labelLeft = output ? pad : dotPad;
+            float labelWidth = screenSize.X - labelLeft - (output ? dotPad : pad);
+            if (labelWidth > 0f)
+            {
+                VgsScreenDraw.Text(port.DisplayName,
+                                   screenTopLeft + new Vector2(labelLeft, screenSize.Y * 0.16f),
+                                   VgsConstants.NodeSubtitleScale * 0.82f * CardTextScale,
+                                   ColText, labelWidth);
+            }
+
+            // The dot: a circle inside the bar, tangent to the edge the line uses — right for
+            // an output, left for an input. Same shape both ways on purpose; what tells them
+            // apart is the side they sit on, which is exactly the property the router relies
+            // on, so an extra shape difference would only add a thing to learn.
+            //
+            // Drawn last so it sits on top of the bar's border and of its own label's edge.
+            Vector2 dotCenter;
+            if (!PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter)) return;
+            VgsScreenDraw.Disc(GraphToScreen(dotCenter, clipTopLeft),
+                               VgsConstants.PortDotRadius * _zoom, clipTopLeft, clipSize, edge);
+        }
+
+        /// <summary>
+        /// Draws the action menu: the target's terminal actions, one row each, in the order
+        /// the terminal shows them.
+        /// </summary>
+        private void DrawActionMenu()
+        {
+            Vector2 topLeft, size;
+            GetMenuRect(out topLeft, out size);
+
+            VgsScreenDraw.Rect(topLeft, size, ColMenu);
+            VgsScreenDraw.Border(topLeft, size, ColMenuBorder, Hairline);
+
+            VgsScreenDraw.Text(_menuTitle,
+                               topLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
+                                                     VgsConstants.ActionMenuTitleHeight * 0.22f),
+                               VgsConstants.NodeTitleScale * 0.85f, ColText,
+                               size.X - VgsConstants.PortLabelPadding * 3.2f);
+
+            if (_menuRows.Count == 0)
+            {
+                Vector2 rowTopLeft, rowSize;
+                GetMenuRowRect(0, out rowTopLeft, out rowSize);
+                VgsScreenDraw.Text(VgsText.ActionMenuEmpty,
+                                   rowTopLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
+                                                            rowSize.Y * 0.22f),
+                                   VgsConstants.NodeSubtitleScale * 0.9f, ColTextDim,
+                                   rowSize.X - VgsConstants.PortLabelPadding * 3.2f);
+                return;
+            }
+
+            for (int i = 0; i < VisibleMenuRows; i++)
+            {
+                int index = i + _menuScroll;
+                if (index >= _menuRows.Count) break;
+
+                Vector2 rowTopLeft, rowSize;
+                GetMenuRowRect(i, out rowTopLeft, out rowSize);
+
+                if (index == _menuHoverRow)
+                {
+                    VgsScreenDraw.Rect(rowTopLeft, rowSize, ColMenuRowHot);
+                }
+
+                VgsScreenDraw.Text(_menuLabels[index],
+                                   rowTopLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
+                                                            rowSize.Y * 0.22f),
+                                   VgsConstants.NodeSubtitleScale * 0.95f, ColText,
+                                   rowSize.X - VgsConstants.PortLabelPadding * 3.2f);
             }
         }
 
@@ -713,10 +1513,19 @@ namespace Vgs.Ui
 
             VgsScreenDraw.Text(GetStatusText(),
                                new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.18f), 0.7f, ColText);
-            VgsScreenDraw.Text(VgsText.Hint,
+            VgsScreenDraw.Text(BottomBarHint,
                                new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f, ColTextDim);
 
             DrawCloseButton();
+        }
+
+        /// <summary>
+        /// Second line of the bottom bar. Bind mode replaces the static hint, because while
+        /// binding the only thing the user needs to know is how to finish or cancel.
+        /// </summary>
+        private string BottomBarHint
+        {
+            get { return _bindSource != null ? VgsText.BindHint : VgsText.Hint; }
         }
 
         /// <summary>

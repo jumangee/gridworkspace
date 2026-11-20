@@ -73,7 +73,8 @@ Vgs.Model   pure data: Node, Port, Edge, GridGraph, BlockPortCatalog
 Vgs.Game    reads and writes the world: GridGraphBuilder, VgsTerminalControls,
             persistence, network sync. The ONLY place that touches live entities.
 
-Vgs.Ui      draws and handles input: VgsEditorScreen. Reads cached model data only.
+Vgs.Ui      draws and handles input: VgsEditorScreen, PortGeometry, EdgeRouting.
+            Reads cached model data only.
 
 Vgs.Core    logging, session facade, constants, text. No game logic.
 ```
@@ -81,16 +82,38 @@ Vgs.Core    logging, session facade, constants, text. No game logic.
 A change that makes `Vgs.Ui` call `IMyTerminalBlock` while drawing is a design defect: it
 costs a world lookup per frame per block and can hit a destroyed entity mid-frame.
 
+Card and port rectangles live in `PortGeometry` and nowhere else, because the draw pass and
+the hit test must agree to the pixel. Two copies of that arithmetic is how a port ends up
+drawn in one place and clickable in another.
+
 ## 4. The two hard asymmetry facts
 
-1. **Inputs are discoverable, outputs are not.** `IMyTerminalBlock.GetActions()` enumerates
-   what a block accepts. Nothing enumerates what it emits. Outputs are therefore either a
+1. **Actions are discoverable, events are not.** `IMyTerminalBlock.GetActions()` enumerates
+   what a block accepts. Nothing enumerates what it emits. Events are therefore either a
    curated table (`BlockPortCatalog`) or synthesised by polling state changes. Say which one
    you are choosing and why.
 
 2. **Terminal controls are per block type, not per block.** One registration affects every
    cockpit in the world. Anything instance-specific must be decided inside the control's
    `Visible`/`Enabled`/`Action` callbacks.
+
+## 4a. Port presentation is decided by the graph, not the catalog
+
+The catalog answers "what *can* be connected". What is *drawn* is `GridGraph.LayoutPorts()`:
+a port with no edge gets slot `-1` and no bar. Consequences you must respect:
+
+- **`LayoutPorts()` after every change to the edges.** A missed call means a port with no bar
+  and a line leaving nowhere.
+- **Outgoing ports are unique, incoming ports are shared.** Fan-out from one dot is normal;
+  fan-in to one dot is normal too — several blocks may switch the same reactor on. Do not
+  "fix" this by rejecting the second source (ADR-0010 replaced that invariant).
+- **`Node.CanSourceEvents` is the only answer to "can this block drive others".** It is true
+  when the block's type contributes at least one event of its own. The game's
+  `ShowInToolbarConfig` flag answers the opposite question (can the block be *driven*) and is
+  not a substitute.
+
+Terminology lives in [`docs/06-terminology.md`](../../docs/06-terminology.md); keep it current
+when you add a concept.
 
 ## 5. Decide with a written ADR
 

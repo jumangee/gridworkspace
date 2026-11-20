@@ -9,12 +9,12 @@ namespace Vgs.Model
     /// Two very different sources feed this, and the asymmetry is the single most important
     /// architectural fact of the project:
     ///
-    ///  * <b>Inputs</b> (actions) are discoverable at runtime. Every terminal block reports
-    ///    its actions through <c>IMyTerminalBlock.GetActions()</c>, so the editor can show
-    ///    the real list for any block, including blocks added by other mods, with no
+    ///  * <b>Actions</b> (input ports) are discoverable at runtime. Every terminal block
+    ///    reports its actions through <c>IMyTerminalBlock.GetActions()</c>, so the editor can
+    ///    show the real list for any block, including blocks added by other mods, with no
     ///    hardcoded data.
     ///
-    ///  * <b>Outputs</b> (events/values) are <b>not</b> discoverable. Space Engineers has no
+    ///  * <b>Events</b> (output ports) are <b>not</b> discoverable. Space Engineers has no
     ///    API that enumerates what a block can raise; sensors, event controllers and
     ///    cockpits expose their behaviour as component state, not as a metadata list. The
     ///    only honest options are (a) a curated table, or (b) polling state and synthesising
@@ -22,15 +22,15 @@ namespace Vgs.Model
     ///    is the polling half.
     ///
     /// Because the table is curated, it must degrade gracefully: an unknown block type still
-    /// gets a node with its real actions and a single generic "StateChanged" output, rather
-    /// than an empty node the user cannot reason about.
+    /// gets a node with its real actions and the shared events, rather than an empty node the
+    /// user cannot reason about.
     /// </summary>
     public static class BlockPortCatalog
     {
-        /// <summary>Generic output every block gets, backed by polling its OnOff state.</summary>
+        /// <summary>Generic event every block gets, backed by polling its OnOff state.</summary>
         public const string GenericOutputKey = "StateChanged";
 
-        /// <summary>Outputs that every functional block shares, in display order.</summary>
+        /// <summary>Events that every functional block shares, in display order.</summary>
         private static readonly string[] CommonOutputs =
         {
             GenericOutputKey,
@@ -41,7 +41,7 @@ namespace Vgs.Model
         };
 
         /// <summary>
-        /// Curated per-family outputs. Key is a family prefix matched against the block
+        /// Curated per-family events. Key is a family prefix matched against the block
         /// subtype with <see cref="ResolveFamily"/>, so "LargeBlockCockpitIndustrial" and
         /// "SmallBlockCockpit" both resolve to "cockpit".
         /// </summary>
@@ -134,15 +134,36 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Builds the output port list for a block subtype: family-specific outputs first,
-        /// then the shared ones, de-duplicated and with anchors spread down the node edge.
+        /// True when the key belongs to the shared event set, i.e. it is not evidence that
+        /// the block has a family-specific behaviour worth a "+" button
+        /// (<see cref="Node.CanSourceEvents"/>).
         /// </summary>
-        public static void FillOutputs(Node node)
+        public static bool IsCommonEvent(string key)
         {
-            node.Outputs.Clear();
+            if (string.IsNullOrEmpty(key)) return true;
+            for (int i = 0; i < CommonOutputs.Length; i++)
+            {
+                if (string.Equals(CommonOutputs[i], key, StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Builds the event (output) port list for a block subtype: family-specific events
+        /// first, then the shared ones, de-duplicated and with anchors spread down the node
+        /// edge.
+        ///
+        /// The anchor is only a hint for the catalog order; where a port is actually drawn is
+        /// decided by <see cref="GridGraph.LayoutPorts"/>, and only for ports the user has
+        /// connected.
+        /// </summary>
+        public static void FillEvents(Node node)
+        {
+            node.Events.Clear();
 
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var ordered = new List<string>();
+            bool hasOwn = false;
 
             string family = ResolveFamily(node.SubtypeId);
             string[] specific;
@@ -150,7 +171,11 @@ namespace Vgs.Model
             {
                 for (int i = 0; i < specific.Length; i++)
                 {
-                    if (seen.Add(specific[i])) ordered.Add(specific[i]);
+                    if (seen.Add(specific[i]))
+                    {
+                        ordered.Add(specific[i]);
+                        hasOwn = true;
+                    }
                 }
             }
 
@@ -162,17 +187,21 @@ namespace Vgs.Model
             for (int i = 0; i < ordered.Count; i++)
             {
                 float anchor = ordered.Count == 1 ? 0.5f : (float)i / (ordered.Count - 1);
-                node.Outputs.Add(new Port(ordered[i], Humanize(ordered[i]), PortKind.Event, PortDirection.Output, anchor));
+                node.Events.Add(new Port(ordered[i], Humanize(ordered[i]), PortKind.Event, PortDirection.Output, anchor));
             }
+
+            // Cached here, next to the list it describes: the draw path asks this for every
+            // visible card on every frame, and re-scanning the list there would be pure waste.
+            node.CanSourceEvents = hasOwn;
         }
 
         /// <summary>
-        /// Builds input ports from the actions the block actually reports. Anchors are spread
-        /// so the ports line up with their drawn rows.
+        /// Builds the action (input) port list from the actions the block actually reports.
+        /// Anchors are spread so the ports line up with their catalog order.
         /// </summary>
-        public static void FillInputs(Node node, IList<string> actionIds)
+        public static void FillActions(Node node, IList<string> actionIds)
         {
-            node.Inputs.Clear();
+            node.Actions.Clear();
             if (actionIds == null) return;
 
             int count = actionIds.Count;
@@ -182,7 +211,7 @@ namespace Vgs.Model
                 if (string.IsNullOrEmpty(id)) continue;
 
                 float anchor = count == 1 ? 0.5f : (float)i / (count - 1);
-                node.Inputs.Add(new Port(id, Humanize(id), PortKind.Action, PortDirection.Input, anchor));
+                node.Actions.Add(new Port(id, Humanize(id), PortKind.Action, PortDirection.Input, anchor));
             }
         }
 

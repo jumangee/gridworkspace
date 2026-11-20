@@ -105,6 +105,10 @@ namespace Vgs.Game
 
             graph.LayoutUnplaced();
 
+            // Port bars are a derived view of the edges: a node that just disappeared took
+            // its edges with it, so the remaining nodes' stacks have to close up.
+            graph.LayoutPorts();
+
             VgsLog.Debug("graph refresh: " + graph.NodeCount + " nodes, " + graph.EdgeCount + " edges");
         }
 
@@ -118,9 +122,8 @@ namespace Vgs.Game
 
             var actions = new List<string>();
             node.HasTerminal = TryReadActions(block, actions);
-            BlockPortCatalog.FillInputs(node, actions);
-            BlockPortCatalog.FillOutputs(node);
-            node.Subtitle = BuildSubtitle(node);
+            BlockPortCatalog.FillActions(node, actions);
+            BlockPortCatalog.FillEvents(node);
 
             return node;
         }
@@ -136,33 +139,19 @@ namespace Vgs.Game
             if (hasTerminal != node.HasTerminal || !SameActions(node, actions))
             {
                 node.HasTerminal = hasTerminal;
-                BlockPortCatalog.FillInputs(node, actions);
-                node.Subtitle = BuildSubtitle(node);
-            }
-        }
+                BlockPortCatalog.FillActions(node, actions);
 
-        /// <summary>
-        /// Builds the node's subtitle. Lives here rather than in <see cref="Node"/> because it
-        /// needs <see cref="VgsText"/>, and the model layer deliberately has no dependency on
-        /// anything that touches the game.
-        /// </summary>
-        private static string BuildSubtitle(Node node)
-        {
-            if (node.HasTerminal)
-            {
-                return node.SubtypeId
-                    + "  ·  " + VgsText.InputsLabel + " " + node.Inputs.Count
-                    + " / " + VgsText.OutputsLabel + " " + node.Outputs.Count;
+                // FillActions replaces the Port objects, so the drawing slots computed for the
+                // old ones are gone; LayoutPorts (called at the end of Refresh) reassigns them.
             }
-            return node.SubtypeId + "  ·  " + VgsText.NoPorts;
         }
 
         private static bool SameActions(Node node, List<string> actions)
         {
-            if (node.Inputs.Count != actions.Count) return false;
+            if (node.Actions.Count != actions.Count) return false;
             for (int i = 0; i < actions.Count; i++)
             {
-                if (!string.Equals(node.Inputs[i].Key, actions[i], StringComparison.Ordinal)) return false;
+                if (!string.Equals(node.Actions[i].Key, actions[i], StringComparison.Ordinal)) return false;
             }
             return true;
         }
@@ -191,8 +180,8 @@ namespace Vgs.Game
             catch (Exception e)
             {
                 // A block whose action list cannot be read still belongs on the canvas: the
-                // node keeps its subtype and the shared output set, so the user can see it
-                // and place it even though it offers no inputs.
+                // node keeps its subtype and the shared events, so the user can see it and
+                // place it even though it offers no inputs.
                 VgsLog.Throttled("getactions", "GetActions failed", e, 300);
                 return false;
             }

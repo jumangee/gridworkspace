@@ -74,6 +74,36 @@ namespace Vgs.Ui
         private static float _apiScaleY = 1f;
         private static float _apiOffsetY;
 
+        /// <summary>
+        /// Client-area height ÷ width, both in pixels. One X unit of the layout is the window's
+        /// width in pixels; one Y unit is its height. On any window that is not square those are
+        /// different lengths, so a shape that must look round has to compensate — see
+        /// <see cref="Disc"/> and <see cref="AspectX"/>.
+        /// </summary>
+        private static float _clientAspect = 1f;
+
+        /// <summary>Client-area height in pixels; 0 when the safe area is unavailable.</summary>
+        private static float _clientHeightPixels;
+
+        /// <summary>
+        /// Client-area height ÷ width. 1 when unknown, which degrades circles to the old
+        /// unstretched look rather than to something worse.
+        /// </summary>
+        public static float ClientAspect
+        {
+            get { return _clientAspect; }
+        }
+
+        /// <summary>
+        /// Converts a length measured along Y into the X length that is the same distance on
+        /// screen. Everything round or square uses this; everything else uses plain layout
+        /// units, because a card *should* be wider than it is tall.
+        /// </summary>
+        public static float AspectX(float yExtent)
+        {
+            return yExtent * _clientAspect;
+        }
+
         /// <summary>True once <see cref="EnsureResources"/> found a usable font and brush.</summary>
         public static bool ResourcesReady
         {
@@ -249,6 +279,12 @@ namespace Vgs.Ui
                 // a vertical offset (normally zero) is involved.
                 _apiScaleY = 1f;
                 _apiOffsetY = -safe.Y / safe.Height;
+
+                // The client area is fullWidth × safe.Height pixels, so one X unit of the
+                // layout is fullWidth pixels and one Y unit is safe.Height. Round shapes need
+                // that ratio; see Disc and AspectX.
+                _clientHeightPixels = safe.Height;
+                _clientAspect = fullWidth > 0f ? safe.Height / fullWidth : 1f;
             }
             catch (Exception e)
             {
@@ -263,6 +299,11 @@ namespace Vgs.Ui
             _apiOffsetX = 0f;
             _apiScaleY = 1f;
             _apiOffsetY = 0f;
+
+            // No known aspect: assume square units. Circles then come out unstretched, which
+            // is the least wrong of the available answers.
+            _clientAspect = 1f;
+            _clientHeightPixels = 0f;
         }
 
         /// <summary>Client-area point to API point. Value types only: no allocation.</summary>
@@ -328,15 +369,189 @@ namespace Vgs.Ui
             Rect(new Vector2(position.X + size.X - thickness, position.Y), new Vector2(thickness, size.Y), color);
         }
 
+        /// <summary>
+        /// <see cref="Border"/> clipped to the canvas. Used for anything that scrolls, because
+        /// an unclipped frame paints over the header and the bottom bar — those are drawn
+        /// afterwards and would cover the overdraw, but relying on draw order to hide geometry
+        /// breaks the moment something is drawn later than them.
+        /// </summary>
+        public static void BorderClipped(Vector2 position, Vector2 size, Vector2 clipTopLeft,
+                                        Vector2 clipSize, Color color, float thickness)
+        {
+            if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
+
+            RectClipped(position, new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
+            RectClipped(new Vector2(position.X, position.Y + size.Y - thickness),
+                        new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
+            RectClipped(position, new Vector2(thickness, size.Y), clipTopLeft, clipSize, color);
+            RectClipped(new Vector2(position.X + size.X - thickness, position.Y),
+                        new Vector2(thickness, size.Y), clipTopLeft, clipSize, color);
+        }
+
+        /// <summary>
+        /// Fills the part of a rectangle that lies inside a clipping rectangle, given in
+        /// client-area coordinates.
+        ///
+        /// This is how the canvas clips itself. The screen-space API does have a scissor
+        /// (<c>MyScreenSpace.UsingScissorRectangle</c>), but it pushes and pops state into the
+        /// shared draw queue, and a mod that gets the nesting wrong floods the log with
+        /// "left N scissor rectangle(s) open". Intersecting each rectangle costs two
+        /// comparisons and cannot leave the queue unbalanced — the right trade for a canvas
+        /// whose content is small rectangles to begin with.
+        /// </summary>
+        public static void RectClipped(Vector2 position, Vector2 size, Vector2 clipTopLeft,
+                                       Vector2 clipSize, Color color)
+        {
+            if (size.X <= 0f || size.Y <= 0f) return;
+
+            float left = position.X > clipTopLeft.X ? position.X : clipTopLeft.X;
+            float top = position.Y > clipTopLeft.Y ? position.Y : clipTopLeft.Y;
+            float right = position.X + size.X;
+            float bottom = position.Y + size.Y;
+
+            float clipRight = clipTopLeft.X + clipSize.X;
+            float clipBottom = clipTopLeft.Y + clipSize.Y;
+            if (right > clipRight) right = clipRight;
+            if (bottom > clipBottom) bottom = clipBottom;
+
+            if (right <= left || bottom <= top) return;
+
+            Rect(new Vector2(left, top), new Vector2(right - left, bottom - top), color);
+        }
+
+        /// <summary>
+        /// Draws an axis-aligned segment as a filled rectangle, clipped to the canvas.
+        ///
+        /// The screen-space API has no line primitive: <c>MyScreenSpaceSprite.Draw</c> takes a
+        /// rotation, but its pivot semantics are not documented for mods and a wrong guess
+        /// rotates every connection line around the wrong point. Axis-aligned rectangles need
+        /// no such guess, and the routes drawn here are orthogonal anyway.
+        /// </summary>
+        public static void Segment(Vector2 from, Vector2 to, float thickness, Vector2 clipTopLeft,
+                                   Vector2 clipSize, Color color)
+        {
+            if (thickness <= 0f) return;
+
+            // Decided by magnitude rather than by exact equality: the router produces segments
+            // that are *meant* to be axis-aligned, and a value that came out a hair off must
+            // still be drawn along its dominant axis instead of being dropped.
+            float dx = Math.Abs(to.X - from.X);
+            float dy = Math.Abs(to.Y - from.Y);
+
+            if (dx >= dy)
+            {
+                float x = from.X < to.X ? from.X : to.X;
+                RectClipped(new Vector2(x, (from.Y + to.Y) * 0.5f - thickness * 0.5f),
+                            new Vector2(dx, thickness), clipTopLeft, clipSize, color);
+                return;
+            }
+
+            float y = from.Y < to.Y ? from.Y : to.Y;
+            RectClipped(new Vector2((from.X + to.X) * 0.5f - thickness * 0.5f, y),
+                        new Vector2(thickness, dy), clipTopLeft, clipSize, color);
+        }
+
+        /// <summary>
+        /// Draws a filled disc, clipped to the canvas. <paramref name="radius"/> is measured
+        /// along Y; the horizontal extent is derived so the result is round on screen.
+        ///
+        /// There is no circle primitive, so the disc is a stack of horizontal slabs whose
+        /// half-width follows the circle equation. Two things make it look like a circle
+        /// rather than a blob:
+        ///
+        ///  * <b>Aspect correction.</b> One X unit of the layout is the window's width, one Y
+        ///    unit its height. A shape with equal extents in both is therefore an ellipse —
+        ///    that is why the old dots read as ovals. The horizontal half-width is multiplied
+        ///    by <see cref="ClientAspect"/>.
+        ///  * <b>One slab per screen pixel.</b> The slab count comes from the disc's height in
+        ///    pixels, so each step is a single pixel and the edge reads as a curve. The old
+        ///    fixed six slabs gave steps several pixels tall, which is what looked pixelated.
+        ///    The count is bounded so a huge disc cannot cost hundreds of quads, and it falls
+        ///    back to a small fixed number when the safe area is unknown.
+        /// </summary>
+        public static void Disc(Vector2 center, float radius, Vector2 clipTopLeft, Vector2 clipSize,
+                                Color color)
+        {
+            if (radius <= 0f) return;
+
+            float xRadius = radius * _clientAspect;
+            if (xRadius <= 0f) return;
+
+            int slabs;
+            if (_clientHeightPixels > 0f)
+            {
+                // Height in pixels, one slab per pixel: the edge is then a staircase of
+                // single pixels, which the eye reads as a curve.
+                float pixels = radius * 2f * _clientHeightPixels;
+                slabs = (int)(pixels + 0.5f);
+                if (slabs < 4) slabs = 4;
+                if (slabs > MaxDiscSlabs) slabs = MaxDiscSlabs;
+            }
+            else
+            {
+                slabs = 16;
+            }
+
+            float slabHeight = (radius * 2f) / slabs;
+
+            // Slabs overlap by a hair. Adjacent slabs share an exact boundary in the
+            // arithmetic, but in single precision they can leave a sub-pixel seam, and a seam
+            // through a white button reads as a crack in it.
+            const float overlap = 1.02f;
+            float drawHeight = slabHeight * overlap;
+
+            for (int i = 0; i < slabs; i++)
+            {
+                // Centre of the slab relative to the disc centre, in radius units.
+                float dy = -radius + slabHeight * (i + 0.5f);
+                float t = dy / radius;
+                float halfWidth = xRadius * (float)Math.Sqrt(Math.Max(0.0, 1.0 - t * t));
+                if (halfWidth <= 0f) continue;
+
+                RectClipped(
+                    new Vector2(center.X - halfWidth, center.Y + dy - drawHeight * 0.5f),
+                    new Vector2(halfWidth * 2f, drawHeight),
+                    clipTopLeft, clipSize, color);
+            }
+        }
+
+        /// <summary>
+        /// Upper bound on slabs per disc. A port dot needs a handful; the "+" button needs
+        /// about thirty at 1080p. The cap keeps a very large disc — or a very tall window —
+        /// from turning one circle into hundreds of queued quads.
+        /// </summary>
+        private const int MaxDiscSlabs = 48;
+
         /// <summary>Draws text with its top-left corner at a client-area position.</summary>
         public static void Text(string text, Vector2 position, float scale, Color color)
+        {
+            Text(text, position, scale, color, float.PositiveInfinity);
+        }
+
+        /// <summary>
+        /// Draws text with its top-left corner at a client-area position, clipped to
+        /// <paramref name="maxWidth"/> (client-area units).
+        ///
+        /// The engine passes the width straight to <c>MyGuiManager.DrawString</c>, which
+        /// truncates to it, so a port label never spills over its bar. Clipping is the reason
+        /// this overload exists: measuring the string instead would call into the font
+        /// metrics for every port of every visible card, every frame.
+        /// </summary>
+        public static void Text(string text, Vector2 position, float scale, Color color, float maxWidth)
         {
             if (_font == null || string.IsNullOrEmpty(text)) return;
 
             try
             {
+                // maxWidth is a *width*, so it takes the same axis scale as a size and none of
+                // the position offset. Passing a client-area width straight through would
+                // clip the label at 1/scaleX of its bar (ADR-0009).
+                float apiMaxWidth = float.IsPositiveInfinity(maxWidth)
+                    ? float.PositiveInfinity
+                    : maxWidth * _apiScaleX;
+
                 MyScreenSpaceText.Draw(_font, text, ToApi(position), scale, color, AlignTopLeft,
-                                       float.PositiveInfinity, Layer);
+                                       apiMaxWidth, Layer);
             }
             catch (Exception e)
             {

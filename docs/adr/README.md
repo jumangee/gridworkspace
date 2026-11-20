@@ -22,10 +22,11 @@
 | [0003](0003-layering.md) | Слои и правило «Ui не читает мир при рисовании» | accepted |
 | [0004](0004-terminal-control-registration.md) | Отложенная регистрация терминального контрола | accepted |
 | [0005](0005-single-editor-screen.md) | Один экземпляр экрана редактора | accepted |
-| [0006](0006-verification-gates.md) | Шлюзы: компиляция и статическое ревью | accepted |
+| [0006](0006-verification-gates.md) | Шлюзы: компиляция, вайтлист, статическое ревью, офлайн-проверки | accepted |
 | [0007](0007-mutable-model-dtos.md) | `Vgs.Model` — изменяемые носители данных | accepted |
 | [0008](0008-mod-screen-api.md) | UI-стек: `MyModScreen` и экранное пространство мода | accepted |
 | [0009](0009-screen-coordinate-space.md) | Экранное пространство: раскладка в клиенте, отрисовка в safe-GUI | accepted |
+| [0010](0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы, режим привязки, fan-in разрешён | accepted |
 
 ## Как добавить
 

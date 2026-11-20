@@ -17,6 +17,10 @@ pwsh -File tools/verify-compile.ps1
 # Static quality gate: layering, C# 7.3, guards, draw-path allocation.
 pwsh -File tools/review-check.ps1
 
+# Behaviour gate: graph invariants, port slots, card/port geometry, wire routing.
+# Runs without starting the game; a failure names the property that broke.
+pwsh -File tools/offline-check.ps1
+
 # Deploy to the game's local mod folder for an in-game run.
 pwsh -File tools/deploy-mod.ps1
 
@@ -28,6 +32,11 @@ pwsh -File tools/tail-mod-log.ps1
 Framework 4.x references, so an overload that resolves here resolves in game. A green run
 is necessary, not sufficient: it proves the code is *callable*, not that it behaves.
 
+`offline-check.ps1` is where behaviour is actually asserted. If you change `GridGraph`,
+`PortGeometry` or `EdgeRouting`, add an assertion to `tests/OfflineChecks.cs` in the same
+change. It is a plain `Main` with comparisons — no framework, no discovery — so the cost of
+adding one is a few lines.
+
 `review-check.ps1` encodes the mechanical half of code review. Run it before handing the
 change over — a finding you fix yourself is cheaper than one the reviewer sends back.
 
@@ -37,11 +46,19 @@ change over — a finding you fix yourself is cheaper than one the reviewer send
 Vgs.Core/   VgsLog, VgsSession, VgsConstants, VgsText   — no game logic
 Vgs.Model/  Node, Port, Edge, GridGraph, BlockPortCatalog — no Sandbox.* references
 Vgs.Game/   GridGraphBuilder, VgsTerminalControls        — the only world access
-Vgs.Ui/     VgsEditorScreen                              — draws cached data only
+Vgs.Ui/     VgsEditorScreen, PortGeometry, EdgeRouting, VgsScreenDraw
+                                                         — draws cached data only
 ```
 
 Adding a `using Sandbox.ModAPI;` to `Vgs.Model` is a layering violation, not a shortcut.
 The model layer is the only part that can be reasoned about without launching the game.
+
+Card and port rectangles come from `PortGeometry` only. If you compute one in the draw pass
+and again in the hit test, the two will drift and the port will be clickable somewhere other
+than where it is drawn. Same for menu rows: `GetMenuRect`/`GetMenuRowRect` serve both.
+
+Port bars are a *derived* view of the edges — `GridGraph.LayoutPorts()` decides which ports
+are drawn. Call it after every change to the edges, never from the UI.
 
 ## 3. API traps that cost the most time
 
@@ -80,6 +97,18 @@ returns the cursor in the same safe-GUI space, so it needs the inverse conversio
 `GetNormalizedSizeFromScreenSize`, i.e. the value is already divided by the safe-GUI size.
 `MeasurePixels` is the pixel variant. Applying `PixelSizeToNormalized` to `Measure` shrinks the
 result by the safe width — that is how right-aligned text ended up outside the panel.
+
+**There is no line and no circle primitive.** `MyScreenSpaceSprite.Draw` takes `rotation`, but
+the pivot semantics of `DrawPivoted` are not documented for mods, so a rotated quad is a guess
+that rotates everything around the wrong point. `VgsScreenDraw.Segment` draws an axis-aligned
+segment as a rectangle; `VgsScreenDraw.Disc` draws a circle as a stack of slabs. Both are
+clipped by intersecting with the canvas rectangle rather than by
+`MyScreenSpace.UsingScissorRectangle`: the scissor pushes and pops state into a shared queue,
+and getting the nesting wrong makes the game log "left N scissor rectangle(s) open".
+
+**`MyScreenSpaceText.Draw`'s `maxWidth` is in the same normalized units as the position.** Pass
+it through `_apiScaleX` like a size, not like a point, or every clipped label is cut at
+`1/scaleX` of its box.
 
 **Terminal controls must be registered after the block definitions exist.** Registering in
 `Init()` silently loses the control on some load orders. `VgsSessionComponent` retries in
@@ -132,11 +161,13 @@ comment next to the code they constrain.
 
 1. `verify-compile.ps1` prints `COMPILE OK`.
 2. `review-check.ps1` prints `REVIEW OK — no findings`.
-3. No new `using` in `Vgs.Model` that references the game.
-4. Every new public type has an XML doc comment explaining its role.
-5. No unguarded game call at a boundary.
-6. If behaviour is user-visible, hand the reviewer a list of what to click and what to expect.
-7. If the change contradicts an ADR, **stop and raise it**. Do not implement around the
+3. `offline-check.ps1` prints `OFFLINE OK`, and any new graph/geometry rule has an assertion
+   in `tests/OfflineChecks.cs`.
+4. No new `using` in `Vgs.Model` that references the game.
+5. Every new public type has an XML doc comment explaining its role.
+6. No unguarded game call at a boundary.
+7. If behaviour is user-visible, hand the reviewer a list of what to click and what to expect.
+8. If the change contradicts an ADR, **stop and raise it**. Do not implement around the
    decision, and do not edit the ADR yourself — that is the architect's call, and the
    contradiction goes through the joint review in `docs/review/joint-review.md`.
 

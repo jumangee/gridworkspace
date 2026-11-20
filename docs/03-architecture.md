@@ -2,7 +2,8 @@
 
 Как устроен мод и почему именно так. Документ для тех, кто будет менять код; факты об API
 и их проверка — в [02-feasibility.md](02-feasibility.md), сырые дампы API — в
-[01-research/](01-research/), принятые решения — в [adr/](adr/).
+[01-research/](01-research/), принятые решения — в [adr/](adr/), словарь понятий —
+в [06-terminology.md](06-terminology.md).
 
 > **Документ обязан соответствовать коду.** Если изменение делает диаграмму или правило
 > неверными — диаграмма правится в том же изменении. Расхождение считается дефектом.
@@ -17,13 +18,15 @@
 |---|---|
 | [0008](adr/0008-mod-screen-api.md) | UI-стек: `MyModScreen` + экранное пространство мода (заменяет 0001) |
 | [0009](adr/0009-screen-coordinate-space.md) | Раскладка — в клиентской области, отрисовка — в safe-GUI (исправляет 0008) |
+| [0010](adr/0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы под карточкой, режим привязки, fan-in разрешён |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
 | [0004](adr/0004-terminal-control-registration.md) | Регистрация контрола отложена в `UpdateAfterSimulation` |
 | [0005](adr/0005-single-editor-screen.md) | Один экземпляр экрана редактора |
-| [0006](adr/0006-verification-gates.md) | Шлюзы: компиляция + статическое ревью |
+| [0006](adr/0006-verification-gates.md) | Шлюзы: компиляция, вайтлист, статическое ревью, офлайн-проверки |
 | [0007](adr/0007-mutable-model-dtos.md) | `Vgs.Model` — изменяемые носители данных |
+
 
 ---
 
@@ -50,8 +53,10 @@
         ├──► Vgs.Model ─── Node, Port, Edge, GridGraph, BlockPortCatalog
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
-        └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод и раскладка,
+        └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
                            │                       читает только кэш модели
+                           ├─ PortGeometry         геометрия карточки и портов
+                           ├─ EdgeRouting          маршрут линии
                            └─ VgsScreenDraw        единственное место, где
                                                    вызывается API отрисовки
 ```
@@ -155,6 +160,11 @@ classDiagram
         -float _zoom
         -Node _draggedNode
         -Node _selected
+        -Node _bindSource
+        -Node _menuTarget
+        -List~Port~ _menuRows
+        -List~string~ _menuLabels
+        -List~Vector4~ _route
         -string _statusText
         -bool _closeHot
         +OpenFor(IMyCockpit)$
@@ -163,24 +173,69 @@ classDiagram
         #OnUpdate(bool hasFocus)
         #OnHandleInput()
         #OnDraw(float transitionAlpha)
+        #OnCancelling() bool
         #OnClosed(bool isUnloading)
-        -ScreenToGraph(Vector2 p, Vector2 topLeft) Vector2
-        -HitTest(Vector2 p) Node
-        -HandleCloseButton(Vector2 mouse) bool
-        -DrawNodes(Vector2 topLeft, Vector2 size)
+        -HandleCanvasInput(Vector2) void
+        -HandleBindInput(Vector2) void
+        -HandleMenuInput(Vector2) void
+        -BeginBind(Node) void
+        -CancelBind() void
+        -OpenActionMenu(Node, Vector2) void
+        -CloseActionMenu() void
+        -TryCompleteBind(Port) bool
+        -ValidateInteractionState() void
+        -ScreenToGraph(Vector2, Vector2) Vector2
+        -HitTest(Vector2) Node
+        -HitTestPlus(Vector2) Node
+        -GetMenuRect(out Vector2, out Vector2) void
+        -DrawNodes(Vector2, Vector2) void
+        -DrawNode(Node, Vector2, Vector2, Vector2) void
+        -DrawPortBars(Node, Vector2, Vector2) void
+        -DrawEdges(Vector2, Vector2) void
+        -DrawPendingLine(Vector2, Vector2) void
+        -DrawActionMenu() void
+        -DrawPlusButton(Node, Vector2, Vector2) void
         -GetStatusText() string
         -ResolveGridName()
+    }
+
+    class PortGeometry {
+        <<static>>
+        +CardRect(Node, out Vector2, out Vector2)
+        +TryPlusButton(Node, out Vector2) bool
+        +TryPortBarRect(Node, Port, out Vector2, out Vector2) bool
+        +TryPortDot(Node, Port, float aspectX, out Vector2) bool
+        +TryPendingSourceDot(Node, Port, float aspectX, out Vector2) bool
+        +OutputStackHeight(Node) float
+        +InputStackHeight(Node) float
+        +TotalHeight(Node) float
+        +DrawnPortCount(Node, PortDirection) int
+        +HitNode(Node, Vector2) bool
+        +HitPlusButton(Node, Vector2, float aspectX) bool
+        +Contains(Vector2, Vector2, Vector2) bool
+    }
+
+    class EdgeRouting {
+        <<static>>
+        +Build(Vector2 from, Vector2 to, float gutter, List~Vector4~)
     }
 
     class VgsScreenDraw {
         <<static>>
         +bool ResourcesReady
+        +float ClientAspect
         +EnsureResources()
         +Release()
         +SyncScreenSpace()
+        +AspectX(float yExtent) float
         +Rect(Vector2 pos, Vector2 size, Color c)
+        +RectClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color)
         +Border(Vector2 pos, Vector2 size, Color c, float t)
+        +BorderClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color, float)
+        +Segment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
+        +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
         +Text(string text, Vector2 pos, float scale, Color c)
+        +Text(string text, Vector2 pos, float scale, Color c, float maxWidth)
         +TextCentered(string text, Vector2 center, float scale, Color c)
         +TextRight(string text, Vector2 rightTop, float scale, Color c)
         +Measure(string text, float scale) Vector2
@@ -188,6 +243,7 @@ classDiagram
     }
 
     class GridGraph {
+        +int MaxPortsPerSide$
         +long GridEntityId
         +int NodeCount
         +int EdgeCount
@@ -196,8 +252,11 @@ classDiagram
         +AddNode(Node) Node
         +RemoveNode(long) bool
         +TryConnect(long, string, long, string) bool
+        +HasEdge(long, string, long, string) bool
+        +CountEdgesToInput(long, string) int
+        +RemoveEdgesFromOutput(long, string) int
         +RemoveEdge(Edge) bool
-        +IsInputConnected(long, string) bool
+        +LayoutPorts()
         +LayoutUnplaced()
     }
 
@@ -205,14 +264,15 @@ classDiagram
         +long EntityId
         +string SubtypeId
         +string DisplayName
-        +string Subtitle
         +Vector2 Position
         +Vector3I GridPosition
         +bool HasTerminal
-        +List~Port~ Inputs
-        +List~Port~ Outputs
-        +FindInput(key) Port
-        +FindOutput(key) Port
+        +bool CanSourceEvents
+        +List~Port~ Actions
+        +List~Port~ Events
+        +Port PrimaryEvent
+        +FindAction(key) Port
+        +FindEvent(key) Port
     }
 
     class Port {
@@ -221,6 +281,7 @@ classDiagram
         +PortKind Kind
         +PortDirection Direction
         +float Anchor
+        +int Slot
     }
 
     class Edge {
@@ -235,8 +296,9 @@ classDiagram
         <<static>>
         +string GenericOutputKey
         +ResolveFamily(subtypeId) string
-        +FillInputs(Node, IList~string~)
-        +FillOutputs(Node)
+        +IsCommonEvent(key) bool
+        +FillActions(Node, IList~string~)
+        +FillEvents(Node)
         +Humanize(key) string
     }
 
@@ -274,6 +336,8 @@ classDiagram
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Refresh
     VgsEditorScreen --> Node
+    VgsEditorScreen --> PortGeometry : вся геометрия
+    VgsEditorScreen --> EdgeRouting : маршрут линии
     VgsEditorScreen --> IMyCubeGrid
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
 
@@ -284,11 +348,16 @@ classDiagram
 
     GridGraph "1" *-- "0..*" Node : содержит
     GridGraph "1" *-- "0..*" Edge : содержит
-    Node "1" *-- "0..*" Port : входы/выходы
+    Node "1" *-- "0..*" Port : действия/события
     Edge ..> Node : ссылается по EntityId
+    GridGraph ..> Port : LayoutPorts назначает Slot
 
     BlockPortCatalog --> Node
     BlockPortCatalog --> Port
+
+    PortGeometry ..> Node : читает Position и Slot
+    PortGeometry ..> Port : читает Slot и Direction
+    EdgeRouting ..> VgsConstants
 
     VgsLog --> VgsSession : Frame
     VgsEditorScreen --> VgsText
@@ -345,7 +414,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | Файл | Ответственность |
 |---|---|
 | `Node.cs` | `Port`, `PortKind`, `PortDirection`, `Node`, `Edge` |
-| `GridGraph.cs` | контейнер узлов и рёбер, инварианты связей |
+| `GridGraph.cs` | контейнер узлов и связей, инварианты связей, раскладка портов по слотам |
 | `BlockPortCatalog.cs` | какие порты у какого семейства блоков |
 
 Слой **не содержит** ссылок на `Sandbox.*` и `VRage.Game.ModAPI`. Это не стилистика:
@@ -356,9 +425,21 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 
 - связи хранятся по **ключу порта**, а не по индексу — добавление порта в тип блока не
   должно перекоммутировать существующие графы;
-- вход имеет не более одного источника (`IsInputConnected`);
-- петля на себя и дубликат отклоняются (`TryConnect` возвращает `false` и ничего не меняет);
-- удаление узла удаляет все его рёбра.
+- **исходящий порт уникален**: одна связь — одно событие одного блока; два разных события
+  в один исходящий порт слить нельзя (fan-out из одной точки разрешён);
+- **входящий порт общий**: несколько связей могут приходить в один вход, потому что
+  «включить» — одно действие, и просить его могут разные блоки (fan-in разрешён, см.
+  [ADR-0010](adr/0010-port-presentation-and-binding.md));
+- петля на себя, дубликат и связь на несуществующий порт отклоняются (`TryConnect`
+  возвращает `false` и ничего не меняет);
+- удаление узла удаляет все его связи;
+- **порт рисуется только при наличии связи**: `LayoutPorts()` назначает `Port.Slot` из
+  рёбер, `-1` — «не рисовать».
+
+Последний пункт — производное состояние, и это единственное место в модели, где поле
+переписывается не при создании. Поэтому `LayoutPorts()` вызывается **после любого изменения
+связей** (`GridGraphBuilder.Refresh`, `TryCompleteBind`), а не из UI: слот зависит от рёбер,
+а рёбрами владеет только граф.
 
 ### `Vgs.Game` — мост к игре
 
@@ -368,20 +449,27 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid` |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
-`Refresh` сохраняет позиции и рёбра выживших узлов и удаляет узлы уничтоженных блоков:
-именно это делает редактор устойчивым, пока игрок режет корабль.
+`Refresh` сохраняет позиции и связи выживших узлов, удаляет узлы уничтоженных блоков и
+пересчитывает слоты портов: именно это делает редактор устойчивым, пока игрок режет корабль.
 
 ### `Vgs.Ui` — экран
 
 | Файл | Ответственность |
 |---|---|
-| `VgsEditorScreen.cs` | экран: камера (`_camera`, `_zoom`), ввод, раскладка, кэш строк |
-| `VgsScreenDraw.cs` | единственная точка вызова API отрисовки; ресурсы (шрифт, кисть); перевод координат клиента ↔ safe-GUI |
+| `VgsEditorScreen.cs` | экран: камера, ввод, три режима указателя, меню действий, кэш строк |
+| `PortGeometry.cs` | геометрия карточки и портов — единственный источник правды для отрисовки **и** hit-testing |
+| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева |
+| `VgsScreenDraw.cs` | единственная точка вызова API отрисовки; ресурсы; перевод координат клиента ↔ safe-GUI |
 
 `VgsEditorScreen` наследует `MyModScreen` и переопределяет его хуки
 (`OnOpened`/`OnUpdate`/`OnHandleInput`/`OnDraw`/`OnClosed`). `VgsScreenDraw` изолирует
 `MyScreenSpace*`, держит текстуру-кисть и переводит координаты: если завтра понадобится
 другая реализация отрисовки, меняется один файл.
+
+`PortGeometry` существует потому, что прямоугольник рисуется и проверяется на попадание в
+двух разных местах. Две копии этой арифметики расходятся, и тогда порт рисуется в одном
+месте, а ловится в другом — дефект, невидимый в коде и очевидный в игре. Поэтому геометрия
+живёт в одном типе, и оба потребителя зовут его.
 
 `SyncScreenSpace()` вызывается первой строкой `OnDraw` и `OnHandleInput` и обновляет
 аффинное преобразование `layout → API` (формула — [ADR-0009](adr/0009-screen-coordinate-space.md)).
@@ -399,6 +487,27 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 (курсор), а `MyScreenSpaceText.Measure` возвращает нормализованный размер, который делится
 на тот же масштаб. Детали и формула — [ADR-0009](adr/0009-screen-coordinate-space.md),
 проверенные факты об API — [01-research/api-screen-space.md](01-research/api-screen-space.md).
+
+Отсечение по холсту сделано пересечением прямоугольников (`RectClipped`), а не
+`MyScreenSpace.UsingScissorRectangle`: scissor пишет push/pop в общую очередь отрисовки, и
+ошибка вложенности заставляет игру писать в лог «left N scissor rectangle(s) open».
+
+### Круглые вещи: пропорции экрана
+
+Один X-юнит раскладки — это ширина клиентской области, один Y-юнит — её высота. На
+неквадратном окне это **разные длины**, поэтому фигура с равными размерами по обеим осям
+рисуется эллипсом. Отсюда правило, которое нужно соблюдать всем, кто рисует что-то круглое
+или квадратное:
+
+- размер по Y задаётся в единицах раскладки как обычно;
+- размер по X получается через `VgsScreenDraw.AspectX(yExtent)`;
+- `VgsScreenDraw.Disc` компенсирует пропорции сам и рисует по одной полосе на пиксель
+  высоты — ступенька в один пиксель читается как кривая.
+
+`VgsScreenDraw.ClientAspect` (высота ÷ ширина) вычисляется в `SyncScreenSpace` из тех же
+пикселей safe-GUI, что и преобразование координат, поэтому отдельного источника правды не
+появляется. `PortGeometry` принимает пропорции **параметром**, а не читает их из слоя
+отрисовки: так модель геометрии остаётся чистой и проверяемой офлайн.
 
 ---
 
@@ -431,13 +540,26 @@ OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:
                 фон → сетка → узлы → нижняя панель → шапка
 
 OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hit-test),
-              зум колесом вокруг курсора, панорама ПКМ/СКМ,
-              выбор и перетаскивание ЛКМ (порог DragThreshold)
+              зум колесом вокруг курсора,
+              далее — один из трёх взаимоисключающих режимов:
+                обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ
+                привязка — линия за курсором, ПКМ/void сбрасывают,
+                           клик по карточке открывает меню действий
+                меню     — строки действий, колесо прокручивает,
+                           ПКМ сбрасывает привязку
 
-OnClosed()    сброс кэшей и статического указателя
+OnClosed()    сброс кэшей, ссылок на узлы и статического указателя
 ```
 
-Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызывая `OnCancelling`. При выгрузке
+Три режима — явные поля (`_bindSource`, `_menuTarget`), а не набор флагов кнопок, потому
+что режимы именно взаимоисключающие: перетаскивание, начатое во время привязки, дралось бы
+с линией за указатель, а панорама, начатая с открытым меню, уводила бы мир из-под него.
+Каждый обработчик получает управление целиком и не смешивается с остальными. Подробности и
+обоснование — [ADR-0010](adr/0010-port-presentation-and-binding.md).
+
+Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызывая `OnCancelling`. Реализация
+выходит из самого глубокого режима первым: в привязке — сбрасывает её и возвращает `false`
+(экран остаётся), в обычном режиме — возвращает `true` и закрывает редактор. При выгрузке
 сессии `VgsSessionComponent.UnloadData` вызывает `VgsEditorScreen.CloseIfOpen()` и
 `VgsScreenDraw.Release()` — иначе экран остался бы на экране, а сгенерированная текстура
 пережила бы сессию.
@@ -452,22 +574,48 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 
 Асимметрия, определяющая дизайн:
 
-- **Входы** — реальные, из `IMyTerminalBlock.GetActions()`. Работают и для блоков других
-  модов.
-- **Выходы** — синтезированные. API их перечисления не существует
+- **Входы** (действия) — реальные, из `IMyTerminalBlock.GetActions()`. Работают и для блоков
+  других модов.
+- **Выходы** (события) — синтезированные. API их перечисления не существует
   (см. [02-feasibility.md](02-feasibility.md) §3.2).
 
 `BlockPortCatalog` решает это так:
 
 1. `ResolveFamily(subtype)` — по подстроке определяет семейство (`cockpit`, `battery`, …).
    Порядок проверок от специфичного к общему: `eventcontroller` раньше `cockpit`.
-2. Для известного семейства — его специфичные выходы.
+2. Для известного семейства — его специфичные события.
 3. Для всех — общий набор (`StateChanged`, `BlockAdded`, `BlockRemoved`,
    `IntegrityChanged`, `OnOffChanged`).
-4. Неизвестный тип не остаётся пустым: получает реальные входы + общий набор.
+4. Неизвестный тип не остаётся пустым: получает реальные действия + общий набор.
 
 Ключи портов (`StateChanged`, `TriggerNow`) — стабильные идентификаторы для сохранения.
 Отображаемые имена получаются через `Humanize` (`TriggerNow` → `Trigger Now`).
+
+`FillEvents` заодно выставляет `Node.CanSourceEvents`: истинно, если у типа есть **хотя бы
+одно собственное** событие, то есть не только общий набор. Это признак «блок может
+управлять другими» и единственное условие существования кнопки «+». Общий набор есть у всех,
+поэтому он признаком быть не может — иначе кнопка оказалась бы на каждой карточке.
+
+Считать ответом на тот же вопрос флаг игры `ShowInToolbarConfig` нельзя: он говорит, что
+блок можно **приводить в действие**, то есть описывает противоположное отношение (блок как
+получатель, а не как источник).
+
+### Как порт попадает на экран
+
+Каталог отвечает «что **можно** соединить». Что **нарисовать** — решает
+`GridGraph.LayoutPorts()` по связям:
+
+1. у порта без связи слот `-1`, полоса не рисуется — поэтому блок с сорока действиями
+   выглядит как блок с четырьмя, пока к нему ничего не подключено;
+2. слоты раздаются от нуля наружу, поэтому новая полоса добавляется в конец стакана, а не
+   переставляет существующие;
+3. порядок — порядок каталога, поэтому одна и та же схема всегда рисуется одинаково;
+4. входящий порт, к которому пришло несколько связей, — **одна** полоса: первая связь даёт
+   слот, остальные только добавляют линии к его точке;
+5. сверх `MaxPortsPerSide` (6) порт не рисуется; связи при этом остаются в графе.
+
+Геометрия полос — `Vgs.Ui.PortGeometry`, словарь понятий — [06-terminology.md](06-terminology.md)
+§2.
 
 ---
 
@@ -490,22 +638,25 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 
 ---
 
-## 6. Что заложено на будущее (этапы 2–3)
+## 6. Что заложено на будущее (этап 3)
 
 Уже есть точки подключения:
 
 | Возможность | Точка расширения |
 |---|---|
-| Связи между блоками | `GridGraph.TryConnect` / `RemoveEdge` / `IsInputConnected` |
-| Отрисовка связей | `VgsEditorScreen.DrawEdges` (добавить между `DrawGrid` и `DrawNodes`) |
+| Создание и удаление связей | `GridGraph.TryConnect` / `RemoveEdge` / `RemoveEdgesFromOutput` / `HasEdge` |
+| Отрисовка связей | `VgsEditorScreen.DrawEdges` (между `DrawGrid` и `DrawNodes`) |
 | Исполнение логики | новый `Vgs.Game.GraphEvaluator` в `UpdateAfterSimulation` |
 | Генерация событий | новый `Vgs.Game.EventSources` (поллинг состояния + сравнение) |
 | Сохранение | `VgsSessionComponent.LoadData/SaveData` + `MyModStorageComponent` |
 | Синхронизация | `MyAPIGateway.Multiplayer.RegisterSecureMessageHandler` |
+| Удаление связи мышью | hit-test по маршруту из `EdgeRouting.Build`; у линии уже есть геометрия |
 | Новые виджеты (скроллбар, поле ввода) | новые методы `VgsScreenDraw`; штатных контролов в разрешённом API нет |
 
 Сохранение намеренно не реализовано: формат графа должен устояться после этапа 3,
-иначе первая же версия станет несовместимой с собой.
+иначе первая же версия станет несовместимой с собой. Что уже можно считать устойчивым —
+ключи портов (`Port.Key`) и направление связи: они и попадут в сохранение, а `Port.Slot` —
+нет, потому что это производное от связей состояние.
 
 ---
 
@@ -517,10 +668,14 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 | Нормализованные координаты клиента | Safe-GUI примиряется в одном месте (`VgsScreenDraw`), но каждый кадр нужен `SyncScreenSpace` | [0008](adr/0008-mod-screen-api.md), [0009](adr/0009-screen-coordinate-space.md) |
 | Своя текстура-кисть 4×4 | Заливка требует материала; при недоступности `GeneratedTextures` — деградация | [0008](adr/0008-mod-screen-api.md) |
 | Обновление по интервалу | Список блоков отстаёт до ~1.5 с | [0003](adr/0003-layering.md) |
-| Курируемая таблица выходов | Неизвестный тип блока показывает общий набор, а не точный | [0002](adr/0002-port-model.md) |
+| Курируемая таблица событий | Неизвестный тип блока показывает общий набор, а не точный | [0002](adr/0002-port-model.md) |
 | `Vgs.Model` без игровых ссылок | Нужны конвертеры на границе `Vgs.Game` | [0003](adr/0003-layering.md) |
 | Изменяемые поля в `Vgs.Model` | Новое mutable-поле требует подавления правила с причиной | [0007](adr/0007-mutable-model-dtos.md) |
 | Один экран на мод (`_openEditor`) | Нельзя открыть два грида одновременно (осознанно) | [0005](adr/0005-single-editor-screen.md) |
+| Порт рисуется только при связи | Слот — производное состояние: забытый `LayoutPorts()` даёт полосу без линии | [0010](adr/0010-port-presentation-and-binding.md) |
+| Fan-in разрешён | Один вход может иметь несколько источников — вычислитель обязан это учитывать | [0010](adr/0010-port-presentation-and-binding.md) |
+| Линия — ортогональные прямоугольники | Нет скруглений и диагоналей; зато нет угадывания семантики `rotation` | [0010](adr/0010-port-presentation-and-binding.md) |
+| Отсечение пересечением, не scissor | Лишние вызовы `Rect` для далёких прямоугольников; зато очередь отрисовки не разбалансируется | [0010](adr/0010-port-presentation-and-binding.md) |
 
 ---
 

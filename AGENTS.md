@@ -9,9 +9,11 @@
 2. [`docs/ROADMAP.md`](docs/ROADMAP.md) — что делаем сейчас и критерии приёмки.
 3. [`docs/03-architecture.md`](docs/03-architecture.md) — диаграмма классов, слои,
    правила зависимостей.
-4. [`docs/adr/`](docs/adr/) — принятые решения. Код, противоречащий принятому ADR, —
+4. [`docs/06-terminology.md`](docs/06-terminology.md) — словарь: блок, узел, карточка,
+   порт, связь, режимы указателя. Одно слово — одно значение.
+5. [`docs/adr/`](docs/adr/) — принятые решения. Код, противоречащий принятому ADR, —
    дефект, пока ADR не заменён новым.
-5. [`docs/05-agents.md`](docs/05-agents.md) — своя роль и границы ответственности.
+6. [`docs/05-agents.md`](docs/05-agents.md) — своя роль и границы ответственности.
 
 Своя роль определяет, что можно и чего нельзя. Кратко: **архитектор решает, программист
 делает, ревьюер судит качество и соответствие решению.** Никто не проверяет свою работу.
@@ -59,6 +61,7 @@
 pwsh -File tools/verify-compile.ps1      # должен напечатать COMPILE OK
 pwsh -File tools/check-whitelist.ps1     # должен напечатать WHITELIST OK
 pwsh -File tools/review-check.ps1        # должен быть без находок
+pwsh -File tools/offline-check.ps1       # должен напечатать OFFLINE OK
 ```
 
 Компиляция доказывает вызываемость, но не допустимость: типы `Sandbox.Graphics.*`
@@ -71,12 +74,19 @@ pwsh -File tools/review-check.ps1        # должен быть без нахо
 игроку, — передайте ревьюеру список «что нажать и что ожидать». «Работает» не является
 критерием.
 
+`offline-check.ps1` — единственный шлюз, который проверяет **логику**, а не форму: слоты
+портов, геометрию карточки и портов, маршрут линии. Он собирает `tests/OfflineChecks.cs`
+вместе с `Vgs.Model` и двумя геометрическими типами и запускает результат, не поднимая игру.
+Новое правило графа или геометрии — новое утверждение там же, иначе оно проверяется только
+человеком в игре.
+
 ## Команды
 
 ```powershell
 pwsh -File tools/verify-compile.ps1        # компиляция против реальных сборок игры
 pwsh -File tools/check-whitelist.ps1       # сверка ссылок с вайтлистом скриптов
 pwsh -File tools/review-check.ps1          # статические правила качества R001–R010
+pwsh -File tools/offline-check.ps1         # офлайн-проверки графа и геометрии
 pwsh -File tools/deploy-mod.ps1            # деплой в %APPDATA%\SpaceEngineers\Mods
 pwsh -File tools/tail-mod-log.ps1          # строки [VGS] из последнего лога
 pwsh -File tools/dump-se-api.ps1 -Types '...'   # публичный контракт типа
