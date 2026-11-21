@@ -172,6 +172,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== block group frame geometry (ADR-0015) ===");
         GroupGeometry();
 
+        Console.WriteLine("=== dragging a group by its title strip (ADR-0016) ===");
+        GroupDrag();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -1732,5 +1735,96 @@ internal static class OfflineChecks
         Vector2 ignoredTopLeft, ignoredSize;
         Check(!PortGeometry.TryBodyRect(orphan, out ignoredTopLeft, out ignoredSize),
               "a group with no frame reports no body rectangle");
+    }
+
+    /// <summary>
+    /// Dragging a group by its title strip (ADR-0016): the whole cluster translates, the
+    /// members keep their positions relative to each other, the frame follows, and nothing
+    /// outside the group moves.
+    ///
+    /// These are the properties the player judges by eye — "the group moved together" — and
+    /// they are decidable without the game, which is why they are asserted here instead of
+    /// being discovered on a ship.
+    /// </summary>
+    private static void GroupDrag()
+    {
+        var graph = new GridGraph(12);
+        Node a = MakeTarget(1, "LargeBlockConveyor");
+        Node b = MakeTarget(2, "LargeBlockConveyor");
+        Node outside = MakeTarget(3, "LargeBlockConveyor");
+        graph.AddNode(a);
+        graph.AddNode(b);
+        graph.AddNode(outside);
+
+        a.Position = new Vector2(0.10f, 0.20f);
+        b.Position = new Vector2(0.40f, 0.35f);
+        outside.Position = new Vector2(0.80f, 0.10f);
+
+        var members = new List<long> { 1, 2 };
+        var actions = new List<GroupMemberActions> { EnabledMember("MyConveyor", false, "OnOff") };
+        Node group = graph.SyncGroup("Belt", members, actions);
+        graph.LayoutPorts();
+        PortGeometry.LayoutGroupFrames(graph);
+
+        Vector2 frameBefore, sizeBefore;
+        Check(PortGeometry.TryBodyRect(group, out frameBefore, out sizeBefore), "the group has a frame before the drag");
+
+        // The relative layout of the members, recorded so the drag can be checked against it.
+        Vector2 relativeBefore = b.Position - a.Position;
+
+        Vector2 delta = new Vector2(0.07f, -0.03f);
+        Check(graph.OffsetGroupMembers(group, delta) == 2,
+              "dragging a group moves every drawn member");
+
+        CheckClose(a.Position.X, 0.10f + delta.X, "the first member moves by the drag offset in X");
+        CheckClose(a.Position.Y, 0.20f + delta.Y, "the first member moves by the drag offset in Y");
+        CheckClose(b.Position.X, 0.40f + delta.X, "the second member moves by the same offset in X");
+        CheckClose(b.Position.Y, 0.35f + delta.Y, "the second member moves by the same offset in Y");
+
+        Vector2 relativeAfter = b.Position - a.Position;
+        CheckClose(relativeAfter.X, relativeBefore.X, "the members keep their relative X");
+        CheckClose(relativeAfter.Y, relativeBefore.Y, "the members keep their relative Y");
+
+        CheckClose(outside.Position.X, 0.80f, "a card outside the group does not move in X");
+        CheckClose(outside.Position.Y, 0.10f, "a card outside the group does not move in Y");
+
+        // The frame is derived, so it has to follow the cards — and only translate, not resize:
+        // a translation cannot change the cluster's extent.
+        PortGeometry.LayoutGroupFrames(graph);
+        Vector2 frameAfter, sizeAfter;
+        Check(PortGeometry.TryBodyRect(group, out frameAfter, out sizeAfter), "the group still has a frame");
+        CheckClose(frameAfter.X, frameBefore.X + delta.X, "the frame follows the group horizontally");
+        CheckClose(frameAfter.Y, frameBefore.Y + delta.Y, "the frame follows the group vertically");
+        CheckClose(sizeAfter.X, sizeBefore.X, "a translated group keeps its width");
+        CheckClose(sizeAfter.Y, sizeBefore.Y, "a translated group keeps its height");
+
+        // A member that is not drawn has no card, so it is not in Members and must not move:
+        // the canvas moves what the player can see, and a hidden block must stay where its own
+        // stored position says.
+        var partialMembers = new List<long> { 1 };
+        Node partial = graph.SyncGroup("Belt", partialMembers, actions);
+        Vector2 beforeHidden = b.Position;
+        Check(graph.OffsetGroupMembers(partial, new Vector2(0.05f, 0.05f)) == 1,
+              "a group with one drawn member moves one card");
+        CheckClose(b.Position.X, beforeHidden.X, "a member that is not drawn does not move in X");
+        CheckClose(b.Position.Y, beforeHidden.Y, "a member that is not drawn does not move in Y");
+
+        // Degenerate inputs: no offset, and a node that is not a group. Both are no-ops rather
+        // than errors, because the caller is a pointer handler.
+        Check(graph.OffsetGroupMembers(partial, Vector2.Zero) == 0, "a zero offset moves nothing");
+        Check(graph.OffsetGroupMembers(a, new Vector2(0.1f, 0.1f)) == 0, "a card is not a group");
+
+        // The title strip is the drag handle, and only it: the frame's interior stays canvas so
+        // the cluster can still be panned across.
+        PortGeometry.LayoutGroupFrames(graph);
+        Vector2 titleTopLeft, titleSize;
+        Check(PortGeometry.TryGroupTitleRect(partial, out titleTopLeft, out titleSize),
+              "the group has a title strip to grab");
+        Check(PortGeometry.HitGroupTitle(partial, titleTopLeft + new Vector2(titleSize.X * 0.5f, titleSize.Y * 0.5f)),
+              "the title strip is a drag handle");
+        Check(!PortGeometry.HitGroupTitle(partial, titleTopLeft + new Vector2(titleSize.X * 0.5f, titleSize.Y + 0.05f)),
+              "the strip below the title is not a drag handle");
+        Check(!PortGeometry.HitGroupTitle(a, a.Position + new Vector2(0.01f, 0.01f)),
+              "a card has no title strip");
     }
 }

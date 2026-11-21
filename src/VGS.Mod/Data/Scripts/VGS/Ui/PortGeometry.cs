@@ -235,6 +235,22 @@ namespace Vgs.Ui
             return true;
         }
 
+        /// <summary>
+        /// True when a graph-space point is on a group's title strip — the handle the group is
+        /// dragged by (ADR-0016).
+        ///
+        /// It is the same rectangle the name is drawn in, and it exists as a method of its own
+        /// because the hit test and the drag gesture must agree on it to the pixel: a strip
+        /// that is drawn in one place and grabbed in another makes the group feel unresponsive
+        /// at its edges.
+        /// </summary>
+        public static bool HitGroupTitle(Node group, Vector2 graphPoint)
+        {
+            Vector2 titleTopLeft, titleSize;
+            if (!TryGroupTitleRect(group, out titleTopLeft, out titleSize)) return false;
+            return Contains(titleTopLeft, titleSize, graphPoint);
+        }
+
         /// <summary>Vertical distance from one port bar to the next in the same stack.</summary>
         public static float PortBarStride
         {
@@ -639,8 +655,9 @@ namespace Vgs.Ui
         /// <b>A group is not hit through its whole frame.</b> Only the title strip and the port
         /// bars count; the interior of the frame belongs to the member cards, and the gaps
         /// between them stay canvas. A frame that swallowed every click inside it would make
-        /// panning across a grouped cluster impossible, and a group cannot be dragged anyway —
-        /// its frame follows its members.
+        /// panning across a grouped cluster impossible. The title strip is also the group's
+        /// drag handle (<see cref="HitGroupTitle"/>, ADR-0016) — that is why the strip, and not
+        /// the frame, is what the pointer can take hold of.
         /// </summary>
         public static bool HitNode(Node node, Vector2 graphPoint)
         {
@@ -648,12 +665,7 @@ namespace Vgs.Ui
 
             if (node.IsGroup)
             {
-                Vector2 titleTopLeft, titleSize;
-                if (TryGroupTitleRect(node, out titleTopLeft, out titleSize)
-                    && Contains(titleTopLeft, titleSize, graphPoint))
-                {
-                    return true;
-                }
+                if (HitGroupTitle(node, graphPoint)) return true;
             }
             else
             {

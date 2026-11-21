@@ -260,6 +260,9 @@ classDiagram
         -float _zoom
         -Node _draggedNode
         -Node _selected
+        -Node _draggedGroup
+        -Vector2 _groupDragAnchor
+        -Vector2 _groupDragLast
         -Node _bindSource
         -Port _bindPort
         -PortGroup _bindGroup
@@ -283,6 +286,7 @@ classDiagram
         #OnCancelling() bool
         #OnClosed(bool isUnloading)
         -HandleCanvasInput(Vector2) void
+        -SaveGroupPositions(Node) void
         -HandleBindInput(Vector2) void
         -HandleMenuInput(Vector2) void
         -BeginBind(Node, PortGroup) void
@@ -334,6 +338,7 @@ classDiagram
         +TryBodyRect(Node, out Vector2, out Vector2) bool
         +TryGroupFrame(Node, GridGraph, out Vector2, out Vector2) bool
         +TryGroupTitleRect(Node, out Vector2, out Vector2) bool
+        +HitGroupTitle(Node, Vector2) bool
         +LayoutGroupFrames(GridGraph)
         +LayoutGroupFrame(GridGraph, Node)
         +LayoutFramesContaining(GridGraph, Node)
@@ -399,6 +404,7 @@ classDiagram
         +ContainsNode(Node) bool
         +GetTargetNode(Edge) Node
         +SyncGroup(string, List~long~, IList~GroupMemberActions~) Node
+        +OffsetGroupMembers(Node, Vector2) int
         +RemoveGroup(string) bool
         -RemoveEdgesToMissingGroupPorts(string)
         +TryConnect(long, string, long, string, ToolbarCell) bool
@@ -584,6 +590,7 @@ classDiagram
     GridGraph ..> Port : LayoutPorts назначает Slot
     GridGraph ..> ToolbarLayout : проверяет ячейку
     GridGraph ..> GroupMemberActions : правило действий группы
+    GridGraph ..> Node : OffsetGroupMembers двигает участников
     Node ..> NodeKind : различает блок и группу
 
     BlockPortCatalog --> Node
@@ -776,8 +783,18 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 производна от позиций, но пересчитывать её каждый кадр значило бы делать работу, которую никто
 не просил. При перетаскивании карточки пересчитываются только рамки групп, в которые она
 входит (`LayoutFramesContaining`), иначе стоимость одного движения указателя росла бы с числом
-групп на корабле. Перетаскивать рамку нельзя: она не хранит собственной позиции, потому что
-хранить её негде — у группы нет сущности.
+групп на корабле. При переносе группы пересчитываются **все** рамки (`LayoutGroupFrames`):
+участник может входить в несколько групп, и рамки остальных обязаны сдвинуться вместе с ним;
+стоимость ограничена `VgsConstants.MaxGroupsScanned` и платится только пока указатель движется.
+
+**Рамка не хранит позиции** — хранить её негде, у группы нет сущности. Поэтому перенос группы
+([ADR-0016](adr/0016-group-drag.md)) сделан не как перенос рамки, а как **одно смещение,
+применённое ко всем нарисованным участникам** (`GridGraph.OffsetGroupMembers`): взаимное
+расположение карточек сохраняется точно, рамка встаёт на новое место сама, а позиции
+записываются на блоки при отпускании кнопки — по одной на участника, как у карточки
+([ADR-0012](adr/0012-layout-lives-on-the-block.md)). Ручка переноса — только полоса имени
+(`PortGeometry.HitGroupTitle`); внутренность рамки и промежутки между карточками остаются
+холстом.
 
 `HitNode` для группы смотрит **только полосу имени и полосы портов**, не внутренность рамки:
 внутренность принадлежит карточкам участников, а промежутки между ними — холсту. Иначе
@@ -890,8 +907,9 @@ OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hi
                            отпускание после перетаскивания пишет позицию в блок
                            (NodeStateStore.SavePosition); клик по «x» на полосе
                            снимает связи этого порта (RemovePortConnections).
-                           Группа выбирается, но не перетаскивается: её рамка
-                           следует за участниками (ADR-0015)
+                           Группа перетаскивается за полосу имени: одно смещение
+                           на всех нарисованных участников, рамка следует за ними
+                           (ADR-0016); внутренность рамки остаётся холстом
                 привязка — линия за курсором, ПКМ/void сбрасывают,
                            клик по карточке или по полосе имени группы открывает
                            меню действий
@@ -904,7 +922,8 @@ OnClosed()    сброс кэшей, ссылок на узлы и статич�
 Позиция пишется **на отпускании кнопки**, а не на каждом движении и не в `OnClosed`. На каждом
 движении это шестьдесят записей в секунду; в `OnClosed` — потеря раскладки при выходе в главное
 меню и при выгрузке сессии, когда `OnClosed` не приходит вовсе. Это ровно тот случай, который
-игрок замечает.
+игрок замечает. Для группы это N записей — по одной на участника, потому что собственной
+позиции у группы нет ([ADR-0016](adr/0016-group-drag.md)).
 
 Три режима — явные поля (`_bindSource`, `_menuTarget`), а не набор флагов кнопок, потому
 что режимы именно взаимоисключающие: перетаскивание, начатое во время привязки, дралось бы

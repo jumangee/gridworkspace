@@ -258,6 +258,46 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// Moves every drawn member card of a group by the same offset and returns how many
+        /// cards moved. This is what dragging a group by its title strip does (ADR-0016).
+        ///
+        /// <b>One offset for all members, never a per-card target.</b> The group's promise is
+        /// that its blocks belong together, so the operation is a translation of the whole
+        /// cluster: each card keeps its position relative to the others, and the frame — which
+        /// is derived from the cards — follows without being written to. The alternative,
+        /// moving the frame and re-deriving the cards from it, would need a scale factor the
+        /// player never asked for and would drift the cards apart the first time a member was
+        /// hidden.
+        ///
+        /// <b>Only drawn members move.</b> <see cref="Node.Members"/> lists exactly the members
+        /// present in the graph; a member hidden with "Show in VGS" or living on a subgrid has
+        /// no card, so it cannot be dragged and keeps its stored position. That is deliberate:
+        /// the canvas shows what moves, and a hidden block reappearing somewhere else would be
+        /// a surprise.
+        ///
+        /// A member that belongs to two groups moves with whichever one is dragged, and the
+        /// other group's frame grows or shifts to contain it — the frames are recomputed from
+        /// the cards, so nothing is left inconsistent. Returns zero for a non-group node, so a
+        /// caller that passes the wrong node changes nothing.
+        /// </summary>
+        public int OffsetGroupMembers(Node group, Vector2 delta)
+        {
+            if (group == null || !group.IsGroup) return 0;
+            if (delta.X == 0f && delta.Y == 0f) return 0;
+
+            int moved = 0;
+            for (int i = 0; i < group.Members.Count; i++)
+            {
+                Node member = GetNode(group.Members[i]);
+                if (member == null || member.IsGroup) continue;
+
+                member.Position = member.Position + delta;
+                moved++;
+            }
+            return moved;
+        }
+
+        /// <summary>
         /// Drops the edges that end on a group port the group no longer has.
         ///
         /// Called only when the group's action list actually changed, so the ordinary refresh

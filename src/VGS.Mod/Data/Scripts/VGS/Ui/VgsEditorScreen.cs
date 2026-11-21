@@ -25,7 +25,9 @@ namespace Vgs.Ui
     ///
     ///  * <i>idle</i> — left button selects and drags cards, right/middle button pans, wheel
     ///    zooms. Clicking the round "+" on a card switches to bind mode; clicking the "x" on a
-    ///    port deletes that port's connections.
+    ///    port deletes that port's connections. A group's title strip is a drag handle: grabbing
+    ///    it moves every member card by the same offset, keeping the cluster's internal layout
+    ///    (ADR-0016).
     ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
     ///    The button does not have to be held. Left click on another card opens the action
     ///    menu for it; right click cancels; left click elsewhere cancels.
@@ -137,6 +139,33 @@ namespace Vgs.Ui
         private bool _panning;
         private Vector2 _panAnchor;
         private Node _selected;
+
+        /// <summary>
+        /// Group being dragged by its title strip, or null (ADR-0016).
+        ///
+        /// A group has no card of its own — its frame is derived from its members' cards — so it
+        /// cannot be dragged the way a block is (write a position, let the picture follow).
+        /// Dragging a group means translating every member card by the same offset, which
+        /// <see cref="GridGraph.OffsetGroupMembers"/> does; the frame then follows by itself on
+        /// the next layout pass.
+        ///
+        /// Kept apart from <see cref="_draggedNode"/> rather than folded into it, because the
+        /// two drags write to different things: one position on one node, versus one offset on
+        /// every member. A shared field would need a branch at each of the four places the drag
+        /// is used (start, threshold, move, save).
+        /// </summary>
+        private Node _draggedGroup;
+
+        /// <summary>
+        /// Pointer position, in graph units, where the group drag started and where it last was.
+        ///
+        /// Both are needed and they are not the same point: the anchor measures the drag
+        /// threshold ("has the pointer moved far enough to count as a drag"), while the last
+        /// position measures this frame's movement. Using the anchor for both would apply the
+        /// whole displacement again on every pointer move.
+        /// </summary>
+        private Vector2 _groupDragAnchor;
+        private Vector2 _groupDragLast;
 
         /// <summary>Source card of a bind in progress. Non-null means bind mode is active.</summary>
         private Node _bindSource;
@@ -448,6 +477,7 @@ namespace Vgs.Ui
                 if (ReferenceEquals(_openEditor, this)) _openEditor = null;
 
                 _draggedNode = null;
+                _draggedGroup = null;
                 _selected = null;
                 _bindSource = null;
                 _bindPort = null;
@@ -627,6 +657,16 @@ namespace Vgs.Ui
         {
             if (_selected != null && !_graph.ContainsNode(_selected)) _selected = null;
             if (_draggedNode != null && !_graph.ContainsNode(_draggedNode)) _draggedNode = null;
+
+            // A refresh can dissolve the group the user is dragging — its last drawn member was
+            // hidden, or the group was renamed in the terminal. The reference stays valid as an
+            // object, so without this the drag would keep translating a frame that is no longer
+            // on the canvas.
+            if (_draggedGroup != null && !_graph.ContainsNode(_draggedGroup))
+            {
+                _draggedGroup = null;
+                _dragging = false;
+            }
 
             if (_hoverRemoveNode != null)
             {
@@ -823,10 +863,32 @@ namespace Vgs.Ui
                 Node hit = HitTest(graphPos);
                 _selected = hit;
 
-                // A group is selected but never dragged: its frame is derived from the cards
-                // of its members, so moving it would either move nothing or silently detach it
-                // from the blocks it names. Dragging a member moves the frame instead.
-                if (hit != null && !hit.IsGroup)
+                // Only one drag can be in progress: a card drag and a group drag write to
+                // different things (one position versus one offset on every member), and both
+                // running at once would move the same card twice per frame. Clearing the other
+                // field here is cheaper than defending every use site against a stale one.
+                _draggedNode = null;
+                _draggedGroup = null;
+
+                // Two kinds of drag, and which one starts is decided by what was grabbed:
+                //
+                //  * a card is dragged by its body, and the node's own position follows the
+                //    pointer;
+                //  * a group is dragged by its title strip only (ADR-0016). The interior of the
+                //    frame belongs to the member cards and the gaps between them stay canvas, so
+                //    a click there still selects nothing and pans — a frame that swallowed those
+                //    clicks would make the cluster impossible to pan across.
+                if (hit != null && hit.IsGroup)
+                {
+                    if (PortGeometry.HitGroupTitle(hit, graphPos))
+                    {
+                        _draggedGroup = hit;
+                        _groupDragAnchor = graphPos;
+                        _groupDragLast = graphPos;
+                        _dragging = false;
+                    }
+                }
+                else if (hit != null)
                 {
                     _draggedNode = hit;
                     _dragGrabOffset = graphPos - hit.Position;
@@ -857,6 +919,37 @@ namespace Vgs.Ui
                 }
             }
 
+            if (leftDown && _draggedGroup != null)
+            {
+                Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+                // The threshold is measured from where the strip was grabbed, not from the
+                // previous frame: a slow drag would otherwise never accumulate enough movement
+                // to start.
+                if (!_dragging && (graphPos - _groupDragAnchor).Length() > VgsConstants.DragThreshold)
+                {
+                    _dragging = true;
+                }
+
+                if (_dragging)
+                {
+                    Vector2 delta = graphPos - _groupDragLast;
+                    _groupDragLast = graphPos;
+
+                    // One offset for the whole cluster: the members keep their positions
+                    // relative to each other, which is the entire point of dragging a group
+                    // rather than its cards one by one.
+                    if (_graph.OffsetGroupMembers(_draggedGroup, delta) > 0)
+                    {
+                        // Every frame is derived from member cards, so all of them are
+                        // recomputed: a card may belong to more than one group, and the frames
+                        // of the others have to follow it too. Bounded by the group count and
+                        // only while the pointer is actually moving.
+                        PortGeometry.LayoutGroupFrames(_graph);
+                    }
+                }
+            }
+
             if (leftReleased)
             {
                 // Where the user dropped the card is written to the block here, on release.
@@ -864,10 +957,39 @@ namespace Vgs.Ui
                 // can be a session unload, which never reaches OnClosed at all, and that is
                 // exactly when a player would notice the layout was lost (ADR-0012).
                 if (_dragging && _draggedNode != null) NodeStateStore.SavePosition(_draggedNode);
+                if (_dragging && _draggedGroup != null) SaveGroupPositions(_draggedGroup);
 
                 _draggedNode = null;
+                _draggedGroup = null;
                 _dragging = false;
             }
+        }
+
+        /// <summary>
+        /// Writes the new position of every member card of a dragged group to its block
+        /// (ADR-0012, ADR-0016).
+        ///
+        /// A group has nowhere to store a position: it is not an entity and has no mod storage.
+        /// The group's layout *is* its members' layouts, so saving the group means saving each
+        /// member — and that is also what makes a dragged group survive a reload exactly like a
+        /// dragged card.
+        ///
+        /// Members whose block disappeared mid-drag are skipped: <see cref="NodeStateStore.SavePosition"/>
+        /// reports that as false, which is a normal outcome, not an error.
+        /// </summary>
+        private void SaveGroupPositions(Node group)
+        {
+            if (group == null) return;
+
+            int saved = 0;
+            for (int i = 0; i < group.Members.Count; i++)
+            {
+                Node member = _graph.GetNode(group.Members[i]);
+                if (member == null || member.IsGroup) continue;
+                if (NodeStateStore.SavePosition(member)) saved++;
+            }
+
+            VgsLog.Info("group '" + group.GroupName + "' moved: " + saved + " card position(s) saved");
         }
 
         /// <summary>
