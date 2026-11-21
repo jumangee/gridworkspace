@@ -24,7 +24,8 @@ namespace Vgs.Ui
     /// <b>Interaction model</b> (three modes, one pointer):
     ///
     ///  * <i>idle</i> — left button selects and drags cards, right/middle button pans, wheel
-    ///    zooms. Clicking the round "+" on a card switches to bind mode.
+    ///    zooms. Clicking the round "+" on a card switches to bind mode; clicking the "x" on a
+    ///    port deletes that port's connections.
     ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
     ///    The button does not have to be held. Left click on another card opens the action
     ///    menu for it; right click cancels; left click elsewhere cancels.
@@ -91,8 +92,13 @@ namespace Vgs.Ui
         /// 1080p). Horizontal lines keep that thickness; vertical lines are drawn from a width,
         /// so the layout-to-API transform scales them by its horizontal factor (about 1.2 on a
         /// 16:10 window) and they read slightly thicker.
+        ///
+        /// The reference height is shared with the port-control gap
+        /// (<see cref="VgsConstants.ReferenceHeightPixels"/>): both are "N pixels at 1080p", and
+        /// two different references would make the editor's hairlines and its port gaps disagree
+        /// on every other resolution.
         /// </summary>
-        private const float Hairline = 1f / 1080f;
+        private const float Hairline = 1f / VgsConstants.ReferenceHeightPixels;
 
         /// <summary>
         /// The editor currently on screen, if any.
@@ -158,6 +164,30 @@ namespace Vgs.Ui
 
         /// <summary>Which of the hovered node's bind buttons is under the pointer.</summary>
         private PortGroup _hoverGroup;
+
+        /// <summary>
+        /// Node whose port carries the remove button under the pointer, or null. Tracked
+        /// separately from <see cref="_hoverNode"/> because the button belongs to a *port*,
+        /// not to the card: the highlight has to land on the small disc, not on the whole bar.
+        /// </summary>
+        private Node _hoverRemoveNode;
+
+        /// <summary>Port whose remove button is under the pointer, or null.</summary>
+        private Port _hoverRemovePort;
+
+        /// <summary>
+        /// Edges collected for a removal click. Reused so that clicking a remove button does
+        /// not allocate: the list is emptied before each collection and after each use.
+        /// </summary>
+        private readonly List<Edge> _removeBuffer = new List<Edge>();
+
+        /// <summary>
+        /// Height of one line of port-label text at <see cref="_portLabelHeightZoom"/>, in
+        /// client-area units. Cached per zoom level: see <see cref="PortLabelHeight"/>.
+        /// </summary>
+        private float _portLabelHeight;
+
+        private float _portLabelHeightZoom = -1f;
 
         /// <summary>
         /// Last failure to write a connection, and the frame it stops being shown.
@@ -408,9 +438,14 @@ namespace Vgs.Ui
                 _gridNameCache = null;
                 _hoverNode = null;
                 _hoverPlus = null;
+                _hoverRemoveNode = null;
+                _hoverRemovePort = null;
                 _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
+                _removeBuffer.Clear();
+                _portLabelHeight = 0f;
+                _portLabelHeightZoom = -1f;
 
                 if (!isUnloading) VgsLog.Info("editor closed");
             }
@@ -564,6 +599,27 @@ namespace Vgs.Ui
             if (_selected != null && !_graph.Contains(_selected.EntityId)) _selected = null;
             if (_draggedNode != null && !_graph.Contains(_draggedNode.EntityId)) _draggedNode = null;
 
+            if (_hoverRemoveNode != null)
+            {
+                // The refresh can remove the block *and* rebuild its port list (a changed action
+                // set replaces every Port object). Re-resolve by key instead of comparing
+                // references: the gesture is still meaningful as long as the port survives, and
+                // a stale object would leave the highlight on a bar that no longer exists.
+                if (!_graph.Contains(_hoverRemoveNode.EntityId))
+                {
+                    _hoverRemoveNode = null;
+                    _hoverRemovePort = null;
+                }
+                else if (_hoverRemovePort != null)
+                {
+                    Port live = _hoverRemovePort.Direction == PortDirection.Output
+                        ? _hoverRemoveNode.FindEvent(_hoverRemovePort.Key)
+                        : _hoverRemoveNode.FindAction(_hoverRemovePort.Key);
+                    _hoverRemovePort = live;
+                    if (live == null) _hoverRemoveNode = null;
+                }
+            }
+
             if (_bindSource != null && !_graph.Contains(_bindSource.EntityId)) CancelBind();
 
             // A bind holds a specific port object, chosen when it started. A refresh that
@@ -707,12 +763,23 @@ namespace Vgs.Ui
 
             if (_panning && !rightDown && !middleDown) _panning = false;
 
-            // ---- hover: the bind button and the card under the pointer ----
+            // ---- hover: the remove button, the bind button and the card ----
             UpdateHover(mouse, canvasTopLeft, canvasSize);
 
             if (leftNew && insideCanvas)
             {
                 Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+                // The remove button is the smallest target on the canvas and it sits on a bar
+                // that otherwise belongs to the card, so it is resolved before anything else:
+                // a click meant to delete a connection must not select or drag the block.
+                Port removePort;
+                Node removeNode = HitTestRemoveButton(graphPos, out removePort);
+                if (removeNode != null)
+                {
+                    RemovePortConnections(removeNode, removePort);
+                    return;
+                }
 
                 // The bind button wins over the card underneath: it sits on the card's right
                 // edge and starting a drag instead of a bind would be maddening.
@@ -805,6 +872,13 @@ namespace Vgs.Ui
             // a click on chrome.
             _hoverNode = insideCanvas ? HitTest(graphPos) : null;
             _hoverPlus = null;
+
+            // The remove button is a click target of the idle mode only: while binding, every
+            // click picks the target, and a bar (with its button) counts as its block. Clearing
+            // the highlight here is what stops a disc from looking clickable in a mode where it
+            // is not.
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
 
             if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
 
@@ -905,6 +979,8 @@ namespace Vgs.Ui
             _bindSource = null;
             _bindPort = null;
             _hoverNode = null;
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
             _panning = false;
             CloseActionMenu();
         }
@@ -922,6 +998,8 @@ namespace Vgs.Ui
             // which of several similar blocks the list belongs to.
             _hoverNode = target;
             _hoverPlus = null;
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
 
             _menuRows.Clear();
             _menuLabels.Clear();
@@ -1091,6 +1169,183 @@ namespace Vgs.Ui
             }
         }
 
+        /// <summary>
+        /// Removes every connection the given port carries, together with the items the source
+        /// blocks hold in their toolbars.
+        ///
+        /// A port carries a set, not a single connection: an output may drive several targets
+        /// (fan-out) and an input may be driven by several sources (fan-in). The button on the
+        /// port therefore clears the whole set — that is what "delete this port's connections"
+        /// means, and leaving some of them behind would keep the bar on screen after the click.
+        ///
+        /// <b>Order: toolbar first, graph second.</b> The toolbar is the connection (ADR-0011),
+        /// and the refresh pass rebuilds edges from it. An edge dropped from the graph while its
+        /// item stayed in the block would come back on the next refresh — the line would
+        /// reappear under the user's cursor with no explanation. When the game refuses the clear
+        /// (a remote client does not own the block's toolbar), that connection is kept and the
+        /// user is told why, which is the same honesty the write path applies to a refused
+        /// write.
+        ///
+        /// A destroyed block needs no clearing: its toolbar went with it, and the stale edge is
+        /// dropped from the graph here.
+        ///
+        /// The other end of each connection needs no special handling:
+        /// <see cref="GridGraph.LayoutPorts"/> gives a port a drawing slot only while it carries
+        /// at least one edge, so a port that has just lost its last connection — the source's
+        /// output or the target's input — disappears by itself.
+        /// </summary>
+        private void RemovePortConnections(Node node, Port port)
+        {
+            if (node == null || port == null) return;
+
+            _removeBuffer.Clear();
+            _graph.CollectEdgesForPort(node.EntityId, port.Key, port.Direction, _removeBuffer);
+            if (_removeBuffer.Count == 0) return;
+
+            int removed = 0;
+            int changedUnderEditor = 0;
+            long warnedAbout = 0;
+
+            for (int i = 0; i < _removeBuffer.Count; i++)
+            {
+                Edge edge = _removeBuffer[i];
+
+                Node source = _graph.GetNode(edge.SourceEntityId);
+                IMyTerminalBlock sourceBlock = ResolveBlock(edge.SourceEntityId);
+
+                // Only a cell that really holds this connection needs clearing. An edge without a
+                // valid cell cannot be expressed in a toolbar at all (TryConnect refuses one), so
+                // it is dropped without a warning rather than kept forever as an undeletable line.
+                if (edge.Cell.IsValid && sourceBlock != null && source != null)
+                {
+                    CellState state = ReadCellState(sourceBlock, edge);
+
+                    // The cell no longer holds this connection: it is empty, or the player
+                    // replaced it by hand in the terminal during the up-to-one-refresh window when
+                    // the graph lags the world. Either way it is not ours to clear, so it is left
+                    // alone; the reconcile pass then turns whatever is there now into its own edge.
+                    if (state == CellState.HoldsOther)
+                    {
+                        changedUnderEditor++;
+                        if (_graph.RemoveEdge(edge)) removed++;
+                        continue;
+                    }
+
+                    // HoldsThis is the only state that may be cleared. Unreadable is NOT "safe to
+                    // clear": the player's edit cannot be ruled out, so the connection is kept and
+                    // the reason is shown — the same answer as a refused clear. Dropping the edge
+                    // here would make the line reappear at the next reconcile pass with no
+                    // explanation, which is the defect this whole method exists to avoid.
+                    if (state != CellState.HoldsThis
+                        || !ToolbarWriter.TryClear(sourceBlock, source, edge.Cell))
+                    {
+                        WarnRemoveRefused(source, ref warnedAbout);
+                        continue;
+                    }
+                }
+
+                if (_graph.RemoveEdge(edge)) removed++;
+            }
+
+            _removeBuffer.Clear();
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
+
+            // The stacks are a derived view of the edges: the port that just lost its last
+            // connection must lose its bar, and the stack under it must close up.
+            _graph.LayoutPorts();
+
+            if (changedUnderEditor > 0)
+            {
+                VgsLog.Info(changedUnderEditor + " cell(s) no longer held their connection and were "
+                            + "left untouched; the reconcile pass re-reads them");
+            }
+
+            if (removed > 0)
+            {
+                VgsLog.Info("removed " + removed + " connection(s) at " + node.EntityId
+                            + " (" + port.Key + ")");
+            }
+        }
+
+        /// <summary>
+        /// What a connection's toolbar cell currently holds, as far as the editor can tell.
+        ///
+        /// Three outcomes, and they must not be collapsed into a bool: the caller's answer to
+        /// "holds this connection" is *clear the cell*, its answer to "holds something else" is
+        /// *leave it alone*, and its answer to "cannot tell" is *do nothing and say so*. A bool
+        /// would make the third indistinguishable from the second and the removal would silently
+        /// do nothing (the line then reappears at the next reconcile pass).
+        /// </summary>
+        private enum CellState
+        {
+            /// <summary>The cell holds exactly this connection: safe to clear.</summary>
+            HoldsThis = 0,
+
+            /// <summary>
+            /// The cell no longer holds this connection: it is empty, or it holds another item.
+            /// Either way it is not ours to clear — an empty cell has nothing to clear, and the
+            /// other item is the player's edit.
+            /// </summary>
+            HoldsOther = 1,
+
+            /// <summary>The toolbar could not be read. Neither clearing nor dropping is safe.</summary>
+            Unreadable = 2
+        }
+
+        /// <summary>
+        /// Reads the cell this edge occupies and reports which of the three cases it is: the same
+        /// target block and action, a different item, or nothing readable.
+        ///
+        /// A read, not a write, so it is safe on a remote client too — which is the point: the
+        /// check is what stops a removal from destroying an edit the player made in the terminal
+        /// during the up-to-one-refresh window when the graph is behind the world.
+        /// </summary>
+        private static CellState ReadCellState(IMyTerminalBlock sourceBlock, Edge edge)
+        {
+            try
+            {
+                IMyToolbar toolbar = ToolbarProbe.GetToolbar(sourceBlock, edge.Cell.ToolbarIndex);
+                if (toolbar == null) return CellState.Unreadable;
+
+                long blockId;
+                string action;
+                if (!ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index, out blockId, out action))
+                {
+                    return CellState.HoldsOther;
+                }
+
+                return blockId == edge.TargetEntityId
+                       && string.Equals(action, edge.TargetPortKey, StringComparison.Ordinal)
+                    ? CellState.HoldsThis
+                    : CellState.HoldsOther;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("cell-state", "could not read toolbar cell", e, 300);
+                return CellState.Unreadable;
+            }
+        }
+
+        /// <summary>
+        /// Reports that a connection could not be removed from its block's toolbar, once per
+        /// source block.
+        ///
+        /// Once, because a fan-in of three connections from the same block would otherwise queue
+        /// the same sentence three times into one bottom bar, which shows only the last copy — the
+        /// user would see one message and no indication that three attempts were made.
+        /// <paramref name="warnedAbout"/> is the caller's running record, so the deduplication
+        /// survives the loop without the caller keeping a set.
+        /// </summary>
+        private void WarnRemoveRefused(Node source, ref long warnedAbout)
+        {
+            if (source == null) return;
+            if (warnedAbout == source.EntityId) return;
+
+            warnedAbout = source.EntityId;
+            Warn(string.Format(VgsText.WarnRemoveRefusedFormat, source.DisplayName));
+        }
+
         /// <summary>Shows a failure on the bottom bar and records it in the log.</summary>
         private void Warn(string text)
         {
@@ -1160,8 +1415,25 @@ namespace Vgs.Ui
             return null;
         }
 
+        /// <summary>Topmost node whose port remove button is under the pointer, and which port.</summary>
+        private Node HitTestRemoveButton(Vector2 graphPoint, out Port port)
+        {
+            port = null;
+            float aspect = VgsScreenDraw.ClientAspect;
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                Port hit = PortGeometry.HitPortRemoveButton(nodes[i], graphPoint, aspect);
+                if (hit == null) continue;
+                port = hit;
+                return nodes[i];
+            }
+            return null;
+        }
+
         /// <summary>
-        /// Refreshes the hover targets used for the highlight of a card and of its bind button.
+        /// Refreshes the hover targets used for the highlight of a card, of its bind button and
+        /// of the remove button on one of its ports.
         ///
         /// Hover is recomputed from the pointer every input pass rather than cached until a
         /// move event: the canvas pans and zooms under a still pointer, so "under the pointer"
@@ -1169,6 +1441,9 @@ namespace Vgs.Ui
         /// </summary>
         private void UpdateHover(Vector2 mouse, Vector2 canvasTopLeft, Vector2 canvasSize)
         {
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
+
             if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse))
             {
                 _hoverNode = null;
@@ -1177,6 +1452,20 @@ namespace Vgs.Ui
             }
 
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+            // The remove button is the smallest target on the canvas, and it is drawn on top of
+            // a bar that belongs to the card. Resolving it first is what makes the highlight
+            // land on the disc instead of on the whole port.
+            Port removePort;
+            Node removeNode = HitTestRemoveButton(graphPos, out removePort);
+            if (removeNode != null)
+            {
+                _hoverRemoveNode = removeNode;
+                _hoverRemovePort = removePort;
+                _hoverNode = null;
+                _hoverPlus = null;
+                return;
+            }
 
             PortGroup group;
             _hoverPlus = HitTestBindButton(graphPos, out group);
@@ -1343,7 +1632,7 @@ namespace Vgs.Ui
 
             // A dot under the cursor makes the line read as "attached to the pointer" rather
             // than as a line that happens to end there.
-            VgsScreenDraw.Disc(end, VgsConstants.PortDotRadius * _zoom, topLeft, size, ColLinePending);
+            VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _zoom, topLeft, size, ColLinePending);
         }
 
         private void DrawRoute(Vector2 from, Vector2 to, Color color, Vector2 clipTopLeft, Vector2 clipSize)
@@ -1460,7 +1749,7 @@ namespace Vgs.Ui
                                screenPos + new Vector2(pad, cardSize.Y * 0.52f),
                                VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
 
-            DrawPortBars(node, clipTopLeft, clipSize);
+            DrawPortBars(node, border, clipTopLeft, clipSize);
 
             // The bind buttons are drawn last so they are never covered by a port bar of a
             // neighbouring card that happens to be drawn later.
@@ -1568,13 +1857,18 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Zoom factor for text that lives on the canvas (card labels, port labels).
+        /// Zoom factor for the card's text (name, subtype, the T/F glyphs).
         ///
         /// Clamped on both ends and, crucially, <b>below</b> the old floor of 0.75: the card is
         /// now half as tall as it was, and two lines of text at the old floor overflow it once
         /// the user zooms out to <see cref="VgsConstants.MinZoom"/>. Text that is unreadable but
         /// inside its box is a better failure than text that is unreadable and spills over its
         /// neighbours.
+        ///
+        /// Port labels deliberately do <b>not</b> use this clamp: they are multiplied by the
+        /// zoom directly (<see cref="VgsConstants.PortLabelScale"/>), because a port bar shrinks
+        /// with the canvas and its label has to shrink with it instead of overflowing a bar that
+        /// kept shrinking (ADR-0014).
         /// </summary>
         private float CardTextScale
         {
@@ -1588,15 +1882,39 @@ namespace Vgs.Ui
 
         /// <summary>
         /// Draws the port bars of one card: outputs first (flush with the card), then inputs
-        /// (inset), each with its dot and its label.
+        /// below them, each with its dot, its label and its remove button.
+        ///
+        /// <paramref name="border"/> is the card's own frame colour, passed in rather than
+        /// re-derived: a port belongs to the block, so it must follow the card's state too —
+        /// a selected block whose ports stayed grey would break the column into two figures at
+        /// exactly the moment the user is looking at it (ADR-0014).
         /// </summary>
-        private void DrawPortBars(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawPortBars(Node node, Color border, Vector2 clipTopLeft, Vector2 clipSize)
         {
-            for (int i = 0; i < node.Events.Count; i++) DrawPortBar(node, node.Events[i], clipTopLeft, clipSize);
-            for (int i = 0; i < node.Actions.Count; i++) DrawPortBar(node, node.Actions[i], clipTopLeft, clipSize);
+            for (int i = 0; i < node.Events.Count; i++)
+                DrawPortBar(node, node.Events[i], border, clipTopLeft, clipSize);
+            for (int i = 0; i < node.Actions.Count; i++)
+                DrawPortBar(node, node.Actions[i], border, clipTopLeft, clipSize);
         }
 
-        private void DrawPortBar(Node node, Port port, Vector2 clipTopLeft, Vector2 clipSize)
+        /// <summary>
+        /// Draws one port bar: its background, its frame, its label, the connection dot and the
+        /// remove button.
+        ///
+        /// <b>The frame is the card's frame.</b> A port belongs to the block, so it is drawn in
+        /// the card's own border colour — including the selected and hovered variants — and only
+        /// its background differs. That is what makes the column read as one block with two
+        /// backgrounds rather than as a card with three separate boxes hanging off it (ADR-0014).
+        /// The dot keeps its own colour, because it is what tells an input from an output at a
+        /// glance and it matches the line that leaves it.
+        ///
+        /// <b>The label is centred on the bar and scales with the zoom.</b> Both controls sit at
+        /// the bar's ends, so the label's span is the same for an input and an output; it is
+        /// positioned by its measured line height so that its centre line is the bar's centre
+        /// line, not its top edge.
+        /// </summary>
+        private void DrawPortBar(Node node, Port port, Color border, Vector2 clipTopLeft,
+                                 Vector2 clipSize)
         {
             if (port.Slot < 0) return;
 
@@ -1608,39 +1926,108 @@ namespace Vgs.Ui
 
             bool output = port.Direction == PortDirection.Output;
             Color fill = output ? ColPortOutFill : ColPortInFill;
-            Color edge = output ? ColPortOut : ColPortIn;
+            Color accent = output ? ColPortOut : ColPortIn;
 
             VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, fill);
-            VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, edge, Hairline);
+            VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, border,
+                                        Hairline);
 
-            // Label, clipped to the bar so a long action name cannot spill over the next card.
-            // The dot sits *inside* the bar now, so the label has to keep clear of it: an
-            // output bar's text is pushed in from the right, an input bar's from the left.
-            float dotSpace = VgsConstants.PortDotRadius * VgsScreenDraw.ClientAspect * 2f;
-            float pad = VgsConstants.PortLabelPadding * _zoom;
-            float dotPad = dotSpace * _zoom + pad;
-
-            float labelLeft = output ? pad : dotPad;
-            float labelWidth = screenSize.X - labelLeft - (output ? dotPad : pad);
-            if (labelWidth > 0f)
+            // The label is clipped to the span between the two controls, so a long action name
+            // can neither spill over the next card nor run under a disc.
+            Vector2 labelTopLeft, labelSize;
+            if (PortGeometry.TryPortLabelRect(node, port, VgsScreenDraw.ClientAspect,
+                                              out labelTopLeft, out labelSize))
             {
+                Vector2 labelScreen = GraphToScreen(labelTopLeft, clipTopLeft);
+                float textHeight = PortLabelHeight;
+                if (textHeight <= 0f) textHeight = screenSize.Y * VgsConstants.PortLabelFallbackHeightRatio;
+
                 VgsScreenDraw.Text(port.DisplayName,
-                                   screenTopLeft + new Vector2(labelLeft, screenSize.Y * 0.16f),
-                                   VgsConstants.NodeSubtitleScale * 0.82f * CardTextScale,
-                                   ColText, labelWidth);
+                                   new Vector2(labelScreen.X,
+                                               PortGeometry.CentredTextTop(labelScreen.Y,
+                                                                           screenSize.Y, textHeight)),
+                                   VgsConstants.PortLabelScale * _zoom,
+                                   ColText, labelSize.X * _zoom);
             }
 
-            // The dot: a circle inside the bar, tangent to the edge the line uses — right for
-            // an output, left for an input. Same shape both ways on purpose; what tells them
-            // apart is the side they sit on, which is exactly the property the router relies
-            // on, so an extra shape difference would only add a thing to learn.
-            //
-            // Drawn last so it sits on top of the bar's border and of its own label's edge.
+            float radius = VgsConstants.PortControlRadius * _zoom;
+
+            // The dot: where the line attaches, one control-width and one four-pixel gap inside
+            // the edge the line uses — right for an output, left for an input. Same shape both
+            // ways on purpose; the side it sits on is the property the router relies on.
             Vector2 dotCenter;
-            if (!PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter)) return;
-            VgsScreenDraw.Disc(GraphToScreen(dotCenter, clipTopLeft),
-                               VgsConstants.PortDotRadius * _zoom, clipTopLeft, clipSize, edge);
+            if (PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter))
+            {
+                VgsScreenDraw.Disc(GraphToScreen(dotCenter, clipTopLeft), radius, clipTopLeft, clipSize,
+                                   accent);
+            }
+
+            // The remove button: the dot's mirror image, the same size, inverted like the "+".
+            Vector2 removeCenter;
+            if (PortGeometry.TryPortRemoveButton(node, port, VgsScreenDraw.ClientAspect, out removeCenter))
+            {
+                bool hot = ReferenceEquals(node, _hoverRemoveNode)
+                           && ReferenceEquals(port, _hoverRemovePort);
+
+                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), fill, hot,
+                                     clipTopLeft, clipSize);
+            }
         }
+
+        /// <summary>
+        /// Draws a port's remove button: a white disc with an "x" cut out in the bar's own
+        /// background colour, the same inversion the "+" uses — a dark glyph on white stays
+        /// legible at every zoom, a light one on a dark disc does not.
+        ///
+        /// The glyph is text rather than geometry, unlike the plus. An "x" is two diagonal
+        /// strokes, and the screen-space API has no line primitive at all, so it cannot be built
+        /// from rectangles; the font is the only thing that can draw it. Its size is a fraction
+        /// of the zoom, like the disc, so the mark and the button stay in proportion.
+        /// </summary>
+        private void DrawPortRemoveButton(Vector2 screenCenter, Color glyph, bool hot,
+                                          Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            VgsScreenDraw.Disc(screenCenter, VgsConstants.PortControlRadius * _zoom,
+                               clipTopLeft, clipSize, hot ? ColPlusFillHot : ColPlusFill);
+
+            VgsScreenDraw.TextCentered(VgsText.PortRemoveGlyph, screenCenter,
+                                       VgsConstants.PortRemoveGlyphScale * _zoom, glyph);
+        }
+
+        /// <summary>
+        /// Height of one line of port-label text at the current zoom, in client-area units.
+        ///
+        /// Measured once per zoom level rather than per label. The height of a line is a
+        /// property of the font and the scale, not of the string, while
+        /// <see cref="DrawPortBar"/> runs for every drawn port of every visible card on every
+        /// frame — measuring there would call into the font metrics thousands of times a second.
+        /// The measurement is what puts the label's *centre* on the bar's centre line;
+        /// positioning text by its top edge would leave it sitting low by half a line.
+        ///
+        /// The cache key is the zoom alone. That is sound because the editor is a modal,
+        /// full-screen screen that pauses the game, so the resolution cannot change underneath
+        /// it; a font that refused to measure caches a zero, which the caller replaces with
+        /// <see cref="VgsConstants.PortLabelFallbackHeightRatio"/> instead of retrying every
+        /// frame. If the screen ever stops being modal, the key has to gain the client height.
+        /// </summary>
+        private float PortLabelHeight
+        {
+            get
+            {
+                if (_portLabelHeightZoom == _zoom) return _portLabelHeight;
+
+                _portLabelHeightZoom = _zoom;
+                _portLabelHeight =
+                    VgsScreenDraw.Measure(LabelProbeText, VgsConstants.PortLabelScale * _zoom).Y;
+                return _portLabelHeight;
+            }
+        }
+
+        /// <summary>
+        /// Text measured to find a line's height. Both cases are needed so the measurement
+        /// covers the font's full line box: "A" gives the ascender, "g" the descender.
+        /// </summary>
+        private const string LabelProbeText = "Ag";
 
         /// <summary>
         /// Draws the action menu: the target's terminal actions, one row each, in the order

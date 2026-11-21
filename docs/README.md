@@ -23,6 +23,9 @@
   [03-architecture.md](03-architecture.md) §4 и
   [ADR-0010](adr/0010-port-presentation-and-binding.md).
 - **«Почему вход принимает несколько источников?»** → [ADR-0010](adr/0010-port-presentation-and-binding.md).
+- **«Почему у порта две круглые кнопки и что делает „x“?»** →
+  [ADR-0014](adr/0014-port-remove-button-and-port-look.md) и
+  [06-terminology.md](06-terminology.md) §2.
 - **«Почему связь — это тулбар блока, и откуда взялись кнопки T/F?»** →
   [ADR-0011](adr/0011-toolbar-is-the-connection.md) и
   [01-research/api-toolbar.md](01-research/api-toolbar.md).

@@ -30,6 +30,7 @@
 | [0011](0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов | accepted |
 | [0012](0012-layout-lives-on-the-block.md) | Раскладка схемы хранится на блоке (`MyModStorageComponent` + зарегистрированный GUID), а не в таблице «`EntityId` → позиция» | accepted |
 | [0013](0013-show-in-vgs-flag.md) | Флаг видимости узла на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` | accepted |
+| [0014](0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет его связи; точка — её зеркало; подпись по центру и пропорционально зуму; рамка порта цветом карточки | accepted |
 
 ## Как добавить
 

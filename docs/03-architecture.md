@@ -22,6 +22,7 @@
 | [0011](adr/0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов |
 | [0012](adr/0012-layout-lives-on-the-block.md) | Раскладка схемы — на блоке (`MyModStorageComponent` + GUID, зарегистрированный SBC), не в таблице «`EntityId` → позиция» |
 | [0013](adr/0013-show-in-vgs-flag.md) | Флаг видимости узла — на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` |
+| [0014](adr/0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет все связи порта (сначала ячейка тулбара, потом ребро); точка — зеркало кнопки; подпись по центру и пропорционально зуму; рамка порта — цветом карточки |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -230,6 +231,10 @@ classDiagram
         -List~Port~ _menuRows
         -List~string~ _menuLabels
         -List~Vector4~ _route
+        -Node _hoverRemoveNode
+        -Port _hoverRemovePort
+        -List~Edge~ _removeBuffer
+        -float _portLabelHeight
         -string _statusText
         -string _warningText
         -bool _closeHot
@@ -249,16 +254,23 @@ classDiagram
         -OpenActionMenu(Node, Vector2) void
         -CloseActionMenu() void
         -TryCompleteBind(Port) bool
+        -RemovePortConnections(Node, Port) void
+        -ReadCellState(IMyTerminalBlock, Edge) CellState
+        -WarnRemoveRefused(Node, ref long) void
         -DescribeWriteFailure(WriteResult, Node, Node, Port) string
         -Warn(string) void
         -ValidateInteractionState() void
         -ScreenToGraph(Vector2, Vector2) Vector2
         -HitTest(Vector2) Node
         -HitTestBindButton(Vector2, out PortGroup) Node
+        -HitTestRemoveButton(Vector2, out Port) Node
         -GetMenuRect(out Vector2, out Vector2) void
         -DrawNodes(Vector2, Vector2) void
         -DrawNode(Node, Vector2, Vector2, Vector2) void
-        -DrawPortBars(Node, Vector2, Vector2) void
+        -DrawPortBars(Node, Color, Vector2, Vector2) void
+        -DrawPortBar(Node, Port, Color, Vector2, Vector2) void
+        -DrawPortRemoveButton(Vector2, Color, bool, Vector2, Vector2) void
+        -PortLabelHeight float
         -DrawEdges(Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
@@ -269,6 +281,15 @@ classDiagram
         -ResolveGridName()
     }
 
+    class CellState {
+        <<enum, nested in VgsEditorScreen>>
+        HoldsThis
+        HoldsOther
+        Unreadable
+    }
+
+    VgsEditorScreen ..> CellState : классифицирует ячейку тулбара
+
     class PortGeometry {
         <<static>>
         +CardRect(Node, out Vector2, out Vector2)
@@ -277,6 +298,10 @@ classDiagram
         +HitBindButton(Node, Vector2, float aspectX, out PortGroup) bool
         +TryPortBarRect(Node, Port, out Vector2, out Vector2) bool
         +TryPortDot(Node, Port, float aspectX, out Vector2) bool
+        +TryPortRemoveButton(Node, Port, float aspectX, out Vector2) bool
+        +HitPortRemoveButton(Node, Vector2, float aspectX) Port
+        +TryPortLabelRect(Node, Port, float aspectX, out Vector2, out Vector2) bool
+        +CentredTextTop(float boxTop, float boxHeight, float textHeight) float
         +TryPendingSourceDot(Node, Port, float aspectX, out Vector2) bool
         +OutputStackHeight(Node) float
         +InputStackHeight(Node) float
@@ -329,7 +354,7 @@ classDiagram
         +HasEdge(long, string, long, string) bool
         +CountEdgesToInput(long, string) int
         +CountEdgesFromOutput(long, string) int
-        +RemoveEdgesFromOutput(long, string) int
+        +CollectEdgesForPort(long, string, PortDirection, List~Edge~) void
         +RemoveEdge(Edge) bool
         +LayoutPorts()
         +LayoutUnplaced()
@@ -428,7 +453,7 @@ classDiagram
 
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Refresh
-    VgsEditorScreen --> ToolbarWriter : запись связи
+    VgsEditorScreen --> ToolbarWriter : запись и очистка связи
     VgsEditorScreen --> NodeStateStore : сохранение позиции
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
@@ -618,6 +643,10 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 месте, а ловится в другом — дефект, невидимый в коде и очевидный в игре. Поэтому геометрия
 живёт в одном типе, и оба потребителя зовут его.
 
+По той же причине там лежит `CentredTextTop`: «подпись порта всегда по центру высоты полосы» —
+это требование к поведению, а не украшение, и путь отрисовки офлайн не проверяется. Одна
+формула, вынесенная из `DrawPortBar`, делает его утверждением в `tests/OfflineChecks.cs`.
+
 `SyncScreenSpace()` вызывается первой строкой `OnDraw` и `OnHandleInput` и обновляет
 аффинное преобразование `layout → API` (формула — [ADR-0009](adr/0009-screen-coordinate-space.md)).
 Пропустить его нельзя: `Measure` и `TryCursor` работают в тех же единицах, что и примитивы.
@@ -721,7 +750,8 @@ OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hi
               далее — один из трёх взаимоисключающих режимов:
                 обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ;
                            отпускание после перетаскивания пишет позицию в блок
-                           (NodeStateStore.SavePosition)
+                           (NodeStateStore.SavePosition); клик по «x» на полосе
+                           снимает связи этого порта (RemovePortConnections)
                 привязка — линия за курсором, ПКМ/void сбрасывают,
                            клик по карточке открывает меню действий
                 меню     — строки действий, колесо прокручивает,
@@ -829,6 +859,41 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 Геометрия полос — `Vgs.Ui.PortGeometry`, словарь понятий — [06-terminology.md](06-terminology.md)
 §2.
 
+### Как связь снимается с экрана
+
+Обратная операция — `VgsEditorScreen.RemovePortConnections`, вызываемая кнопкой «x» на полосе
+([ADR-0014](adr/0014-port-remove-button-and-port-look.md)). Порядок обратный созданию и по той
+же причине: **сначала ячейка тулбара, потом ребро**.
+
+```
+щелчок по «x» на полосе (обычный режим)
+   └─► GridGraph.CollectEdgesForPort(EntityId, Port.Key, Port.Direction, buffer)
+        ├─ исходящий порт → все рёбра, выходящие из него (fan-out)
+        └─ входящий порт  → все рёбра, входящие в него (fan-in)
+   └─► на каждое ребро: ReadCellState(блок-источник, ребро)
+        ├─ HoldsThis   → ToolbarWriter.TryClear
+        │                 ├─ удалось    → GridGraph.RemoveEdge(ребро)
+        │                 └─ отказ игры → ребро остаётся, причина — в нижнюю панель
+        │                                 (WarnRemoveRefusedFormat, один раз на блок)
+        ├─ HoldsOther  → ячейка НЕ трогается, ребро снимается из графа
+        └─ Unreadable  → ребро остаётся, причина — в нижнюю панель
+   └─► GridGraph.LayoutPorts()
+```
+
+Четыре следствия, на которых держится поведение:
+
+- **порт несёт набор рёбер**, поэтому кнопка удаляет все его связи: половина оставила бы полосу
+  на экране после щелчка;
+- **связанный порт не трогается руками**: `LayoutPorts` снимает слот с любого порта без рёбер,
+  поэтому полоса на другом конце — и стакан под ней — исчезает сама;
+- **ячейка читается перед очисткой**, и три исхода различаются (`CellState`), а не сводятся к
+  `bool`: «держит это» → очистить, «держит другое» → не трогать (это правка игрока в терминале,
+  граф отстаёт до одного обновления), «не читается» → не делать ничего и сказать. Свёрнутый в
+  `bool` третий исход стал бы неотличим от второго, и линия вернулась бы при следующей сверке —
+  то есть «кнопка не работает»;
+- **отказ записи не проглатывается**: удалить ребро, оставив элемент в тулбаре, значило бы
+  показать «удалено» и вернуть линию при следующей сверке.
+
 ---
 
 ## 5. Обработка ошибок
@@ -856,7 +921,7 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 
 | Возможность | Точка расширения |
 |---|---|
-| Создание и удаление связей | `GridGraph.TryConnect` / `RemoveEdge` / `RemoveEdgesFromOutput` / `HasEdge` |
+| Создание и удаление связей | `GridGraph.TryConnect` / `CollectEdgesForPort` / `RemoveEdge` / `HasEdge`; удаление мышью — `VgsEditorScreen.RemovePortConnections` ([ADR-0014](adr/0014-port-remove-button-and-port-look.md)) |
 | Запись связи в мир | `ToolbarWriter.TryWrite` / `TryClear` (единственное место, где мод меняет блоки) |
 | Отрисовка связей | `VgsEditorScreen.DrawEdges` (между `DrawGrid` и `DrawNodes`) |
 | Исполнение логики | не нужно для базовых связей: их исполняет игра из тулбара. Для условий и значений — новый `Vgs.Game.GraphEvaluator` в `UpdateAfterSimulation` |
@@ -864,7 +929,7 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 | Сохранение связей | уже есть и бесплатно: тулбар сериализуется игрой вместе с блоком. Собственный формат нужен только для того, что не выражается тулбаром |
 | Сохранение раскладки и видимости узлов | `Vgs.Game.NodeStateStore` поверх `MyModStorageComponent` на блоке; GUID регистрируется `Data/EntityComponents.sbc` ([ADR-0012](adr/0012-layout-lives-on-the-block.md)) |
 | Синхронизация | уже есть: запись идёт через `BeginChanges().Apply()`, игру уведомляет `MyToolbar.SendChanges`; на клиенте мультиплеера запись отклоняется, чтение работает |
-| Удаление связи мышью | hit-test по маршруту из `EdgeRouting.Build`; у линии уже есть геометрия; удаление обязано звать `ToolbarWriter.TryClear` |
+| Удаление связи мышью | **сделано**: `VgsEditorScreen.RemovePortConnections` + `PortGeometry.HitPortRemoveButton`; порядок «ячейка тулбара → ребро» обязателен, иначе сверка вернёт линию |
 | Новые виджеты (скроллбар, поле ввода) | новые методы `VgsScreenDraw`; штатных контролов в разрешённом API нет |
 
 Собственный формат сохранения **связей** намеренно не вводится: их носитель — тулбар. Своё

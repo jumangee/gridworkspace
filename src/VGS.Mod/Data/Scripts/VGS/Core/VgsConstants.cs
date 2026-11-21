@@ -101,12 +101,14 @@ namespace Vgs.Core
         // directions are the full width of the card and touch each other with no gap, so a
         // card with ports reads as one column: card, then its port bars, flush.
         //
-        //   * output bar — dot inside, near its RIGHT edge (lines leave from there);
-        //   * input bar  — dot inside, near its LEFT edge (lines arrive there).
+        // Every bar carries two round controls, one at each end, and they are the same size:
         //
-        // The dot is *inside* the bar on purpose. An overhanging dot looks like a separate
-        // control and is drawn outside the shape it belongs to; inside, it reads as a socket
-        // and the bar's border closes around it.
+        //   * output bar — dot at the RIGHT end (lines leave from there), "x" at the left;
+        //   * input bar  — dot at the LEFT end (lines arrive there), "x" at the right.
+        //
+        // Both are *inside* the bar, one four-pixel gap clear of its border. An overhanging
+        // control looks like a separate element drawn outside the shape it belongs to; inside,
+        // the bar's border closes around it and it reads as part of the port.
 
         /// <summary>
         /// Width of a port bar at zoom 1. Equal to the card's width: a port belongs to the
@@ -124,17 +126,84 @@ namespace Vgs.Core
         public const float PortBarGap = 0f;
 
         /// <summary>
-        /// Radius of the connection dot, in the vertical units of the layout. The horizontal
-        /// extent is derived from the client aspect ratio at draw time so the dot is round on
-        /// screen — see <c>VgsScreenDraw.Disc</c> and <c>PortGeometry.TryPortDot</c>.
+        /// Reference client-area height in pixels for the constants below that are written in
+        /// pixels. The layout is normalized, so "four pixels" means nothing until a reference
+        /// resolution is named; 1080 is the same reference the hairline thickness uses.
         /// </summary>
-        public const float PortDotRadius = 0.0042f;
+        public const float ReferenceHeightPixels = 1080f;
+
+        /// <summary>
+        /// Diameter of a port's two round controls — the connection dot and the remove "x" —
+        /// as a fraction of the bar's height. One ratio for both on purpose: the remove button
+        /// is the dot's mirror image, and giving them separate constants would let the two
+        /// drift apart into two controls of different sizes on one bar (ADR-0014).
+        /// </summary>
+        public const float PortControlHeightRatio = 0.75f;
+
+        /// <summary>
+        /// Radius of a port's round controls, in the vertical units of the layout. The
+        /// horizontal extent is derived from the client aspect ratio at draw time so the
+        /// control is round on screen — see <c>VgsScreenDraw.Disc</c>,
+        /// <c>PortGeometry.TryPortDot</c> and <c>PortGeometry.TryPortRemoveButton</c>.
+        /// </summary>
+        public const float PortControlRadius = PortBarHeight * PortControlHeightRatio * 0.5f;
+
+        /// <summary>
+        /// Gap between a port control and the bar's border, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>.
+        /// </summary>
+        /// <remarks>
+        /// A vertical length, because that is the unit the layout's constants are written in.
+        /// Where a horizontal gap is needed it is multiplied by the client aspect ratio
+        /// (<c>PortGeometry</c> does this), which turns 4/1080 of the height into 4/1920 of the
+        /// width — exactly four screen pixels on a 16:9 window. Using the constant as an X
+        /// length directly would give seven pixels there, and the gap would change with the
+        /// window's shape.
+        /// </remarks>
+        public const float PortControlMarginPixels = 4f;
+
+        /// <summary>
+        /// <see cref="PortControlMarginPixels"/> expressed in the layout's vertical units, the
+        /// form the geometry code consumes.
+        /// </summary>
+        public const float PortControlMargin = PortControlMarginPixels / ReferenceHeightPixels;
 
         /// <summary>Vertical distance between an input stack and an output stack on one card.</summary>
         public const float PortStackSpacing = 0f;
 
-        /// <summary>Padding of a port label inside its bar.</summary>
+        /// <summary>Padding between a port label and the control next to it.</summary>
         public const float PortLabelPadding = 0.006f;
+
+        /// <summary>
+        /// Font scale of a port's label at zoom 1. Unlike the card's text this is not clamped:
+        /// it is multiplied by the zoom directly, so the label shrinks and grows with the bar
+        /// it sits in instead of stopping at a floor and overflowing a bar that kept shrinking
+        /// (ADR-0014).
+        /// </summary>
+        public const float PortLabelScale = 0.36f;
+
+        /// <summary>
+        /// Font scale of the "x" glyph inside a port's remove button at zoom 1. Smaller than
+        /// the T/F glyph because the disc it sits in is smaller: 75% of a port bar's height,
+        /// not 44% of a card's.
+        /// </summary>
+        public const float PortRemoveGlyphScale = 0.40f;
+
+        /// <summary>
+        /// Fallback line height as a fraction of the bar's height, used only when the font
+        /// refuses to measure (no font resource, or a measurement that returned zero). Keeps the
+        /// label centred on a plausible line instead of pinning it to the bar's top edge.
+        /// </summary>
+        public const float PortLabelFallbackHeightRatio = 0.62f;
+
+        /// <summary>
+        /// Hit tolerance of a port's remove button, as a multiple of its radius. Slightly larger
+        /// than the disc: a ~15-pixel circle is a hard target with a mouse, and a near-miss that
+        /// does nothing is cheaper than a hit that requires pixel accuracy. Deliberately a
+        /// little looser than the bind button's 1.2 — the button is smaller than the card's
+        /// disc, so the same multiplier would give a smaller target in absolute terms.
+        /// </summary>
+        public const float PortControlHitTolerance = 1.25f;
 
         // ---- "+" button (bind mode) ----
         //
@@ -260,7 +329,7 @@ namespace Vgs.Core
         public const string EditorTitle = "Grid setup";
         public const string CloseButton = "Закрыть";
         public const string Hint =
-            "ЛКМ — выбрать · перетащить · «+» или «T»/«F» — режим привязки · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
+            "ЛКМ — выбрать · перетащить · «+» или «T»/«F» — режим привязки · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
@@ -278,6 +347,13 @@ namespace Vgs.Core
         public const string TrueButtonGlyph = "T";
 
         public const string FalseButtonGlyph = "F";
+
+        /// <summary>
+        /// Glyph on a port's remove button. The Latin letter, not the multiplication sign: the
+        /// glyph is drawn by the game's font, and the plain letter exists in every font the
+        /// editor may fall back to, while U+00D7 is not guaranteed in any of them.
+        /// </summary>
+        public const string PortRemoveGlyph = "x";
 
         public const string BindHintTrue =
             "Привязка к «да»: нажмите блок-получатель · ПКМ — отмена";
@@ -314,6 +390,14 @@ namespace Vgs.Core
         public const string WarnRejected = "Связь не добавлена: игра не приняла действие в тулбар";
 
         public const string WarnBlockGone = "Связь не добавлена: блок исчез";
+
+        /// <summary>
+        /// Removing a connection goes the other way through the same writer, so it can fail
+        /// for the same reason a write can: the machine does not own the block's toolbar (a
+        /// remote multiplayer client). The connection is kept in that case, and this says why.
+        /// </summary>
+        public const string WarnRemoveRefusedFormat =
+            "Связь не удалена: игра не разрешила изменить тулбар блока «{0}»";
 
         // Status bar. Format arguments are documented at each use site: keeping the pattern
         // here means the wording is translated in one place, and the caller can cache the

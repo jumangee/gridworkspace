@@ -248,23 +248,37 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Removes every edge that starts at the given output port and returns how many were
-        /// removed. Used when the user clears a source port.
+        /// Copies into <paramref name="into"/> every edge the given port carries: all the edges
+        /// leaving an output port (fan-out), or all the edges arriving at an input port
+        /// (fan-in).
+        ///
+        /// A port carries a *set*, not a single connection, and the remove button on a port
+        /// therefore has to clear the whole set. The caller collects first and removes second,
+        /// because each edge names a cell of a live block's toolbar and the toolbar is the
+        /// connection ([ADR-0011](../../../../docs/adr/0011-toolbar-is-the-connection.md)):
+        /// removing the edge without clearing its cell would leave wiring in the block that the
+        /// next reconcile pass turns back into a line.
+        ///
+        /// The buffer belongs to the caller and is appended to, not cleared: a click reuses one
+        /// list, so removing a port allocates nothing.
         /// </summary>
-        public int RemoveEdgesFromOutput(long sourceEntityId, string sourcePortKey)
+        public void CollectEdgesForPort(long entityId, string portKey, PortDirection direction,
+                                        List<Edge> into)
         {
-            int removed = 0;
-            for (int i = _edges.Count - 1; i >= 0; i--)
+            if (into == null || string.IsNullOrEmpty(portKey)) return;
+
+            for (int i = 0; i < _edges.Count; i++)
             {
                 Edge e = _edges[i];
-                if (e.SourceEntityId == sourceEntityId
-                    && string.Equals(e.SourcePortKey, sourcePortKey, StringComparison.Ordinal))
-                {
-                    _edges.RemoveAt(i);
-                    removed++;
-                }
+
+                long endpoint = direction == PortDirection.Output ? e.SourceEntityId : e.TargetEntityId;
+                string key = direction == PortDirection.Output ? e.SourcePortKey : e.TargetPortKey;
+
+                if (endpoint != entityId) continue;
+                if (!string.Equals(key, portKey, StringComparison.Ordinal)) continue;
+
+                into.Add(e);
             }
-            return removed;
         }
 
         public bool RemoveEdge(Edge edge)

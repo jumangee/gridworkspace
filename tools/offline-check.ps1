@@ -147,15 +147,45 @@ if (-not (Test-Path $outExe)) {
 
 Write-Host ''
 
-# The checks are run through Start-Process with file redirection rather than `& $exe`.
+# The checks are run through a `cmd.exe` wrapper with file redirection rather than `& $exe`.
 # Capturing a child's stdout through a pipe needs a named pipe, and a confined environment
 # (the DSH sandbox, some CI runners) denies that with "Access to the path
 # '\\.\pipe\LOCAL\dotnet_...' is denied" — a failure of the harness, not of the checks, and one
-# that reads like a broken gate. File redirection works everywhere and keeps the exit code.
+# that reads like a broken gate. File redirection works everywhere.
+#
+# The exit code is read from a file the wrapper writes, NOT from Start-Process -PassThru.
+# Measured on PowerShell 7.7.0: with -RedirectStandardOutput (and with -NoNewWindow alone) the
+# returned Process object reports HasExited = true but ExitCode = $null, even after
+# WaitForExit() and Refresh(). `$proc.ExitCode` is then $null, `$null -ne 0` is true, and
+# `exit $null` exits 0 — so a failing run printed "OFFLINE FAILED" and reported success to CI.
+# A gate that cannot fail protects nothing (Q-005, Q-007, Q-009).
+#
+# The wrapper is a .cmd file rather than an argument line: cmd needs its own quoting for the
+# three paths, and passing them through Start-Process -ArgumentList produces nested quotes that
+# cmd rejects with "The filename, directory name, or volume label syntax is incorrect".
 $runOut = Join-Path $Out 'run.out.txt'
 $runErr = Join-Path $Out 'run.err.txt'
-$proc = Start-Process -FilePath $outExe -NoNewWindow -Wait -PassThru `
-    -RedirectStandardOutput $runOut -RedirectStandardError $runErr
+$runCode = Join-Path $Out 'run.code.txt'
+$wrapperFile = Join-Path $Out 'run.cmd'
+foreach ($stale in @($runCode, $runOut, $runErr)) {
+    if (Test-Path $stale) { Remove-Item $stale -Force }
+}
+
+# `%ERRORLEVEL%` is expanded by cmd at run time, after the checks have finished. The space
+# before `>` keeps cmd from reading the digit as a redirection target; Trim() drops it.
+$wrapperLines = @(
+    '@echo off',
+    ('"{0}" > "{1}" 2> "{2}"' -f $outExe, $runOut, $runErr),
+    ('echo %ERRORLEVEL% > "{0}"' -f $runCode)
+)
+
+# OEM, not ASCII or UTF-8: cmd.exe reads a .cmd in the console code page, and a temp folder
+# whose path contains non-ASCII characters (a user name, typically) would otherwise be mangled
+# into a path that does not exist. If even that fails, the missing code file below turns the
+# run into INCONCLUSIVE instead of a silent pass.
+Set-Content -Path $wrapperFile -Value $wrapperLines -Encoding Oem
+
+Start-Process -FilePath $wrapperFile -NoNewWindow -Wait
 
 if (Test-Path $runOut) { Get-Content $runOut -Raw }
 $runError = if (Test-Path $runErr) { Get-Content $runErr -Raw } else { '' }
@@ -163,7 +193,16 @@ if ($runError -and $runError.Trim()) {
     Write-Host $runError -ForegroundColor Yellow
 }
 
-$code = $proc.ExitCode
 Write-Host ''
+
+# A missing or unreadable code file is itself a failure: the checks were never observed to
+# succeed, and reporting 0 would be the same defect this block replaced.
+$code = -1
+$codeText = if (Test-Path $runCode) { Get-Content $runCode -Raw } else { $null }
+if (-not $codeText -or -not [int]::TryParse($codeText.Trim(), [ref]$code)) {
+    Write-Host 'OFFLINE CHECK INCONCLUSIVE — the checks ran but their exit code could not be read' -ForegroundColor Red
+    exit 1
+}
+
 if ($code -ne 0) { exit $code }
 exit 0

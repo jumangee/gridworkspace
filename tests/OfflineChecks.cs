@@ -114,6 +114,12 @@ internal static class OfflineChecks
         Console.WriteLine("=== bind buttons ===");
         BindButtons();
 
+        Console.WriteLine("=== port controls: dot, remove button, label ===");
+        PortControls();
+
+        Console.WriteLine("=== removing a port's connections ===");
+        PortRemoval();
+
         Console.WriteLine("=== wire routing ===");
         Routing();
 
@@ -473,11 +479,12 @@ internal static class OfflineChecks
         CheckClose(inTopLeft.Y, dst.Position.Y + VgsConstants.NodeHeight,
                    "input bar is flush with the card's bottom edge when there is no output stack");
 
-        // Dots: output near the right edge, input near the left edge, both *inside* their bar.
-        // The horizontal half-extent is aspect-corrected, so the check uses the same aspect the
-        // caller passes; 1.0 means "square units", i.e. a 1:1 window.
+        // Dots: output near the right edge, input near the left edge, both *inside* their bar
+        // and one four-pixel gap clear of the border. The horizontal half-extent and the gap are
+        // both aspect-corrected, so the check uses the same aspect the caller passes; 1.0 means
+        // "square units", i.e. a 1:1 window.
         const float aspect = 1f;
-        float inset = VgsConstants.PortDotRadius * aspect;
+        float inset = ControlOffset(aspect);
         Vector2 outDot, inDot;
         Check(PortGeometry.TryPortDot(src, outPort, aspect, out outDot), "output dot");
         Check(PortGeometry.TryPortDot(dst, inPort, aspect, out inDot), "input dot");
@@ -485,10 +492,12 @@ internal static class OfflineChecks
                    "output dot is inset from the right edge of its bar");
         CheckClose(inDot.X, inTopLeft.X + inset,
                    "input dot is inset from the left edge of its bar");
-        Check(outDot.X + inset <= outTopLeft.X + outSize.X,
-              "output dot does not cross the right edge of its bar");
-        Check(inDot.X - inset >= inTopLeft.X,
-              "input dot does not cross the left edge of its bar");
+        CheckClose(outDot.X + ControlHalfWidth(aspect),
+                   outTopLeft.X + outSize.X - VgsConstants.PortControlMargin * aspect,
+                   "output dot's edge keeps one gap from the right border");
+        CheckClose(inDot.X - ControlHalfWidth(aspect),
+                   inTopLeft.X + VgsConstants.PortControlMargin * aspect,
+                   "input dot's edge keeps one gap from the left border");
         Check(inDot.X > inTopLeft.X && inDot.X < inTopLeft.X + inSize.X,
               "input dot is inside its bar");
         Check(outDot.X > outTopLeft.X && outDot.X < outTopLeft.X + outSize.X,
@@ -503,23 +512,23 @@ internal static class OfflineChecks
             float a = dotAspects[i];
             Vector2 d;
             Check(PortGeometry.TryPortDot(src, outPort, a, out d), "output dot at aspect " + a);
-            CheckClose(d.X, outTopLeft.X + outSize.X - VgsConstants.PortDotRadius * a,
+            CheckClose(d.X, outTopLeft.X + outSize.X - ControlOffset(a),
                        "output dot inset scales with aspect " + a);
-            Check(d.X + VgsConstants.PortDotRadius * a <= outTopLeft.X + outSize.X + 1e-6f,
+            Check(d.X + ControlHalfWidth(a) <= outTopLeft.X + outSize.X + 1e-6f,
                   "output dot stays inside its bar at aspect " + a);
-            Check(d.X - VgsConstants.PortDotRadius * a >= outTopLeft.X,
+            Check(d.X - ControlHalfWidth(a) >= outTopLeft.X,
                   "output dot does not cross the left edge at aspect " + a);
         }
 
         Vector2 wideDot;
         Check(PortGeometry.TryPortDot(src, outPort, 2f, out wideDot), "output dot with aspect 2");
-        CheckClose(wideDot.X, outTopLeft.X + outSize.X - VgsConstants.PortDotRadius * 2f,
+        CheckClose(wideDot.X, outTopLeft.X + outSize.X - ControlOffset(2f),
                    "dot inset scales with the aspect");
         Check(wideDot.X < outDot.X, "a wider window pushes the output dot further in");
 
         // The dot fits vertically inside its bar at every zoom-independent layout: a dot taller
         // than its bar would bleed into the neighbouring port.
-        Check(VgsConstants.PortDotRadius * 2f <= VgsConstants.PortBarHeight,
+        Check(VgsConstants.PortControlRadius * 2f <= VgsConstants.PortBarHeight,
               "dot is no taller than its bar");
 
         // A node with both stacks: input bars are pushed below the output stack.
@@ -667,6 +676,219 @@ internal static class OfflineChecks
               "no button on a block without a toolbar");
         Check(!PortGeometry.HitBindButton(conveyor, conveyor.Position, aspect, out hit),
               "nothing is clickable on a block without a toolbar");
+    }
+
+    /// <summary>
+    /// The two round controls on a port bar: the connection dot and the remove "x".
+    ///
+    /// They are the same size by construction and mirror images of each other, and both stand
+    /// four screen pixels off the bar's border (ADR-0014). These are the properties a player
+    /// notices immediately when they are wrong — a dot clipped by its border, a button that is
+    /// not where the dot is, a gap that changes with the window's shape — and none of them is
+    /// visible in a compile.
+    /// </summary>
+    private static void PortControls()
+    {
+        var graph = new GridGraph(11);
+        Node src = MakeNode(1, "LargeBlockTimerBlock");
+        Node dst = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
+        src.Position = new Vector2(0.2f, 0.2f);
+        dst.Position = new Vector2(0.2f, 0.5f);
+        graph.AddNode(src);
+        graph.AddNode(dst);
+        Check(graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0)), "connect for controls");
+        graph.LayoutPorts();
+
+        Port outPort = src.FindEvent("Triggered");
+        Port inPort = dst.FindAction("OnOff");
+
+        Vector2 outTopLeft, outSize, inTopLeft, inSize;
+        Check(PortGeometry.TryPortBarRect(src, outPort, out outTopLeft, out outSize), "output bar");
+        Check(PortGeometry.TryPortBarRect(dst, inPort, out inTopLeft, out inSize), "input bar");
+
+        // One ratio for both controls: the remove button is the dot's mirror, so a different
+        // size would read as two unrelated elements on one bar.
+        CheckClose(VgsConstants.PortControlRadius * 2f, VgsConstants.PortBarHeight * 0.75f,
+                   "a port control is 75% of the bar's height");
+        Check(VgsConstants.PortControlRadius * 2f <= VgsConstants.PortBarHeight,
+              "a port control is no taller than its bar");
+
+        // Four screen pixels. The constant is a vertical length, so on a 16:9 window (aspect
+        // 0.5625) the horizontal gap is 4/1920 of the width — the same four pixels, not four
+        // layout units, which would be seven.
+        const float aspect16By9 = 0.5625f;
+        float gapX = VgsConstants.PortControlMargin * aspect16By9;
+        CheckClose(gapX * 1920f, 4f, "the gap is four pixels wide at 1920x1080");
+
+        float half = ControlHalfWidth(aspect16By9);
+
+        Vector2 outDot, outRemove, inDot, inRemove;
+        Check(PortGeometry.TryPortDot(src, outPort, aspect16By9, out outDot), "output dot");
+        Check(PortGeometry.TryPortRemoveButton(src, outPort, aspect16By9, out outRemove), "output x");
+        Check(PortGeometry.TryPortDot(dst, inPort, aspect16By9, out inDot), "input dot");
+        Check(PortGeometry.TryPortRemoveButton(dst, inPort, aspect16By9, out inRemove), "input x");
+
+        // The dot stays on the side the line uses; the remove button takes the other side.
+        CheckClose(outDot.X, outTopLeft.X + outSize.X - ControlOffset(aspect16By9),
+                   "output dot is inset from the right border");
+        CheckClose(outRemove.X, outTopLeft.X + ControlOffset(aspect16By9),
+                   "output x is inset from the left border");
+        CheckClose(inDot.X, inTopLeft.X + ControlOffset(aspect16By9),
+                   "input dot is inset from the left border");
+        CheckClose(inRemove.X, inTopLeft.X + inSize.X - ControlOffset(aspect16By9),
+                   "input x is inset from the right border");
+
+        // The gap is measured from the disc's *edge*, not from its centre: this is the property
+        // the requirement names, and the one a "radius + margin" mix-up breaks while leaving the
+        // centre looking plausible.
+        CheckClose(outDot.X + half, outTopLeft.X + outSize.X - gapX,
+                   "the output dot's edge is four pixels from the border");
+        CheckClose(outRemove.X - half, outTopLeft.X + gapX,
+                   "the output x's edge is four pixels from the border");
+        CheckClose(inDot.X - half, inTopLeft.X + gapX,
+                   "the input dot's edge is four pixels from the border");
+        CheckClose(inRemove.X + half, inTopLeft.X + inSize.X - gapX,
+                   "the input x's edge is four pixels from the border");
+
+        // Both are centred on the bar's height, whatever their side.
+        CheckClose(outDot.Y, outTopLeft.Y + outSize.Y * 0.5f, "output dot is centred on the bar");
+        CheckClose(outRemove.Y, outTopLeft.Y + outSize.Y * 0.5f, "output x is centred on the bar");
+        CheckClose(inDot.Y, inTopLeft.Y + inSize.Y * 0.5f, "input dot is centred on the bar");
+        CheckClose(inRemove.Y, inTopLeft.Y + inSize.Y * 0.5f, "input x is centred on the bar");
+
+        // The two controls leave room for the label between them and never overlap.
+        Check(outDot.X - half > outRemove.X + half, "the two controls of an output bar do not overlap");
+        Check(inRemove.X - half > inDot.X + half, "the two controls of an input bar do not overlap");
+
+        Vector2 labelTopLeft, labelSize;
+        Check(PortGeometry.TryPortLabelRect(src, outPort, aspect16By9, out labelTopLeft, out labelSize),
+              "output label rect");
+        Check(labelTopLeft.X >= outRemove.X + half, "the output label starts after its x");
+        Check(labelTopLeft.X + labelSize.X <= outDot.X - half, "the output label ends before its dot");
+        CheckClose(labelSize.Y, outSize.Y, "the label rect is as tall as its bar");
+
+        Vector2 inLabelTopLeft, inLabelSize;
+        Check(PortGeometry.TryPortLabelRect(dst, inPort, aspect16By9, out inLabelTopLeft, out inLabelSize),
+              "input label rect");
+        Check(inLabelTopLeft.X >= inDot.X + half, "the input label starts after its dot");
+        Check(inLabelTopLeft.X + inLabelSize.X <= inRemove.X - half, "the input label ends before its x");
+
+        // One control at each end means both directions reserve exactly the same span.
+        CheckClose(labelSize.X, inLabelSize.X, "both directions reserve the same label width");
+
+        // The label sits on the bar's centre line, not on its top edge. Text is positioned by
+        // its top edge, so "centred" has to be computed; this is the requirement, and the draw
+        // path is the one place it cannot be asserted.
+        float lineHeight = VgsConstants.PortBarHeight * 0.6f;
+        float labelTop = PortGeometry.CentredTextTop(outTopLeft.Y, outSize.Y, lineHeight);
+        CheckClose(labelTop + lineHeight * 0.5f, outTopLeft.Y + outSize.Y * 0.5f,
+                   "the label's centre line is the bar's centre line");
+        CheckClose(labelTop, outTopLeft.Y + (outSize.Y - lineHeight) * 0.5f,
+                   "the label is centred by its measured height");
+
+        // Degenerate inputs: a missing measurement must not pin the text to the top edge, and a
+        // text taller than its bar is pinned to the bar's top edge rather than pushed above it —
+        // the bar cannot contain such a line, but the label must not start outside its box.
+        CheckClose(PortGeometry.CentredTextTop(outTopLeft.Y, outSize.Y, 0f), outTopLeft.Y,
+                   "an unmeasured line falls back to the bar's top edge");
+        CheckClose(PortGeometry.CentredTextTop(outTopLeft.Y, outSize.Y, outSize.Y * 2f),
+                   outTopLeft.Y, "a line taller than its bar is pinned to its top edge");
+
+        // Hit testing: the x answers for its own port and direction, and nothing else does.
+        Check(ReferenceEquals(PortGeometry.HitPortRemoveButton(src, outRemove, aspect16By9), outPort),
+              "the output x hit-tests to its own port");
+        Check(ReferenceEquals(PortGeometry.HitPortRemoveButton(dst, inRemove, aspect16By9), inPort),
+              "the input x hit-tests to its own port");
+        Check(PortGeometry.HitPortRemoveButton(src, outDot, aspect16By9) == null,
+              "the dot is not a remove target");
+        Check(PortGeometry.HitPortRemoveButton(src, src.Position + new Vector2(0.01f, 0.01f),
+                                               aspect16By9) == null,
+              "the card is not a remove target");
+
+        // A port that is not drawn has no bar and therefore no button: the same rule that keeps
+        // an unconnected port off the screen keeps it out of the hit test.
+        Node idle = MakeTarget(3, "LargeBlockDoor", "Open");
+        idle.Position = new Vector2(0.6f, 0.6f);
+        graph.AddNode(idle);
+        graph.LayoutPorts();
+
+        Port idlePort = idle.FindAction("Open");
+        Check(idlePort.Slot < 0, "an unconnected port is not drawn");
+        Vector2 unusedCenter;
+        Check(!PortGeometry.TryPortRemoveButton(idle, idlePort, aspect16By9, out unusedCenter),
+              "an undrawn port has no remove button");
+        Check(PortGeometry.HitPortRemoveButton(idle, idle.Position + new Vector2(0.01f,
+                                                      VgsConstants.NodeHeight + VgsConstants.PortBarHeight * 0.5f),
+                                               aspect16By9) == null,
+              "an undrawn port is not a remove target");
+    }
+
+    /// <summary>
+    /// Removing a port's connections. The graph half of the gesture is what this gate can check:
+    /// the button collects every edge the port carries in both fan directions, those edges go
+    /// away, and every port that lost its last connection stops being drawn — the other end
+    /// included. The toolbar half needs the game and is on the human acceptance list.
+    /// </summary>
+    private static void PortRemoval()
+    {
+        var graph = new GridGraph(12);
+        Node timer = MakeNode(1, "LargeBlockTimerBlock");
+        Node sensor = MakeNode(2, "LargeBlockSensor", SensorToolbar());
+        Node door = MakeTarget(3, "LargeBlockDoor", "Open", "Close");
+
+        graph.AddNode(timer);
+        graph.AddNode(sensor);
+        graph.AddNode(door);
+
+        // Fan-out: one output port drives two actions of the same block.
+        Check(graph.TryConnect(1, "Triggered", 3, "Open", new ToolbarCell(0, 0)), "timer -> door Open");
+        Check(graph.TryConnect(1, "Triggered", 3, "Close", new ToolbarCell(0, 1)), "timer -> door Close");
+        graph.LayoutPorts();
+
+        var collected = new List<Edge>();
+        graph.CollectEdgesForPort(1, "Triggered", PortDirection.Output, collected);
+        Check(collected.Count == 2, "an output port collects every edge it carries");
+
+        // The direction selects the side: the door has no toolbar, so "Open" is not an output.
+        collected.Clear();
+        graph.CollectEdgesForPort(3, "Open", PortDirection.Output, collected);
+        Check(collected.Count == 0, "the direction selects the side of the edge");
+
+        // Fan-in: two sources drive the same action.
+        Check(graph.TryConnect(2, "Detected#true", 3, "Open", new ToolbarCell(0, 2)),
+              "sensor -> door Open");
+        graph.LayoutPorts();
+
+        collected.Clear();
+        graph.CollectEdgesForPort(3, "Open", PortDirection.Input, collected);
+        Check(collected.Count == 2, "an input port collects every edge arriving at it");
+
+        // Clearing the input leaves the other input of the same card alone.
+        for (int i = 0; i < collected.Count; i++) graph.RemoveEdge(collected[i]);
+        graph.LayoutPorts();
+
+        Check(graph.CountEdgesToInput(3, "Open") == 0, "the input's edges are gone");
+        Check(door.FindAction("Open").Slot < 0, "the input bar disappears with its last connection");
+        Check(door.FindAction("Close").Slot == 0, "the other input of the same card keeps its bar");
+        Check(timer.FindEvent("Triggered").Slot == 0,
+              "the source keeps its bar while it still drives something");
+        Check(sensor.FindEvent("Detected#true").Slot < 0,
+              "the source that lost its only edge loses its bar as well");
+
+        // Clearing the last edge of an output port removes that port and the target's bar too.
+        collected.Clear();
+        graph.CollectEdgesForPort(1, "Triggered", PortDirection.Output, collected);
+        Check(collected.Count == 1, "the output has one edge left");
+        for (int i = 0; i < collected.Count; i++) graph.RemoveEdge(collected[i]);
+        graph.LayoutPorts();
+
+        Check(timer.FindEvent("Triggered").Slot < 0, "the output bar disappears with its last connection");
+        Check(door.FindAction("Close").Slot < 0, "the target of the removed edge loses its bar");
+        Check(graph.EdgeCount == 0, "all connections are removed");
+
+        collected.Clear();
+        graph.CollectEdgesForPort(1, "Triggered", PortDirection.Output, collected);
+        Check(collected.Count == 0, "a port with no connections collects nothing");
     }
 
     private static void Routing()
@@ -864,6 +1086,18 @@ internal static class OfflineChecks
     private static int DrawnInputs(Node node)
     {
         return PortGeometry.DrawnPortCount(node, PortDirection.Input);
+    }
+
+    /// <summary>Horizontal half-extent of a port control, the same arithmetic PortGeometry uses.</summary>
+    private static float ControlHalfWidth(float aspect)
+    {
+        return VgsConstants.PortControlRadius * aspect;
+    }
+
+    /// <summary>Border-to-centre distance of a port control: the gap plus the half-width.</summary>
+    private static float ControlOffset(float aspect)
+    {
+        return VgsConstants.PortControlMargin * aspect + ControlHalfWidth(aspect);
     }
 
     /// <summary>

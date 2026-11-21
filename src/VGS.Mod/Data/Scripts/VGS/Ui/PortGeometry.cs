@@ -16,22 +16,29 @@ namespace Vgs.Ui
     ///
     /// <b>The shape.</b> A card is a label (name + subtype) with a round "+" on its right.
     /// Ports are rectangles as wide as the card, hanging underneath it, flush against each
-    /// other:
+    /// other. Each bar carries two round controls of the same size, one at each end:
     ///
     /// <code>
     ///   +--------------------------+
     ///   | Reactor              (o) |   card: name, subtype, "+"
     ///   | LargeBlockReactor        |
     ///   +--------------------------+
-    ///   | Fuel Changed         (o) |   output bar: full width, dot inside at the right
-    ///   | Out Of Fuel          (o) |
+    ///   | (x) Fuel Changed     (o) |   output bar: dot at the right (lines leave), "x" at the left
+    ///   | (x) Out Of Fuel      (o) |
     ///   +--------------------------+
-    ///   | (o)              On Off  |   input bar: full width, dot inside at the left
+    ///   | (o) On Off           (x) |   input bar: dot at the left (lines arrive), "x" at the right
     ///   +--------------------------+
     /// </code>
     ///
     /// Outputs sit immediately under the card, inputs under them, because the outgoing side
     /// belongs to the block itself while the incoming side is what other blocks do to it.
+    ///
+    /// <b>The dot and the remove button are mirrors of each other</b> (ADR-0014). Both are 75%
+    /// of the bar's height and both stand one four-pixel gap clear of the border on their side.
+    /// The dot is where the line attaches; the "x" is the control that deletes the port's
+    /// connections. Mirroring them is what keeps the label between them, and it makes the
+    /// direction readable from a glance at the bar: the dot is always the side the data moves
+    /// towards.
     ///
     /// <b>Slots, not indices.</b> Which bar a port occupies is <see cref="Port.Slot"/>, which
     /// <see cref="GridGraph.LayoutPorts"/> derives from the edges: a port with no connection
@@ -41,10 +48,10 @@ namespace Vgs.Ui
     /// <b>Round things and the aspect ratio.</b> The layout's X and Y units are different
     /// lengths: X spans the window's width, Y its height. A circle therefore cannot be
     /// expressed as "same extent in both axes" — that draws an ellipse. Every method that
-    /// returns the centre of a round dot takes the client aspect (height ÷ width) so the dot
-    /// lands tangent to its bar's inner edge instead of hanging outside it. The aspect is a
-    /// parameter rather than a dependency on the drawing layer, which keeps this type pure and
-    /// testable without the game.
+    /// returns the centre of a round control takes the client aspect (height ÷ width), because
+    /// both the control's half-width and its gap from the border are vertical lengths that have
+    /// to become horizontal ones. The aspect is a parameter rather than a dependency on the
+    /// drawing layer, which keeps this type pure and testable without the game.
     /// </summary>
     public static class PortGeometry
     {
@@ -195,14 +202,14 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Centre of the connection dot on a port bar: inside the bar, tangent to the edge the
-        /// line uses — the right edge for an output, the left edge for an input.
+        /// Centre of the connection dot on a port bar: inside the bar, one control-width and
+        /// one four-pixel gap clear of the edge the line uses — the right edge for an output,
+        /// the left edge for an input.
         ///
         /// <paramref name="aspectX"/> is the client height ÷ width. The dot is a circle on
-        /// screen, so its horizontal half-extent is <c>PortDotRadius * aspectX</c>; insetting
-        /// the centre by exactly that puts the dot's outer edge on the bar's inner border,
-        /// which is the only placement where the bar still contains the dot *and* the line
-        /// leaves it with no gap.
+        /// screen, so its horizontal half-extent is <c>PortControlRadius * aspectX</c>. The gap
+        /// is converted the same way, which is what makes it four *screen* pixels instead of
+        /// four layout units (see <see cref="VgsConstants.PortControlMargin"/>).
         /// </summary>
         public static bool TryPortDot(Node node, Port port, float aspectX, out Vector2 center)
         {
@@ -213,13 +220,147 @@ namespace Vgs.Ui
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            float inset = VgsConstants.PortDotRadius * aspectX;
+            float offset = ControlOffset(aspectX);
             float y = topLeft.Y + size.Y * 0.5f;
 
             center = port.Direction == PortDirection.Output
-                ? new Vector2(topLeft.X + size.X - inset, y)
-                : new Vector2(topLeft.X + inset, y);
+                ? new Vector2(topLeft.X + size.X - offset, y)
+                : new Vector2(topLeft.X + offset, y);
             return true;
+        }
+
+        /// <summary>
+        /// Centre of the remove button on a port bar: the connection dot's mirror image, same
+        /// size, on the opposite side of the bar. Clicking it deletes every connection the port
+        /// carries (<see cref="VgsEditorScreen.RemovePortConnections"/>).
+        ///
+        /// It is derived from the same two constants as the dot rather than from its own, so
+        /// the two controls cannot drift into different sizes or different gaps — a bar whose
+        /// left and right controls disagree looks broken at every zoom.
+        /// </summary>
+        public static bool TryPortRemoveButton(Node node, Port port, float aspectX, out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryPortBarRect(node, port, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float offset = ControlOffset(aspectX);
+            float y = topLeft.Y + size.Y * 0.5f;
+
+            center = port.Direction == PortDirection.Output
+                ? new Vector2(topLeft.X + offset, y)
+                : new Vector2(topLeft.X + size.X - offset, y);
+            return true;
+        }
+
+        /// <summary>
+        /// The port whose remove button is under a graph-space point, or null.
+        ///
+        /// Only drawn ports are candidates: a port with no connection has no bar and therefore
+        /// no button, which is the same rule that keeps an unconnected port off the screen.
+        /// The tolerance is a little larger than the disc, because a small circle is a hard
+        /// target with a mouse and a near-miss that deletes nothing is cheap.
+        /// </summary>
+        public static Port HitPortRemoveButton(Node node, Vector2 graphPoint, float aspectX)
+        {
+            if (node == null) return null;
+            if (aspectX <= 0f) aspectX = 1f;
+
+            Port hit = HitRemoveButton(node.Events, node, graphPoint, aspectX);
+            if (hit != null) return hit;
+            return HitRemoveButton(node.Actions, node, graphPoint, aspectX);
+        }
+
+        private static Port HitRemoveButton(System.Collections.Generic.List<Port> ports, Node node,
+                                            Vector2 graphPoint, float aspectX)
+        {
+            float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
+
+            for (int i = 0; i < ports.Count; i++)
+            {
+                Port port = ports[i];
+                if (port.Slot < 0) continue;
+
+                Vector2 center;
+                if (!TryPortRemoveButton(node, port, aspectX, out center)) continue;
+
+                // Same aspect correction as the bind button: in layout units the disc is an
+                // ellipse, so a plain Euclidean distance would make it easy to hit from above
+                // and hard from the side.
+                float dx = (graphPoint.X - center.X) / aspectX;
+                float dy = graphPoint.Y - center.Y;
+                if (dx * dx + dy * dy <= tolerance * tolerance) return port;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Rectangle of a port's label, in graph units: the span between the bar's two round
+        /// controls.
+        ///
+        /// Both controls sit one at each end, so the span is the same for an input and an
+        /// output — which is why the label never depends on the port's direction. Returns false
+        /// when the controls leave no room, in which case the caller draws no label at all
+        /// rather than one that runs underneath a control.
+        /// </summary>
+        public static bool TryPortLabelRect(Node node, Port port, float aspectX,
+                                            out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            Vector2 barTopLeft, barSize;
+            if (!TryPortBarRect(node, port, out barTopLeft, out barSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float inset = ControlOffset(aspectX) + ControlHalfWidth(aspectX)
+                          + VgsConstants.PortLabelPadding;
+            float width = barSize.X - inset * 2f;
+            if (width <= 0f) return false;
+
+            topLeft = new Vector2(barTopLeft.X + inset, barTopLeft.Y);
+            size = new Vector2(width, barSize.Y);
+            return true;
+        }
+
+        /// <summary>Horizontal half-extent of a port control, in layout X units.</summary>
+        private static float ControlHalfWidth(float aspectX)
+        {
+            return VgsConstants.PortControlRadius * aspectX;
+        }
+
+        /// <summary>
+        /// Top edge that puts a line of text of <paramref name="textHeight"/> on the centre line
+        /// of a box starting at <paramref name="boxTop"/> and <paramref name="boxHeight"/> tall.
+        ///
+        /// Text is positioned by its top edge, so "centred" is not "start at the top": a label
+        /// drawn at the box's top edge sits half a line too low, which is exactly the defect the
+        /// port label had before ADR-0014. The arithmetic is trivial and that is why it lives
+        /// here rather than inline in the draw path — it is the requirement, so it has to be
+        /// assertable without the game, and the draw path is the one place it cannot be checked.
+        ///
+        /// Units are whatever the caller passes (layout units or screen units); only the
+        /// relationship matters. A text taller than its box is pinned to the box's top instead of
+        /// being pushed above it: the box cannot contain such a line, but the label must at least
+        /// start inside its own shape rather than straddle the boundary with the bar above.
+        /// </summary>
+        public static float CentredTextTop(float boxTop, float boxHeight, float textHeight)
+        {
+            if (textHeight <= 0f || textHeight >= boxHeight) return boxTop;
+            return boxTop + (boxHeight - textHeight) * 0.5f;
+        }
+
+        /// <summary>
+        /// Distance from a bar's border to the centre of the control on that side, in layout X
+        /// units: the four-pixel gap plus the disc's own half-width.
+        /// </summary>
+        private static float ControlOffset(float aspectX)
+        {
+            return VgsConstants.PortControlMargin * aspectX + ControlHalfWidth(aspectX);
         }
 
         /// <summary>
@@ -300,8 +441,7 @@ namespace Vgs.Ui
                       + VgsConstants.PortBarHeight * 0.5f;
 
             center = new Vector2(
-                node.Position.X + VgsConstants.PortBarWidth
-                - VgsConstants.PortDotRadius * aspectX,
+                node.Position.X + VgsConstants.PortBarWidth - ControlOffset(aspectX),
                 y);
             return true;
         }
