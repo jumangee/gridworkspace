@@ -123,6 +123,15 @@ internal static class OfflineChecks
         Console.WriteLine("=== slot contiguity (input placement depends on it) ===");
         SlotContiguity();
 
+        Console.WriteLine("=== persisted position format (ADR-0012) ===");
+        PersistedPositionFormat();
+
+        Console.WriteLine("=== placed flag (ADR-0012) ===");
+        PlacementFlag();
+
+        Console.WriteLine("=== automatic layout is deterministic (ADR-0012) ===");
+        LayoutIsDeterministic();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -855,5 +864,173 @@ internal static class OfflineChecks
     private static int DrawnInputs(Node node)
     {
         return PortGeometry.DrawnPortCount(node, PortDirection.Input);
+    }
+
+    /// <summary>
+    /// The persisted position format (ADR-0012).
+    ///
+    /// This is the part of saving that can corrupt a layout without anyone noticing: a value
+    /// written in one culture and read in another is still a number, just not the same one, and
+    /// the card moves by a little on every reload. The checks below pin the round trip, the
+    /// culture independence, and the refusal to accept anything that is not exactly two finite
+    /// numbers.
+    /// </summary>
+    private static void PersistedPositionFormat()
+    {
+        Vector2 original = new Vector2(0.26f, -1.75f);
+        string text = NodeStateFormat.FormatPosition(original);
+
+        Vector2 parsed;
+        Check(NodeStateFormat.TryParsePosition(text, out parsed), "a formatted position parses back");
+        CheckClose(parsed.X, original.X, "the x of a round trip is unchanged");
+        CheckClose(parsed.Y, original.Y, "the y of a round trip is unchanged");
+
+        Check(text.IndexOf(',') < 0, "the format uses no comma, so a decimal comma locale cannot corrupt it");
+        Check(text.IndexOf(' ') == text.LastIndexOf(' '), "the format has exactly one separator");
+
+        // Negative and fractional values are the ones a naive parse (int, or a comma split)
+        // would get wrong, so they are asserted explicitly.
+        Vector2 negative;
+        Check(NodeStateFormat.TryParsePosition("-0.125 -3", out negative), "negative values parse");
+        CheckClose(negative.X, -0.125f, "a negative fraction survives the round trip");
+        CheckClose(negative.Y, -3f, "a negative integer survives the round trip");
+
+        // Rejections. Each of these must fall back to the automatic layout instead of
+        // producing a garbage position, so each is a separate assertion.
+        Vector2 ignored;
+        Check(!NodeStateFormat.TryParsePosition(null, out ignored), "null is not a position");
+        Check(!NodeStateFormat.TryParsePosition("", out ignored), "an empty string is not a position");
+        Check(!NodeStateFormat.TryParsePosition("   ", out ignored), "whitespace is not a position");
+        Check(!NodeStateFormat.TryParsePosition("0.5", out ignored), "a single number is not a position");
+        Check(!NodeStateFormat.TryParsePosition("0.5 ", out ignored), "a trailing separator is not a position");
+        Check(!NodeStateFormat.TryParsePosition(" 0.5", out ignored), "a leading separator is not a position");
+        Check(!NodeStateFormat.TryParsePosition("0.5 0.5 0.5", out ignored), "three parts are not a position");
+        Check(!NodeStateFormat.TryParsePosition("a b", out ignored), "non-numeric parts are not a position");
+        Check(!NodeStateFormat.TryParsePosition("0,5 1", out ignored), "a decimal comma is not our format");
+        Check(!NodeStateFormat.TryParsePosition("NaN 1", out ignored), "NaN is not a position");
+        Check(!NodeStateFormat.TryParsePosition("1 Infinity", out ignored), "infinity is not a position");
+
+        // A rejected parse must not leak a half-built value: the caller writes the out
+        // parameter straight into the node when it succeeds, so a partial write would show up
+        // as a card parked at an arbitrary spot.
+        Vector2 rejected = new Vector2(7f, 7f);
+        Check(!NodeStateFormat.TryParsePosition("bogus", out rejected), "a bogus value is rejected");
+        Check(rejected == Vector2.Zero, "a rejected parse leaves the output at zero, not half-written");
+    }
+
+    /// <summary>
+    /// "Placed" is a flag, not "position is not zero" (ADR-0012).
+    ///
+    /// A card parked exactly at the origin is a legitimate layout, and the old test
+    /// (<c>Position == Vector2.Zero</c>) moved it on every refresh. These checks pin both
+    /// halves: an unplaced node gets a position, and a node placed at the origin does not.
+    /// </summary>
+    private static void PlacementFlag()
+    {
+        var graph = new GridGraph(1);
+
+        Node fresh = MakeTarget(1, "LargeBlockConveyor");
+        Check(!fresh.Placed, "a new node starts unplaced");
+
+        Node origin = MakeTarget(2, "LargeBlockConveyor");
+        origin.Position = Vector2.Zero;
+        Check(origin.Placed, "writing (0, 0) marks the node placed");
+
+        // Two unplaced nodes, because the first one legitimately lands at the origin: the
+        // automatic layout starts its grid there. The property under test is that the *origin
+        // node is not disturbed*, not that unplaced nodes avoid the origin.
+        Node fresh2 = MakeTarget(4, "LargeBlockConveyor");
+
+        graph.AddNode(fresh);
+        graph.AddNode(fresh2);
+        graph.AddNode(origin);
+        graph.LayoutUnplaced();
+
+        Check(fresh.Placed, "the automatic layout marks the node it placed");
+        Check(fresh2.Placed, "the automatic layout marks every node it placed");
+        Check(fresh.Position != fresh2.Position, "two unplaced nodes get different positions");
+        Check(origin.Position == Vector2.Zero, "a node placed at the origin is left alone");
+
+        // The same rule after a second pass: a placed node must never be re-seeded, otherwise
+        // the card would drift on every refresh.
+        Vector2 kept = origin.Position;
+        graph.LayoutUnplaced();
+        Check(origin.Position == kept, "a placed node is not moved by a later layout pass");
+
+        // A position restored from storage goes through the same property, so it counts as
+        // placed without the caller having to remember a second flag.
+        Node restored = MakeTarget(3, "LargeBlockConveyor");
+        Vector2 parsed;
+        Check(NodeStateFormat.TryParsePosition("0 0", out parsed), "the saved origin parses");
+        restored.Position = parsed;
+        Check(restored.Placed, "a restored position marks the node placed");
+        graph.AddNode(restored);
+        graph.LayoutUnplaced();
+        Check(restored.Position == Vector2.Zero, "a restored position at the origin survives the layout pass");
+    }
+
+    /// <summary>
+    /// The automatic layout must be a function of the ship, not of the order the game happened
+    /// to return blocks in (ADR-0012).
+    ///
+    /// These positions are never saved, so they are recomputed on every open. If the order
+    /// depended on insertion, building or grinding one block would reshuffle every untouched
+    /// card between two sessions — which reads to the player as "the editor forgot my layout"
+    /// even though nothing was saved to forget.
+    /// </summary>
+    private static void LayoutIsDeterministic()
+    {
+        // Same three blocks, added in two different orders, with different grid positions.
+        Node a1 = MakeTarget(10, "LargeBlockConveyor");
+        a1 = WithGridPosition(a1, new Vector3I(3, 0, 0));
+        Node a2 = WithGridPosition(MakeTarget(20, "LargeBlockConveyor"), new Vector3I(1, 0, 0));
+        Node a3 = WithGridPosition(MakeTarget(30, "LargeBlockConveyor"), new Vector3I(2, 0, 0));
+
+        var forward = new GridGraph(1);
+        forward.AddNode(a1);
+        forward.AddNode(a2);
+        forward.AddNode(a3);
+        forward.LayoutUnplaced();
+
+        Node b1 = WithGridPosition(MakeTarget(30, "LargeBlockConveyor"), new Vector3I(2, 0, 0));
+        Node b2 = WithGridPosition(MakeTarget(10, "LargeBlockConveyor"), new Vector3I(3, 0, 0));
+        Node b3 = WithGridPosition(MakeTarget(20, "LargeBlockConveyor"), new Vector3I(1, 0, 0));
+
+        var backward = new GridGraph(1);
+        backward.AddNode(b1);
+        backward.AddNode(b2);
+        backward.AddNode(b3);
+        backward.LayoutUnplaced();
+
+        // The block at X=1 is first in reading order in both graphs, the one at X=3 is last.
+        Check(a2.Position == b3.Position, "the leftmost block gets the same cell in both orders");
+        Check(a3.Position == b1.Position, "the middle block gets the same cell in both orders");
+        Check(a1.Position == b2.Position, "the rightmost block gets the same cell in both orders");
+
+        // A stable layout also means the same node keeps its cell when a later block is added
+        // elsewhere: only the new node is laid out, the old ones are already placed.
+        Node late = WithGridPosition(MakeTarget(40, "LargeBlockConveyor"), new Vector3I(9, 0, 0));
+        Vector2 before = a1.Position;
+        forward.AddNode(late);
+        forward.LayoutUnplaced();
+        Check(a1.Position == before, "adding a block does not move an already laid out card");
+        Check(late.Placed, "the block added later is laid out on its own");
+
+        // ...and the new card must not land on top of an existing one. A layout that restarts
+        // its numbering would put every block built while the editor is open at the origin.
+        Check(late.Position != a1.Position && late.Position != a2.Position && late.Position != a3.Position,
+              "a block added later does not overlap an existing card");
+
+        // Removing a node must not renumber the survivors either: the counter is monotonic.
+        Vector2 survivor = a2.Position;
+        forward.RemoveNode(a3.EntityId);
+        forward.LayoutUnplaced();
+        Check(a2.Position == survivor, "removing a node does not move the remaining cards");
+    }
+
+    private static Node WithGridPosition(Node node, Vector3I position)
+    {
+        // Node.GridPosition is readonly and set in the constructor, so rebuild the node.
+        return new Node(node.EntityId, node.SubtypeId, node.DisplayName, position, node.Toolbar);
     }
 }

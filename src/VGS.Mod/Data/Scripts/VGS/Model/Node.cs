@@ -286,7 +286,8 @@ namespace Vgs.Model
     /// Mutable by design: the refresh pass rewrites the name and terminal flag, and the drag
     /// handler rewrites <see cref="Position"/> on every pointer move. Making it a value type
     /// or copying it on change would allocate per frame for no safety gain — there are no
-    /// cross-field invariants to protect.
+    /// cross-field invariants to protect, and the one that did exist (position ↔ placed) is
+    /// enforced by <see cref="Position"/> itself being a property.
     /// </summary>
     public sealed class Node
     {
@@ -301,8 +302,41 @@ namespace Vgs.Model
         /// <summary>Player-visible block name (CustomName). Refreshed when the name changes.</summary>
         public string DisplayName; // review:allow R009 written only by the refresh pass
 
-        /// <summary>Position on the canvas in graph units (not pixels, not normalized).</summary>
-        public Vector2 Position; // review:allow R009 rewritten by the drag handler every pointer move
+        private Vector2 _position;
+        private bool _placed;
+
+        /// <summary>
+        /// Position on the canvas in graph units (not pixels, not normalized).
+        ///
+        /// A property rather than a field so that "a position was written" and "the node has
+        /// been placed" cannot disagree: every write, from the drag handler or from a saved
+        /// layout, marks the node placed. The alternative — a field plus a flag set by hand at
+        /// each call site — fails silently the first time a caller forgets, and the symptom is a
+        /// card that jumps back to the automatic layout on the next refresh.
+        /// </summary>
+        public Vector2 Position
+        {
+            get { return _position; }
+            set
+            {
+                _position = value;
+                _placed = true;
+            }
+        }
+
+        /// <summary>
+        /// True once the node has a position of its own: dropped by the player, restored from
+        /// the block's saved state, or seeded once by <see cref="GridGraph.LayoutUnplaced"/>.
+        ///
+        /// <see cref="GridGraph.LayoutUnplaced"/> uses this instead of comparing
+        /// <see cref="Position"/> with <c>Vector2.Zero</c>, because <c>(0, 0)</c> is a legitimate
+        /// place for a card and a node the player parked there would otherwise be moved on every
+        /// refresh (ADR-0012).
+        /// </summary>
+        public bool Placed
+        {
+            get { return _placed; }
+        }
 
         /// <summary>False when the block type exposes no terminal actions at all.</summary>
         public bool HasTerminal; // review:allow R009 rebuilt only when the action set changes
@@ -357,8 +391,11 @@ namespace Vgs.Model
             SubtypeId = subtypeId;
             DisplayName = displayName;
             GridPosition = gridPosition;
-            Position = Vector2.Zero;
             Toolbar = toolbar ?? ToolbarLayout.None;
+
+            // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
+            // placed, and the automatic layout would then never place it. A new node starts
+            // unplaced at (0, 0) until something actually decides where it goes.
         }
 
         /// <summary>

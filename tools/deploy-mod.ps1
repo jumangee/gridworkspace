@@ -65,6 +65,27 @@ if (-not (Test-Path $scriptRoot)) {
 $csCount = (Get-ChildItem $scriptRoot -Recurse -Filter '*.cs').Count
 if ($csCount -eq 0) { throw "No .cs files under $scriptRoot" }
 
+# EntityComponents.sbc claims the mod-storage GUIDs. Without it the game still loads the mod and
+# the data still reads back during the session, but MyModStorageComponent.Serialize drops every
+# unclaimed key on save — the player's layout disappears on the next world load. That failure is
+# silent, so the deploy fails loudly instead.
+$components = Join-Path $Source 'Data\EntityComponents.sbc'
+if (-not (Test-Path $components)) {
+    throw "Data\EntityComponents.sbc is missing from $Source. The mod's storage GUIDs would not be registered and saved layouts would be discarded on save. See docs/adr/0012-layout-lives-on-the-block.md."
+}
+
+# The GUIDs in the SBC and in VgsConstants must agree; a mismatch is the same silent data loss.
+$constants = Join-Path $scriptRoot 'Core\VgsConstants.cs'
+$sbcText = Get-Content $components -Raw
+foreach ($line in @(Get-Content $constants)) {
+    if ($line -match 'new Guid\("([0-9a-fA-F-]{36})"\)') {
+        $guid = $Matches[1]
+        if ($sbcText -notmatch [regex]::Escape($guid)) {
+            throw "Storage GUID $guid is used in VgsConstants.cs but not registered in Data\EntityComponents.sbc. Saved data using it would be discarded on save."
+        }
+    }
+}
+
 $target = Join-Path $ModsRoot $FolderName
 Write-Host "Source : $Source"
 Write-Host "Target : $target"

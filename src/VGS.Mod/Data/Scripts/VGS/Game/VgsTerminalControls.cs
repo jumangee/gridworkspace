@@ -9,36 +9,48 @@ using Vgs.Ui;
 namespace Vgs.Game
 {
     /// <summary>
-    /// Injects the "Grid setup" terminal button into cockpit blocks and routes the click to
-    /// the editor screen.
+    /// Injects the mod's terminal controls and routes them:
+    ///
+    ///  * <b>"Grid setup"</b> — a button on cockpits that opens the editor;
+    ///  * <b>"Show in VGS"</b> — a checkbox on every terminal block that hides the block from
+    ///    the schema (ADR-0013).
     ///
     /// How Space Engineers terminal controls work, and the consequences:
     ///
     ///  * Controls are registered <b>per block type</b>, not per block instance. One
     ///    registration affects every cockpit in the world, including other players' ships.
     ///    There is no per-instance control, so anything instance-specific must be decided
-    ///    inside the control's callbacks (Visible / Enabled / Action).
+    ///    inside the control's callbacks (Visible / Enabled / Action / Getter / Setter).
     ///
     ///  * The block type must already exist when we register. Registering during
     ///    <c>Init()</c> is too early — the game is still building its definition tables and
     ///    the control can be dropped. The supported pattern is to register once the session
     ///    is running, which <see cref="VgsSessionComponent"/> does in its first update.
     ///
-    ///  * Registration is client-side UI only. It does not synchronise, does not persist,
-    ///    and is not visible to dedicated servers. That is fine here: the button only opens
-    ///    a local screen.
+    ///  * <b>A control added to a base type does not reach types that were initialised
+    ///    earlier.</b> <c>MyTerminalControlFactory</c> keeps one control list per type and
+    ///    copies a base type's list into a derived type exactly once, in
+    ///    <c>InitializeControls</c>. Since the game initialises block types as it loads them,
+    ///    <c>AddControl&lt;IMyTerminalBlock&gt;</c> alone would give the checkbox to an
+    ///    unpredictable subset of blocks. <c>CustomControlGetter</c> is therefore the primary
+    ///    path: it fires for the concrete block being inspected and hands us the list to
+    ///    append to.
     ///
-    ///  * <c>CustomControlGetter</c> is the supported hook for adding a control to a block
-    ///    type we do not own. It fires for every terminal block the player inspects, so it
+    ///  * Registration is client-side UI only. It does not synchronise, does not persist,
+    ///    and is not visible to dedicated servers. That is fine here: the controls only open a
+    ///    local screen and write a per-block flag.
+    ///
+    ///  * <c>CustomControlGetter</c> fires for every terminal block the player inspects, so it
     ///    must be cheap and must never throw.
     /// </summary>
     public static class VgsTerminalControls
     {
         private static bool _registered;
         private static IMyTerminalControlButton _button;
+        private static IMyTerminalControlCheckbox _checkbox;
 
         /// <summary>
-        /// Registers the button once. Safe to call repeatedly.
+        /// Registers the controls once. Safe to call repeatedly.
         /// </summary>
         public static void EnsureRegistered()
         {
@@ -66,15 +78,64 @@ namespace Vgs.Game
 
                 _button.Action = OnButtonPressed;
 
+                CreateCheckbox();
+
                 MyAPIGateway.TerminalControls.AddControl<IMyCockpit>(_button);
+
+                // The checkbox is wanted on every terminal block. This registration covers the
+                // types the game initialises after us; the getter covers all the others, and is
+                // the path that actually matters (see the class comment).
+                MyAPIGateway.TerminalControls.AddControl<IMyTerminalBlock>(_checkbox);
+
                 MyAPIGateway.TerminalControls.CustomControlGetter += OnCustomControlGetter;
 
                 _registered = true;
-                VgsLog.Info("terminal control registered: " + VgsConstants.TerminalButtonId);
+                VgsLog.Info("terminal control registered: " + VgsConstants.TerminalButtonId
+                            + ", " + VgsConstants.ShowInVgsControlId);
             }
             catch (Exception e)
             {
                 VgsLog.Error("failed to register terminal control", e);
+            }
+        }
+
+        /// <summary>
+        /// Creates the "Show in VGS" checkbox. <c>Visible</c> and <c>Enabled</c> are left at
+        /// their defaults on purpose: the control constructor installs delegates that return
+        /// <c>true</c>, and <c>ITerminalControl.IsVisible</c> calls that delegate without a
+        /// null check — assigning null would break the terminal panel.
+        /// </summary>
+        private static void CreateCheckbox()
+        {
+            _checkbox = MyAPIGateway.TerminalControls.CreateControl<IMyTerminalControlCheckbox, IMyTerminalBlock>(
+                VgsConstants.ShowInVgsControlId);
+
+            _checkbox.Title = MyStringId.GetOrCompute(VgsText.ShowInVgsTitle);
+            _checkbox.Tooltip = MyStringId.GetOrCompute(VgsText.ShowInVgsTooltip);
+            _checkbox.OnText = MyStringId.GetOrCompute(VgsText.ShowInVgsOn);
+            _checkbox.OffText = MyStringId.GetOrCompute(VgsText.ShowInVgsOff);
+
+            // Method groups, not lambdas: the getter runs on every repaint of the terminal
+            // panel, and a captured lambda would be an allocation per control instance for no
+            // gain. Both methods are allocation-free by design (one dictionary lookup).
+            _checkbox.Getter = NodeStateStore.IsShown;
+            _checkbox.Setter = OnShowInVgsChanged;
+        }
+
+        /// <summary>
+        /// Stores the flag and refreshes the control, so the tick matches the stored value
+        /// immediately rather than on the next panel rebuild.
+        /// </summary>
+        private static void OnShowInVgsChanged(IMyTerminalBlock block, bool shown)
+        {
+            try
+            {
+                NodeStateStore.SetShown(block, shown);
+                if (_checkbox != null) _checkbox.UpdateVisual();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("showinvgs", "could not store the visibility flag", e, 300);
             }
         }
 
@@ -88,7 +149,9 @@ namespace Vgs.Game
                 if (MyAPIGateway.TerminalControls != null)
                 {
                     MyAPIGateway.TerminalControls.CustomControlGetter -= OnCustomControlGetter;
+
                     if (_button != null) MyAPIGateway.TerminalControls.RemoveControl<IMyCockpit>(_button);
+                    if (_checkbox != null) MyAPIGateway.TerminalControls.RemoveControl<IMyTerminalBlock>(_checkbox);
                 }
             }
             catch (Exception e)
@@ -98,20 +161,28 @@ namespace Vgs.Game
             finally
             {
                 _button = null;
+                _checkbox = null;
                 _registered = false;
             }
         }
 
         /// <summary>
-        /// Hook that appends our button to the control list of any cockpit. Runs for every
-        /// terminal block the player opens, so it stays allocation-free and guarded.
+        /// Hook that appends our controls to the control list of the block being inspected.
+        /// Runs for every terminal block the player opens, so it stays allocation-free and
+        /// guarded.
+        ///
+        /// The checkbox goes on every block; the button stays cockpit-only.
         /// </summary>
         private static void OnCustomControlGetter(Sandbox.ModAPI.IMyTerminalBlock block,
                                                   List<IMyTerminalControl> controls)
         {
             try
             {
-                if (_button == null || controls == null) return;
+                if (block == null || controls == null) return;
+
+                if (_checkbox != null && !controls.Contains(_checkbox)) controls.Add(_checkbox);
+
+                if (_button == null) return;
 
                 var cockpit = block as IMyCockpit;
                 if (cockpit == null) return;
@@ -187,4 +258,3 @@ namespace Vgs.Game
         }
     }
 }
-

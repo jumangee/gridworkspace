@@ -750,6 +750,12 @@ namespace Vgs.Ui
 
             if (leftReleased)
             {
+                // Where the user dropped the card is written to the block here, on release.
+                // Not per pointer move (sixty writes a second), and not in OnClosed: closing
+                // can be a session unload, which never reaches OnClosed at all, and that is
+                // exactly when a player would notice the layout was lost (ADR-0012).
+                if (_dragging && _draggedNode != null) NodeStateStore.SavePosition(_draggedNode);
+
                 _draggedNode = null;
                 _dragging = false;
             }

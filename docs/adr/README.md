@@ -28,6 +28,8 @@
 | [0009](0009-screen-coordinate-space.md) | Экранное пространство: раскладка в клиенте, отрисовка в safe-GUI | accepted |
 | [0010](0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы, режим привязки, fan-in разрешён | accepted |
 | [0011](0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов | accepted |
+| [0012](0012-layout-lives-on-the-block.md) | Раскладка схемы хранится на блоке (`MyModStorageComponent` + зарегистрированный GUID), а не в таблице «`EntityId` → позиция» | accepted |
+| [0013](0013-show-in-vgs-flag.md) | Флаг видимости узла на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` | accepted |
 
 ## Как добавить
 

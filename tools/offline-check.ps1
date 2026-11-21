@@ -48,6 +48,7 @@ if (-not (Test-Path $checks)) { throw "Offline checks not found: $checks" }
 $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
     (Join-Path $sourceRoot 'Model\Node.cs'),
+    (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),
     (Join-Path $sourceRoot 'Model\GridGraph.cs'),
     (Join-Path $sourceRoot 'Model\BlockPortCatalog.cs'),
     (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),
@@ -145,8 +146,24 @@ if (-not (Test-Path $outExe)) {
 }
 
 Write-Host ''
-& $outExe
-$code = $LASTEXITCODE
+
+# The checks are run through Start-Process with file redirection rather than `& $exe`.
+# Capturing a child's stdout through a pipe needs a named pipe, and a confined environment
+# (the DSH sandbox, some CI runners) denies that with "Access to the path
+# '\\.\pipe\LOCAL\dotnet_...' is denied" — a failure of the harness, not of the checks, and one
+# that reads like a broken gate. File redirection works everywhere and keeps the exit code.
+$runOut = Join-Path $Out 'run.out.txt'
+$runErr = Join-Path $Out 'run.err.txt'
+$proc = Start-Process -FilePath $outExe -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput $runOut -RedirectStandardError $runErr
+
+if (Test-Path $runOut) { Get-Content $runOut -Raw }
+$runError = if (Test-Path $runErr) { Get-Content $runErr -Raw } else { '' }
+if ($runError -and $runError.Trim()) {
+    Write-Host $runError -ForegroundColor Yellow
+}
+
+$code = $proc.ExitCode
 Write-Host ''
 if ($code -ne 0) { exit $code }
 exit 0

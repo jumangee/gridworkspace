@@ -49,6 +49,13 @@ namespace Vgs.Model
         private readonly List<Edge> _edges = new List<Edge>();
         private readonly List<Edge> _lines = new List<Edge>();
 
+        /// <summary>
+        /// Next cell of the automatic layout. Monotonic for the graph's lifetime so that a block
+        /// built while the editor is open gets a fresh cell instead of the origin, and so that
+        /// removing a node never renumbers the survivors (ADR-0012).
+        /// </summary>
+        private int _layoutCell;
+
         /// <summary>Entity id of the grid this graph belongs to. Fixed for the graph's lifetime.</summary>
         public readonly long GridEntityId;
 
@@ -276,6 +283,7 @@ namespace Vgs.Model
             _nodeList.Clear();
             _edges.Clear();
             _lines.Clear();
+            _layoutCell = 0;
         }
 
         /// <summary>
@@ -388,6 +396,21 @@ namespace Vgs.Model
         /// Seeds readable positions for nodes that have never been placed: a coarse grid
         /// ordered by the block's own grid coordinates, so a freshly opened editor looks
         /// like the ship rather than a pile.
+        ///
+        /// "Never placed" is <see cref="Node.Placed"/>, not "position is zero": a card the
+        /// player parked at the origin is placed, and moving it on the next refresh would be a
+        /// defect the player sees immediately (ADR-0012).
+        ///
+        /// <b>Order is by block position, not by insertion order.</b> These positions are never
+        /// saved — only a card the player moved is persisted — so the layout has to be
+        /// reproducible from the blocks alone. Iterating the node list would order by whichever
+        /// block <c>IMyCubeGrid.GetBlocks</c> happened to return first, and building or grinding
+        /// one block would then reshuffle every untouched card between two sessions. Sorting by
+        /// grid position (with the entity id as a tie-break, since blocks can share a cell
+        /// position in edge cases) makes the picture a function of the ship.
+        ///
+        /// The sort runs on the unplaced nodes only, so on a settled graph the list is empty and
+        /// this costs nothing.
         /// </summary>
         public void LayoutUnplaced()
         {
@@ -395,17 +418,54 @@ namespace Vgs.Model
             const float stepY = 0.14f;
             const int columns = 6;
 
-            int placed = 0;
+            List<Node> unplaced = null;
             for (int i = 0; i < _nodeList.Count; i++)
             {
-                Node n = _nodeList[i];
-                if (n.Position != Vector2.Zero) continue;
-
-                int col = placed % columns;
-                int row = placed / columns;
-                n.Position = new Vector2(col * stepX, row * stepY);
-                placed++;
+                if (_nodeList[i].Placed) continue;
+                if (unplaced == null) unplaced = new List<Node>();
+                unplaced.Add(_nodeList[i]);
             }
+            if (unplaced == null) return;
+
+            // Insertion sort: the list is short (only cards never touched) and this avoids a
+            // comparer allocation on a path that runs after every refresh.
+            for (int i = 1; i < unplaced.Count; i++)
+            {
+                Node current = unplaced[i];
+                int j = i - 1;
+                while (j >= 0 && ComparePlacement(unplaced[j], current) > 0)
+                {
+                    unplaced[j + 1] = unplaced[j];
+                    j--;
+                }
+                unplaced[j + 1] = current;
+            }
+
+            for (int i = 0; i < unplaced.Count; i++)
+            {
+                // The cell counter is a graph field, not the loop index: a block added while
+                // the editor is open must continue after the cards already on the canvas, not
+                // start over at the origin and land on top of them. It is also what keeps the
+                // numbering stable when a node is removed — survivors keep their cells.
+                int cell = _layoutCell++;
+                int col = cell % columns;
+                int row = cell / columns;
+                unplaced[i].Position = new Vector2(col * stepX, row * stepY);
+            }
+        }
+
+        /// <summary>
+        /// Reading order on the ship: X, then Y, then Z, then entity id. The id is the final
+        /// tie-break so that two blocks in the same cell (which the grid allows for some
+        /// multi-block setups) still get a stable order instead of swapping places per run.
+        /// </summary>
+        private static int ComparePlacement(Node a, Node b)
+        {
+            if (a.GridPosition.X != b.GridPosition.X) return a.GridPosition.X < b.GridPosition.X ? -1 : 1;
+            if (a.GridPosition.Y != b.GridPosition.Y) return a.GridPosition.Y < b.GridPosition.Y ? -1 : 1;
+            if (a.GridPosition.Z != b.GridPosition.Z) return a.GridPosition.Z < b.GridPosition.Z ? -1 : 1;
+            if (a.EntityId != b.EntityId) return a.EntityId < b.EntityId ? -1 : 1;
+            return 0;
         }
     }
 }

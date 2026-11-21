@@ -36,6 +36,7 @@
 | [01-research/api-modscreen.md](01-research/api-modscreen.md) | Mod Screen API (`MyModScreen`, `MyScreenSpace*`) — новый UI-API 1.211 |
 | [01-research/api-screen-space.md](01-research/api-screen-space.md) | Проверенная семантика экранных координат: safe-GUI 4:3, единицы `Measure`, порядок слоёв |
 | [01-research/api-toolbar.md](01-research/api-toolbar.md) | Тулбар блока: кто может управлять другими, форма тулбара, «да»/«нет», правило «одно действие на страницу», запись через `BeginChanges().Apply()`; какой API разрешён моду и почему |
+| [01-research/api-persistence.md](01-research/api-persistence.md) | Хранение данных на блоке (`MyModStorageComponent`, регистрация GUID в SBC), стабильность `EntityId` при save/load, копировании и резке грида, чекбокс на всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [01-research/block-catalog-notes.md](01-research/block-catalog-notes.md) | Как собран каталог 1559 подтипов блоков, 50 кокпитов, пробелы |
 | [01-research/web-research.md](01-research/web-research.md) | Веб-ресёрч: SDK, UI-подходы, готовый код, ограничения. 79 КБ со ссылками |
 
@@ -60,7 +61,7 @@
 | `tools/verify-compile.ps1` | Шлюз компиляции |
 | `tools/check-whitelist.ps1` | Шлюз вайтлиста: запрещённые типы ловятся до запуска игры |
 | `tools/review-check.ps1` | Шлюз качества: правила R001–R010 |
-| `tools/offline-check.ps1` | Шлюз поведения: инварианты графа, слоты портов, геометрия, маршруты — без запуска игры |
+| `tools/offline-check.ps1` | Шлюз поведения: инварианты графа, слоты портов, геометрия, маршруты, формат сохранённой позиции — без запуска игры |
 | `tests/OfflineChecks.cs` | Сами утверждения офлайн-шлюза; новое правило графа — новое утверждение здесь |
 | `tools/find-se-type.ps1` | Поиск сборки, в которой объявлен тип |
 | `tools/deploy-mod.ps1` | Деплой в папку модов игры |

@@ -26,7 +26,13 @@ namespace Vgs.Game
     ///     in the source block's toolbar (ADR-0011), so the refresh pass reads the toolbars
     ///     and reconciles the graph with what it finds: an item the player removed in the
     ///     terminal loses its line, an item the player added by hand gains one. That is also
-    ///     why the picture survives save and load without a storage format of its own.
+    ///     why connections survive save and load without a storage format of their own.
+    ///
+    ///  4. <b>Everything else the node needs comes from the block too.</b> The canvas position
+    ///     and the "show in VGS" flag are read through <see cref="NodeStateStore"/> from the
+    ///     block's own mod storage, so they follow the block through save/load, blueprints and
+    ///     grid splitting (ADR-0012, ADR-0013). A block whose flag is off is not added to the
+    ///     graph at all.
     /// </summary>
     public static class GridGraphBuilder
     {
@@ -81,6 +87,13 @@ namespace Vgs.Game
 
                     IMyTerminalBlock terminal = fat as IMyTerminalBlock;
                     if (terminal == null) continue;
+
+                    // A block the player turned off in the terminal is not part of the schema
+                    // (ADR-0013). It is deliberately not added to `live`: an existing node for
+                    // it is then dropped by the removal pass below, which also drops its edges.
+                    // Nothing is written to the block's toolbar, so the wiring keeps working in
+                    // the game and comes back the moment the block is shown again.
+                    if (!NodeStateStore.IsShown(terminal)) continue;
 
                     live.Add(terminal.EntityId);
 
@@ -139,6 +152,10 @@ namespace Vgs.Game
             node.HasTerminal = TryReadActions(block, actions);
             BlockPortCatalog.FillActions(node, actions);
             BlockPortCatalog.FillEvents(node);
+
+            // The saved canvas position, if any, is applied before the node reaches the graph,
+            // so LayoutUnplaced (end of Refresh) sees it as placed and leaves it alone.
+            NodeStateStore.ApplyTo(node, block);
 
             return node;
         }

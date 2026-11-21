@@ -20,11 +20,39 @@ namespace Vgs.Core
         /// <summary>Id of the terminal button that opens the editor.</summary>
         public const string TerminalButtonId = IdPrefix + "GridSetup";
 
+        /// <summary>Id of the "Show in VGS" checkbox on terminal blocks (ADR-0013).</summary>
+        public const string ShowInVgsControlId = IdPrefix + "ShowInVgs";
+
         /// <summary>Stable GUID used for world-storage keys and network channel registration.</summary>
         /// <remarks>
         /// Do not regenerate: it identifies this mod's persisted data across versions.
         /// </remarks>
         public const string ModGuid = "6f1c2a44-3d7e-4a1b-9c05-2b8e7d4f6a13";
+
+        // ---- Persisted per-block state (ADR-0012, ADR-0013) ----
+        //
+        // Both keys live in the block's own MyModStorageComponent, so the data travels with
+        // the block through save/load, blueprints, projection and grid splitting. They are
+        // NOT keyed by EntityId, because that id is reassigned by
+        // MyObjectBuilder_CubeBlock.Remap (copy, projector, grid split) while our strings
+        // are not remapped.
+        //
+        // BOTH must be listed in Data/EntityComponents.sbc under RegisteredStorageGuids:
+        // MyModStorageComponent.Serialize writes only registered keys to the save file and
+        // drops the rest with "Not saving ModStorageComponent GUID: ... not claimed".
+
+        /// <summary>
+        /// Storage key of a node's canvas position, stored as "x y" in invariant culture.
+        /// </summary>
+        /// <remarks>Do not regenerate: changing it loses every layout in every existing world.</remarks>
+        public static readonly Guid LayoutStorageKey = new Guid("0d3c1b7a-6a51-4c39-9d2e-7f8a1c4b5e60");
+
+        /// <summary>
+        /// Storage key of the "Show in VGS" flag: "0" hides the block from the schema, any
+        /// other value (including a missing value) shows it.
+        /// </summary>
+        /// <remarks>Do not regenerate: changing it loses every flag in every existing world.</remarks>
+        public static readonly Guid VisibilityStorageKey = new Guid("b1e4a2c8-77d3-4a0f-8c61-2f9e5b0d3a47");
 
         /// <summary>Network message id for future client/server sync. Must be unique per mod.</summary>
         public const ushort NetworkChannelId = 48123;
@@ -216,6 +244,17 @@ namespace Vgs.Core
         // Terminal (survives in-game, so it is bilingual from day one)
         public const string ButtonTitle = "Grid setup";
         public const string ButtonTooltip = "Open the grid logic editor";
+
+        /// <summary>
+        /// The checkbox that removes a block from the schema without touching the ship
+        /// (ADR-0013). Wording matters: the flag does not delete anything, it only stops the
+        /// editor from drawing the card, so the tooltip says so explicitly.
+        /// </summary>
+        public const string ShowInVgsTitle = "Show in VGS";
+        public const string ShowInVgsTooltip =
+            "Draw this block on the grid schema. Turning it off hides the block and its lines; connections keep working";
+        public const string ShowInVgsOn = "On";
+        public const string ShowInVgsOff = "Off";
 
         // Editor chrome
         public const string EditorTitle = "Grid setup";

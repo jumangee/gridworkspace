@@ -20,6 +20,8 @@
 | [0009](adr/0009-screen-coordinate-space.md) | Раскладка — в клиентской области, отрисовка — в safe-GUI (исправляет 0008) |
 | [0010](adr/0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы под карточкой, режим привязки, fan-in разрешён |
 | [0011](adr/0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов |
+| [0012](adr/0012-layout-lives-on-the-block.md) | Раскладка схемы — на блоке (`MyModStorageComponent` + GUID, зарегистрированный SBC), не в таблице «`EntityId` → позиция» |
+| [0013](adr/0013-show-in-vgs-flag.md) | Флаг видимости узла — на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -153,6 +155,23 @@ classDiagram
         -ReconcileToolbarEdges(GridGraph)
         -SyncCells(GridGraph, Node, IMyToolbar, ref int)
         -ResolveToolbar(long, int) IMyToolbar
+    }
+
+    class NodeStateStore {
+        <<static>>
+        +IsShown(IMyTerminalBlock) bool
+        +SetShown(IMyTerminalBlock, bool)
+        +TryReadPosition(IMyTerminalBlock, out Vector2) bool
+        +ApplyTo(Node, IMyTerminalBlock)
+        +SavePosition(Node) bool
+        -TryRead(IMyTerminalBlock, Guid, out string) bool
+        -Write(IMyTerminalBlock, Guid, string) bool
+    }
+
+    class NodeStateFormat {
+        <<static>>
+        +FormatPosition(Vector2) string
+        +TryParsePosition(string, out Vector2) bool
     }
 
     class ToolbarProbe {
@@ -321,6 +340,7 @@ classDiagram
         +string SubtypeId
         +string DisplayName
         +Vector2 Position
+        +bool Placed
         +Vector3I GridPosition
         +bool HasTerminal
         +ToolbarLayout Toolbar
@@ -409,6 +429,7 @@ classDiagram
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Refresh
     VgsEditorScreen --> ToolbarWriter : запись связи
+    VgsEditorScreen --> NodeStateStore : сохранение позиции
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
     VgsEditorScreen --> EdgeRouting : маршрут линии
@@ -421,8 +442,13 @@ classDiagram
     GridGraphBuilder --> ToolbarProbe : форма тулбара
     GridGraphBuilder --> ToolbarWriter : чтение ячеек
     GridGraphBuilder --> ToolbarPlanner : группа ячейки
+    GridGraphBuilder --> NodeStateStore : позиция и видимость
     GridGraphBuilder --> IMyTerminalBlock
     GridGraphBuilder --> IMyToolbar
+
+    NodeStateStore --> NodeStateFormat : формат позиции
+    NodeStateStore --> IMyTerminalBlock
+    VgsTerminalControls --> NodeStateStore : флаг «Show in VGS»
 
     ToolbarProbe --> ToolbarLayout
     ToolbarProbe --> IMyToolbarProvider
@@ -506,6 +532,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | `GridGraph.cs` | контейнер узлов и связей, инварианты связей, раскладка портов по слотам |
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков и как они делятся по группам «да»/«нет» |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
+| `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
 
 Слой **не содержит** ссылок на `Sandbox.*` и `VRage.Game.ModAPI`. Это не стилистика:
 это единственная часть проекта, которую можно проверить без запуска игры, а запуск игры —
@@ -542,16 +569,28 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 
 | Файл | Ответственность |
 |---|---|
-| `VgsTerminalControls.cs` | регистрация кнопки «Grid setup», проверка прав, открытие экрана |
-| `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами |
+| `VgsTerminalControls.cs` | регистрация кнопки «Grid setup» и чекбокса «Show in VGS», проверка прав, открытие экрана |
+| `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами, фильтр скрытых блоков |
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
+| `NodeStateStore.cs` | позиция карточки и флаг видимости в `MyModStorageComponent` блока |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
 `Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет
 связи с тем, что реально лежит в тулбарах** (`ReconcileToolbarEdges`) и пересчитывает слоты
 портов: именно это делает редактор устойчивым, пока игрок режет корабль и правит тулбары
-руками.
+руками. Блок, у которого выключен флаг «Show in VGS», в граф не попадает вовсе — поэтому
+его узел снимается тем же проходом удаления, а связи к нему и от него исчезают из картинки,
+оставаясь при этом в тулбарах и работая в игре ([ADR-0013](adr/0013-show-in-vgs-flag.md)).
+
+`NodeStateStore` — единственное место, где мод читает и пишет **своё** состояние блока:
+позицию карточки и флаг видимости. Оба лежат в `MyModStorageComponent` самого блока, а не в
+таблице по `EntityId`, потому что `MyObjectBuilder_CubeBlock.Remap` переназначает id при
+копировании, проекции и резке грида ([ADR-0012](adr/0012-layout-lives-on-the-block.md)).
+Чтение никогда не создаёт компонент: иначе простой просмотр схемы прикреплял бы хранилище к
+каждому блоку мира и менял сейв. Формат значения вынесен в `Vgs.Model.NodeStateFormat`, чтобы
+его можно было проверить офлайн — это единственная часть сохранения, которая может тихо
+испортить раскладку.
 
 `ToolbarProbe` и `ToolbarWriter` — единственные места, где мод трогает тулбар. Первый
 отвечает на вопрос «может ли этот блок управлять другими» (компонент `IMyToolbarProvider` +
@@ -629,8 +668,38 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
         ├─ проверка: есть локальный игрок? (на сервере GUI нет)
         ├─ cockpit.CubeGrid
         ├─ GridGraphBuilder.Build(grid)      ← однократное чтение мира
+        │     └─ на каждый блок: NodeStateStore.IsShown (скрыт → пропустить)
+        │                        NodeStateStore.TryReadPosition (позиция из блока)
         ├─ VgsScreenDraw.EnsureResources()   ← шрифт и кисть; без них экран не открывается
         └─ new VgsEditorScreen(graph, grid).Open()
+```
+
+### Сохранение позиции
+
+```
+игрок отпускает ЛКМ после перетаскивания карточки
+   └─► VgsEditorScreen.HandleCanvasInput → leftReleased
+        └─► NodeStateStore.SavePosition(node)
+             ├─ Entities.GetEntityById(node.EntityId)   ← блок мог исчезнуть
+             └─ Storage[LayoutKey] = "x y"              ← компонент создаётся при первой записи
+
+следующая сессия
+   └─► GridGraphBuilder.CreateNode → NodeStateStore.ApplyTo
+        └─ Node.Position = сохранённая (свойство ставит Placed = true)
+             └─ LayoutUnplaced больше не двигает эту карточку
+```
+
+### Чекбокс «Show in VGS»
+
+```
+игрок снимает галочку в терминале любого блока
+   └─► VgsTerminalControls.OnShowInVgsChanged(block, false)
+        ├─ NodeStateStore.SetShown → Storage[VisibilityKey] = "0"
+        └─ _checkbox.UpdateVisual()          ← галочка отражает сохранённое значение
+
+следующее обновление графа
+   └─► GridGraphBuilder.Refresh: блок не попадает в live
+        └─ узел удаляется вместе с рёбрами; тулбары не трогаются
 ```
 
 ### Жизненный цикл экрана
@@ -650,7 +719,9 @@ OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:
 OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hit-test),
               зум колесом вокруг курсора,
               далее — один из трёх взаимоисключающих режимов:
-                обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ
+                обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ;
+                           отпускание после перетаскивания пишет позицию в блок
+                           (NodeStateStore.SavePosition)
                 привязка — линия за курсором, ПКМ/void сбрасывают,
                            клик по карточке открывает меню действий
                 меню     — строки действий, колесо прокручивает,
@@ -658,6 +729,11 @@ OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hi
 
 OnClosed()    сброс кэшей, ссылок на узлы и статического указателя
 ```
+
+Позиция пишется **на отпускании кнопки**, а не на каждом движении и не в `OnClosed`. На каждом
+движении это шестьдесят записей в секунду; в `OnClosed` — потеря раскладки при выходе в главное
+меню и при выгрузке сессии, когда `OnClosed` не приходит вовсе. Это ровно тот случай, который
+игрок замечает.
 
 Три режима — явные поля (`_bindSource`, `_menuTarget`), а не набор флагов кнопок, потому
 что режимы именно взаимоисключающие: перетаскивание, начатое во время привязки, дралось бы
@@ -785,14 +861,19 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 | Отрисовка связей | `VgsEditorScreen.DrawEdges` (между `DrawGrid` и `DrawNodes`) |
 | Исполнение логики | не нужно для базовых связей: их исполняет игра из тулбара. Для условий и значений — новый `Vgs.Game.GraphEvaluator` в `UpdateAfterSimulation` |
 | Генерация событий | не нужно для тулбаров: событие — это факт активации тулбара. Для того, чего тулбар не умеет (порог, значение), — новый `Vgs.Game.EventSources` |
-| Сохранение | уже есть и бесплатно: тулбар сериализуется игрой вместе с блоком. Собственный формат нужен только для того, что не выражается тулбаром |
+| Сохранение связей | уже есть и бесплатно: тулбар сериализуется игрой вместе с блоком. Собственный формат нужен только для того, что не выражается тулбаром |
+| Сохранение раскладки и видимости узлов | `Vgs.Game.NodeStateStore` поверх `MyModStorageComponent` на блоке; GUID регистрируется `Data/EntityComponents.sbc` ([ADR-0012](adr/0012-layout-lives-on-the-block.md)) |
 | Синхронизация | уже есть: запись идёт через `BeginChanges().Apply()`, игру уведомляет `MyToolbar.SendChanges`; на клиенте мультиплеера запись отклоняется, чтение работает |
 | Удаление связи мышью | hit-test по маршруту из `EdgeRouting.Build`; у линии уже есть геометрия; удаление обязано звать `ToolbarWriter.TryClear` |
 | Новые виджеты (скроллбар, поле ввода) | новые методы `VgsScreenDraw`; штатных контролов в разрешённом API нет |
 
-Собственный формат сохранения намеренно не вводится: он понадобится только для того, чего
-тулбар выразить не может (условия, сравнения, задержки). Что уже можно считать устойчивым —
-ключи портов (`Port.Key`) и номер ячейки (`ToolbarCell`).
+Собственный формат сохранения **связей** намеренно не вводится: их носитель — тулбар. Своё
+хранилище появляется только для того, чего тулбар выразить не может: раскладка карточек и
+флаг видимости узла. Оба живут **на блоке** (`MyModStorageComponent`, по одному короткому
+значению на GUID), а не в таблице «`EntityId` → …», потому что `EntityId` меняется при
+копировании, проекции и резке грида — [ADR-0012](adr/0012-layout-lives-on-the-block.md),
+[ADR-0013](adr/0013-show-in-vgs-flag.md). Что уже можно считать устойчивым — ключи портов
+(`Port.Key`) и номер ячейки (`ToolbarCell`).
 
 ---
 
@@ -816,6 +897,10 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 | «Может управлять» = `IMyToolbarProvider` + `ButtonPanel` | Нужно читать тулбар при обновлении; зато ответ точный для блоков других модов | [0011](adr/0011-toolbar-is-the-connection.md) |
 | «Да»/«нет» — две группы портов | Порт раздваивается, на карточке две кнопки вместо одной | [0011](adr/0011-toolbar-is-the-connection.md) |
 | Одно действие — один раз на страницу | Повтор уходит на следующую страницу, после последней — отказ с сообщением | [0011](adr/0011-toolbar-is-the-connection.md) |
+| Раскладка — на блоке, не таблицей по `EntityId` | Одна запись на блок: сейв растёт; мультиплееру нужен свой канал синхронизации | [0012](adr/0012-layout-lives-on-the-block.md) |
+| Видимость узла — флаг на блоке, чекбокс у всех терминальных блоков | Лишняя строка в терминале каждого блока мира, включая чужие и модовые | [0013](adr/0013-show-in-vgs-flag.md) |
+| Чтение состояния блока не создаёт компонент | Запись в хранилище возможна только из действия пользователя, не из просмотра | [0012](adr/0012-layout-lives-on-the-block.md) |
+| Автоматическая раскладка сортирует по позиции блока | Сортировка на каждом обновлении; зато карточки не перетасовываются между сессиями | [0012](adr/0012-layout-lives-on-the-block.md) |
 
 ---
 
