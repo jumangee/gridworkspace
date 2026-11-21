@@ -15,8 +15,9 @@ namespace Vgs.Model
     ///
     /// Invariants enforced here, not by callers:
     ///  * an edge never starts and ends on the same node;
-    ///  * an edge never duplicates an existing one;
     ///  * an edge only references ports that exist on both endpoints;
+    ///  * an edge occupies a cell of the source's toolbar, and no two edges share a cell;
+    ///  * a cell may only be used by a port whose fire group matches its slot;
     ///  * removing a node removes every edge that touched it;
     ///  * a port is drawn only while it carries at least one connection
     ///    (<see cref="LayoutPorts"/>).
@@ -25,6 +26,11 @@ namespace Vgs.Model
     /// That is the normal case — several blocks telling the same reactor to switch on — and
     /// it is why the input side of a node has one bar with several lines arriving at it
     /// instead of one bar per line.
+    ///
+    /// Nor is "one edge per (event, action)" an invariant. The game refuses the same action
+    /// twice on one toolbar *page* and accepts it on another page, so two connections that
+    /// differ only by their cell are two real, legal connections — and the reason the editor
+    /// has to warn when the last page is taken (ADR-0011).
     /// </summary>
     public sealed class GridGraph
     {
@@ -41,6 +47,7 @@ namespace Vgs.Model
         private readonly Dictionary<long, Node> _nodes = new Dictionary<long, Node>();
         private readonly List<Node> _nodeList = new List<Node>();
         private readonly List<Edge> _edges = new List<Edge>();
+        private readonly List<Edge> _lines = new List<Edge>();
 
         /// <summary>Entity id of the grid this graph belongs to. Fixed for the graph's lifetime.</summary>
         public readonly long GridEntityId;
@@ -58,6 +65,21 @@ namespace Vgs.Model
 
         /// <summary>Read-only view of edges; do not mutate the list itself.</summary>
         public IList<Edge> Edges { get { return _edges; } }
+
+        /// <summary>
+        /// The edges that get a drawn line: one per distinct (output port, input port) pair.
+        ///
+        /// The same event may drive the same action on the same block more than once — each
+        /// repeat sits in a different toolbar page, because the game refuses a duplicate on one
+        /// page ([ADR-0011](../../../../docs/adr/0011-toolbar-is-the-connection.md)). Those
+        /// repeats are separate connections and separate toolbar items, but they are the same
+        /// line between the same two dots, and drawing it twice would only double the work and
+        /// hide the fact that a repeat happened.
+        ///
+        /// Computed by <see cref="LayoutPorts"/>, which already walks every edge, so the draw
+        /// path never has to de-duplicate anything per frame.
+        /// </summary>
+        public IList<Edge> Lines { get { return _lines; } }
 
         public Node GetNode(long entityId)
         {
@@ -107,13 +129,16 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Connects an event port of one node to an action port of another. Returns false and
-        /// changes nothing when the edge would be invalid: a self-loop, a duplicate, or an
-        /// endpoint whose port does not exist.
+        /// Connects an event port of one node to an action port of another, recording the
+        /// toolbar cell the item was written into. Returns false and changes nothing when the
+        /// edge would be invalid: a self-loop, a port that does not exist, a cell outside the
+        /// source's toolbar, a cell already taken, or a cell whose slot belongs to the other
+        /// fire group.
         ///
         /// Several edges may share a target port on purpose; see the type comment.
         /// </summary>
-        public bool TryConnect(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey)
+        public bool TryConnect(long sourceEntityId, string sourcePortKey, long targetEntityId,
+                               string targetPortKey, ToolbarCell cell)
         {
             if (sourceEntityId == targetEntityId) return false;
 
@@ -121,26 +146,52 @@ namespace Vgs.Model
             Node target = GetNode(targetEntityId);
             if (source == null || target == null) return false;
 
-            if (source.FindEvent(sourcePortKey) == null) return false;
+            Port outPort = source.FindEvent(sourcePortKey);
+            if (outPort == null) return false;
             if (target.FindAction(targetPortKey) == null) return false;
 
-            for (int i = 0; i < _edges.Count; i++)
-            {
-                Edge e = _edges[i];
-                if (e.SourceEntityId == sourceEntityId
-                    && e.TargetEntityId == targetEntityId
-                    && string.Equals(e.SourcePortKey, sourcePortKey, StringComparison.Ordinal)
-                    && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
+            if (!IsCellValidFor(source, outPort, cell)) return false;
+            if (FindEdgeInCell(sourceEntityId, cell) != null) return false;
 
-            _edges.Add(new Edge(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey));
+            _edges.Add(new Edge(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell));
             return true;
         }
 
-        /// <summary>True when these two ports are already joined by an edge.</summary>
+        /// <summary>
+        /// True when the cell can hold a connection of this port: inside the source's toolbar,
+        /// free, and in the slot the port's fire group requires.
+        ///
+        /// A node without a toolbar (a test fixture, or a block whose toolbar the game did not
+        /// expose) accepts no cell at all, which keeps the invariant "every edge has a cell"
+        /// true everywhere rather than only in the editor.
+        /// </summary>
+        public static bool IsCellValidFor(Node source, Port port, ToolbarCell cell)
+        {
+            if (source == null || port == null || !cell.IsValid) return false;
+
+            ToolbarLayout layout = source.Toolbar;
+            if (layout == null || !layout.CanDrive) return false;
+            if (cell.ToolbarIndex != layout.ToolbarIndex) return false;
+            if (cell.Index < 0 || cell.Index >= layout.CellCount) return false;
+
+            int required = layout.SlotFor(port.Group);
+            if (required >= 0 && layout.SlotOf(cell.Index) != required) return false;
+            return true;
+        }
+
+        /// <summary>The edge that occupies this cell of this source, or null.</summary>
+        public Edge FindEdgeInCell(long sourceEntityId, ToolbarCell cell)
+        {
+            if (!cell.IsValid) return null;
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+                if (e.SourceEntityId == sourceEntityId && e.Cell.SameAs(cell)) return e;
+            }
+            return null;
+        }
+
+        /// <summary>True when these two ports are already joined by an edge, in any cell.</summary>
         public bool HasEdge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey)
         {
             for (int i = 0; i < _edges.Count; i++)
@@ -166,6 +217,22 @@ namespace Vgs.Model
                 Edge e = _edges[i];
                 if (e.TargetEntityId == targetEntityId
                     && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /// <summary>Number of edges that start at the given output port.</summary>
+        public int CountEdgesFromOutput(long sourceEntityId, string sourcePortKey)
+        {
+            int count = 0;
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+                if (e.SourceEntityId == sourceEntityId
+                    && string.Equals(e.SourcePortKey, sourcePortKey, StringComparison.Ordinal))
                 {
                     count++;
                 }
@@ -208,6 +275,7 @@ namespace Vgs.Model
             _nodes.Clear();
             _nodeList.Clear();
             _edges.Clear();
+            _lines.Clear();
         }
 
         /// <summary>
@@ -216,7 +284,7 @@ namespace Vgs.Model
         /// This is a *derived* view of the edges, recomputed after any change, and it lives
         /// here rather than in the UI for one reason: the slot of a port depends on the edges
         /// of the whole graph, and only this type owns them. The UI reads <see cref="Port.Slot"/>
-        /// and never decides it.
+        /// and never decides it. The same pass also rebuilds <see cref="Lines"/>.
         ///
         /// Rules, in the order they matter:
         ///
@@ -242,6 +310,8 @@ namespace Vgs.Model
                 ClearSlots(_nodeList[i].Events);
             }
 
+            _lines.Clear();
+
             for (int i = 0; i < _edges.Count; i++)
             {
                 Edge e = _edges[i];
@@ -259,7 +329,27 @@ namespace Vgs.Model
                     Port inPort = target.FindAction(e.TargetPortKey);
                     if (inPort != null) TakeSlot(target.Actions, inPort);
                 }
+
+                if (!HasLineFor(e, i)) _lines.Add(e);
             }
+        }
+
+        /// <summary>
+        /// True when an edge earlier in the list already draws the same line. Edges are
+        /// appended in order, so "earlier" is exactly "was drawn first".
+        /// </summary>
+        private bool HasLineFor(Edge edge, int index)
+        {
+            for (int j = 0; j < index; j++)
+            {
+                Edge other = _edges[j];
+                if (other.SourceEntityId != edge.SourceEntityId) continue;
+                if (other.TargetEntityId != edge.TargetEntityId) continue;
+                if (!string.Equals(other.SourcePortKey, edge.SourcePortKey, StringComparison.Ordinal)) continue;
+                if (!string.Equals(other.TargetPortKey, edge.TargetPortKey, StringComparison.Ordinal)) continue;
+                return true;
+            }
+            return false;
         }
 
         private static void ClearSlots(List<Port> ports)

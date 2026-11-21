@@ -44,8 +44,10 @@ change over — a finding you fix yourself is cheaper than one the reviewer send
 
 ```
 Vgs.Core/   VgsLog, VgsSession, VgsConstants, VgsText   — no game logic
-Vgs.Model/  Node, Port, Edge, GridGraph, BlockPortCatalog — no Sandbox.* references
-Vgs.Game/   GridGraphBuilder, VgsTerminalControls        — the only world access
+Vgs.Model/  Node, Port, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
+                                                         — no Sandbox.* references
+Vgs.Game/   GridGraphBuilder, ToolbarProbe, ToolbarWriter, VgsTerminalControls
+                                                         — the only world access
 Vgs.Ui/     VgsEditorScreen, PortGeometry, EdgeRouting, VgsScreenDraw
                                                          — draws cached data only
 ```
@@ -59,6 +61,37 @@ than where it is drawn. Same for menu rows: `GetMenuRect`/`GetMenuRowRect` serve
 
 Port bars are a *derived* view of the edges — `GridGraph.LayoutPorts()` decides which ports
 are drawn. Call it after every change to the edges, never from the UI.
+
+## 2a. Toolbars: the block is the storage
+
+A connection is an item in the source block's real toolbar (ADR-0011). Three files carry that
+and nothing else should touch it:
+
+| File | Role | Called from |
+|---|---|---|
+| `Vgs.Game/ToolbarProbe.cs` | finds the `IMyToolbarProvider` component, reads `IMyToolbar` → `ToolbarLayout` (slots, pages, yes/no) | refresh only |
+| `Vgs.Model/ToolbarPlanner.cs` | pure placement: which cell, or why there is none | writer and offline checks |
+| `Vgs.Game/ToolbarWriter.cs` | `BeginChanges().Set(...).Apply()` + read-back; `TryClear` | the click handler only |
+
+Rules that bite when ignored:
+
+- **Write with `toolbar.BeginChanges().Set(index, MyToolbarItemInfo.BlockAction(blockId, actionId)).Apply()`.**
+  `Apply()` returns `false` when this machine does not own the block's toolbar
+  (`MyToolbar.SendChanges` → `IsOwnedHere` → `Sync.IsServer`): single player and the host can
+  write, a remote multiplayer client cannot. Report that instead of claiming a connection.
+- **Never touch `MyToolbar`, `IMyToolbarOwner` or `MyToolbarItemFactory`.** They live in
+  `Sandbox.Game.Screens.Helpers`, which the IL whitelist does not allow — `Sandbox.Game` is
+  allowed *exactly*, not as a prefix. Using them compiles locally and kills the mod at world
+  load with "The type or member 'MyToolbar' is prohibited". The ModAPI mirror
+  (`IMyToolbarProvider`, `IMyToolbar`, `IMyToolbarSlots`, `MyToolbarItemInfo`) is the way in.
+- **Read the cell back** with `TryGetItem`. The game can refuse an item, and `Kind` must be
+  `MyToolbarItemKind.BlockAction` for the cell to mean "block + action".
+- **Never hardcode slot or page counts.** A timer (9×10), a sensor (2×10), an event controller
+  (2×10) and a cockpit's on-lock toolbar (2×10) disagree, and a block from another mod can
+  disagree again. `ToolbarLayout` is read from the block.
+- **"Yes" is slot 0, "no" is slot 1** of a two-slot toolbar. A `PortGroup` is part of the port
+  key (`Detected#true`), so a saved connection remembers which list it joined. The yes/no flag
+  is not on `IMyToolbar`; read `MyCubeBlockDefinition.YesNoToolbarBackground`.
 
 ## 3. API traps that cost the most time
 
@@ -117,6 +150,39 @@ it through `_apiScaleX` like a size, not like a point, or every clipped label is
 **Always unregister global hooks in `UnloadData`.** Leaving `CustomControlGetter` attached
 keeps a delegate pointing at a dead session component after the player returns to the main
 menu, and the next session throws on it.
+
+**The engine's toolbar types are prohibited to a mod.** `MyToolbar`, `IMyToolbarOwner` and
+`MyToolbarItemFactory` live in `Sandbox.Game.Screens.Helpers`; the IL whitelist allows
+`Sandbox.Game` exactly and does not cover its sub-namespaces, so a reference compiles locally
+and then fails at world load with *"The type or member 'MyToolbar' is prohibited"* — the whole
+mod stops loading. Use the ModAPI mirror instead: `VRage.Game.ModAPI.IMyToolbarProvider`,
+`IMyToolbar`, `IMyToolbarSlots`, `IMyToolbarChangeBuilder`, `MyToolbarItemInfo`,
+`MyToolbarItemKind` (all whitelisted). `MyToolbarType` (`VRage.Game`) and
+`Sandbox.Definitions.MyCubeBlockDefinition` (for the yes/no flag) are allowed.
+
+**The toolbar component is found by interface, not by class name.** The engine registers
+`Sandbox.Game.EntityComponents.MyToolbarProviderComponent`, but a mod must not name it: walk
+`((MyEntity)block).Components` and take the first `IMyToolbarProvider`. A block without that
+component cannot drive anything.
+
+**`Apply()` does not write on a remote multiplayer client.** `IMyToolbarChangeBuilder.Apply`
+ends in `MyToolbar.SendChanges`, which returns `false` unless `IsOwnedHere` — for a block
+toolbar that means `Sync.IsServer`. Single player and the host write; a client's write is
+refused. `Apply()` reports it honestly, so surface the failure rather than assuming success.
+Reading works everywhere.
+
+**`IMyToolbarSlots.ItemCount` is `SlotCount * PageCount`, and the index is linear.**
+`index = page * SlotCount + slot`. `SlotCount`/`PageCount` differ per block: read them, never
+assume. A two-slot toolbar *whose block definition sets* `YesNoToolbarBackground` has slot 0 =
+"yes" and slot 1 = "no", fired by different events. `IMyToolbar` does not expose that flag —
+read it from `MyCubeBlockDefinition.YesNoToolbarBackground`.
+
+**The vanilla toolbar screen deletes duplicates on the current page.** `DropGridItemToToolbar`
+removes every other slot of the page holding an equal item before it places the new one, so a
+duplicate written next to its twin is silently lost. Put repeats on another page.
+
+**`MyToolbarItemInfo` is a struct.** `TryGetItem` needs an `out` variable, and `Kind` must be
+`MyToolbarItemKind.BlockAction` for the cell to describe a block-plus-action connection.
 
 ## 4. Defensive rules for game-facing code
 

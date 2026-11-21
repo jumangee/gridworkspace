@@ -27,6 +27,7 @@
 | [0008](0008-mod-screen-api.md) | UI-стек: `MyModScreen` и экранное пространство мода | accepted |
 | [0009](0009-screen-coordinate-space.md) | Экранное пространство: раскладка в клиенте, отрисовка в safe-GUI | accepted |
 | [0010](0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы, режим привязки, fan-in разрешён | accepted |
+| [0011](0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов | accepted |
 
 ## Как добавить
 

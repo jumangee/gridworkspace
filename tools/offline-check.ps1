@@ -50,6 +50,7 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\Node.cs'),
     (Join-Path $sourceRoot 'Model\GridGraph.cs'),
     (Join-Path $sourceRoot 'Model\BlockPortCatalog.cs'),
+    (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),
     (Join-Path $sourceRoot 'Ui\PortGeometry.cs'),
     (Join-Path $sourceRoot 'Ui\EdgeRouting.cs'),
     $checks

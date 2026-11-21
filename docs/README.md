@@ -9,7 +9,7 @@
 | [02-feasibility.md](02-feasibility.md) | Что возможно, что нет, чем именно делается. Все утверждения с уровнем доверия | Первым. Отвечает на «а это вообще реально» |
 | [ROADMAP.md](ROADMAP.md) | Три этапа: цели, критерии приёмки, что не входит, риски | Перед любой работой |
 | [03-architecture.md](03-architecture.md) | Диаграмма классов, правила зависимостей, потоки данных, точки расширения | Перед изменением кода |
-| [06-terminology.md](06-terminology.md) | Словарь: блок, узел, карточка, порт (входящий/исходящий), связь, режимы указателя | Первым делом, если непонятно слово |
+| [06-terminology.md](06-terminology.md) | Словарь: блок, узел, карточка, порт (входящий/исходящий), связь, тулбар, ячейка, группа «да»/«нет», режимы указателя | Первым делом, если непонятно слово |
 | [adr/](adr/) | Принятые решения: контекст, альтернативы, последствия, проверка | Перед изменением кода; код, противоречащий ADR, — дефект |
 | [review/joint-review.md](review/joint-review.md) | Протокол разрешения противоречий между кодом и решением | Когда код расходится с ADR |
 | [review/regressions.md](review/regressions.md) | Регрессии и известные нарушения качества | Перед закрытием этапа |
@@ -23,6 +23,10 @@
   [03-architecture.md](03-architecture.md) §4 и
   [ADR-0010](adr/0010-port-presentation-and-binding.md).
 - **«Почему вход принимает несколько источников?»** → [ADR-0010](adr/0010-port-presentation-and-binding.md).
+- **«Почему связь — это тулбар блока, и откуда взялись кнопки T/F?»** →
+  [ADR-0011](adr/0011-toolbar-is-the-connection.md) и
+  [01-research/api-toolbar.md](01-research/api-toolbar.md).
+- **«Может ли вот этот блок управлять другими?»** → [06-terminology.md](06-terminology.md) §5.
 
 ## Справочники (сырые данные)
 
@@ -31,8 +35,18 @@
 | [01-research/api-surface.md](01-research/api-surface.md) | Дамп публичного API 44 ключевых типов игры, сгенерирован из реальных сборок |
 | [01-research/api-modscreen.md](01-research/api-modscreen.md) | Mod Screen API (`MyModScreen`, `MyScreenSpace*`) — новый UI-API 1.211 |
 | [01-research/api-screen-space.md](01-research/api-screen-space.md) | Проверенная семантика экранных координат: safe-GUI 4:3, единицы `Measure`, порядок слоёв |
+| [01-research/api-toolbar.md](01-research/api-toolbar.md) | Тулбар блока: кто может управлять другими, форма тулбара, «да»/«нет», правило «одно действие на страницу», запись через `BeginChanges().Apply()`; какой API разрешён моду и почему |
 | [01-research/block-catalog-notes.md](01-research/block-catalog-notes.md) | Как собран каталог 1559 подтипов блоков, 50 кокпитов, пробелы |
 | [01-research/web-research.md](01-research/web-research.md) | Веб-ресёрч: SDK, UI-подходы, готовый код, ограничения. 79 КБ со ссылками |
+
+## Внешние источники
+
+| Источник | Роль | Доверие |
+|---|---|---|
+| Сборки игры + `tools/dump-se-api.ps1` / `dump-se-il.ps1` | контракт и поведение | **истина** |
+| [KeenSoftwareHouse/SpaceEngineersModAPI](https://github.com/KeenSoftwareHouse/SpaceEngineersModAPI) ([DocFX](https://keensoftwarehouse.github.io/SpaceEngineersModAPI/)) | официальная документация ModAPI | официально, отстаёт от игры |
+| [malforge modapi](https://malforge.github.io/spaceengineers/modapi/index.html) | неофициальный справочник, сгенерированный из сборок | удобно, не истина |
+| [spaceengineers.wiki.gg](https://spaceengineers.wiki.gg/wiki/Modding) | рецепты и известные баги | подсказка |
 
 ## Данные и инструменты
 

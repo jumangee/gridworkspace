@@ -36,9 +36,14 @@ geometry types without starting the game and asserts the properties the picture 
 port slots are 0..n−1 with no holes, fan-in yields one bar per input, fan-out yields one bar
 per output, the input stack does not overlap the output stack, dots coincide with what hit
 testing reports, and routes are orthogonal and arrive moving right. **When a change touches
-`GridGraph`, `PortGeometry` or `EdgeRouting`, check that a matching assertion exists** — a new
-rule with no assertion is a rule verified only by a human in the game, which is exactly what
-this gate exists to avoid.
+`GridGraph`, `ToolbarPlanner`, `PortGeometry` or `EdgeRouting`, check that a matching
+assertion exists** — a new rule with no assertion is a rule verified only by a human in the
+game, which is exactly what this gate exists to avoid.
+
+Toolbar rules are the newest addition and the easiest to break silently, so check these
+specifically: a "yes" port writes slot 0 and a "no" port slot 1; a repeat of the same action
+goes to the next page; the last page produces a refusal rather than an overwrite; the two
+group buttons do not overlap and each hit-tests to its own group.
 
 A `// review:allow R0NN <reason>` comment suppresses one rule on one line. **Verify the
 reason.** A suppression whose reason is wrong is a finding in itself; the gate reports a bare
@@ -96,6 +101,31 @@ Read the change against these, and name the rule when you raise a point.
 **Testability**
 - `Vgs.Model` must stay free of game types so it can be reasoned about without launching the
   game. Any change that adds a `using Sandbox.*` there is a design regression, not a shortcut.
+- A rule that can be expressed as a pure function must be one. `ToolbarPlanner` is the model
+  case: placement is decided without touching a block, and the game layer only answers "is
+  this cell empty" and "does this page already hold the action".
+
+**Toolbar code specifically (ADR-0011)**
+- Does the code reference `MyToolbar`, `IMyToolbarOwner` or `MyToolbarItemFactory`? Those are in
+  `Sandbox.Game.Screens.Helpers`, which the IL whitelist does not allow — the mod then fails at
+  world load with "is prohibited" while still compiling locally. Only `VRage.Game.ModAPI` may
+  be used, and `check-whitelist.ps1` must be green. This is not hypothetical: it already
+  shipped once.
+- Is the toolbar component found by **interface** (`IMyToolbarProvider`) rather than by the
+  engine class name? Naming `MyToolbarProviderComponent` breaks on a rename and is a smell.
+- Is the write going through `ToolbarWriter`, and is `Apply()`'s `false` honoured? A write
+  without verification cannot distinguish "placed" from "silently refused" — and `Apply()`
+  legitimately returns false on a remote multiplayer client.
+- Does any code hardcode a slot or page count for a block type? It must read
+  `ToolbarLayout` — a timer (9×10), a sensor (2×10) and a cockpit all differ, and a modded
+  block can differ again.
+- Does the yes/no decision come from `MyCubeBlockDefinition.YesNoToolbarBackground` (the source
+  `MyToolbar.Init` copies from), not from a slot count alone and not from a subtype table?
+- Does the write happen before the graph edge, and is the cell cleared if the graph refuses?
+  The block is the source of truth; a graph edge without an item is a dead line, and an item
+  without an edge is wiring the editor does not show.
+- Is a refusal reported to the user with its reason? "Nothing happened" on a click reads as a
+  broken screen.
 
 ## 3. Conformance to the architecture
 

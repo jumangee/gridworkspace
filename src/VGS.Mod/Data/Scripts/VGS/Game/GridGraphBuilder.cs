@@ -12,7 +12,7 @@ namespace Vgs.Game
     /// Builds and refreshes a <see cref="GridGraph"/> from a live grid.
     ///
     /// This is the only place that reads game entities to populate the editor, which keeps
-    /// the "read the world" step explicit and testable. Two rules drive the design:
+    /// the "read the world" step explicit and testable. Three rules drive the design:
     ///
     ///  1. <b>Cache aggressively, resolve lazily.</b> Terminal blocks are expensive to walk;
     ///     the canvas redraws every frame and must never touch <c>IMyTerminalBlock</c>.
@@ -21,6 +21,12 @@ namespace Vgs.Game
     ///  2. <b>Never throw into the game loop.</b> A block can be destroyed between two
     ///     frames, an action list can be null, and any exception escaping here would break
     ///     the whole session update. Every read is guarded.
+    ///
+    ///  3. <b>The block's toolbar is the truth.</b> A connection exists because an item sits
+    ///     in the source block's toolbar (ADR-0011), so the refresh pass reads the toolbars
+    ///     and reconciles the graph with what it finds: an item the player removed in the
+    ///     terminal loses its line, an item the player added by hand gains one. That is also
+    ///     why the picture survives save and load without a storage format of its own.
     /// </summary>
     public static class GridGraphBuilder
     {
@@ -46,8 +52,9 @@ namespace Vgs.Game
 
         /// <summary>
         /// Re-synchronises an existing graph with the grid: adds new blocks, drops destroyed
-        /// ones, and refreshes names. Positions and edges of surviving nodes are preserved,
-        /// which is what makes the editor feel stable while the ship is being edited.
+        /// ones, refreshes names, and reconciles the edges with the blocks' toolbars.
+        /// Positions and edges of surviving nodes are preserved, which is what makes the
+        /// editor feel stable while the ship is being edited.
         /// </summary>
         public static void Refresh(GridGraph graph, IMyCubeGrid grid)
         {
@@ -105,6 +112,8 @@ namespace Vgs.Game
 
             graph.LayoutUnplaced();
 
+            ReconcileToolbarEdges(graph);
+
             // Port bars are a derived view of the edges: a node that just disappeared took
             // its edges with it, so the remaining nodes' stacks have to close up.
             graph.LayoutPorts();
@@ -114,11 +123,17 @@ namespace Vgs.Game
 
         private static Node CreateNode(IMyTerminalBlock block)
         {
+            // The toolbar is read once and before the node exists: the game builds it in the
+            // block's Init and never resizes it, and the event port list depends on its shape
+            // (one fire group or two), so it has to be known before the ports are built.
+            ToolbarLayout toolbar = ToolbarProbe.Probe(block);
+
             var node = new Node(
                 block.EntityId,
                 SafeSubtype(block),
                 SafeName(block),
-                SafePosition(block));
+                SafePosition(block),
+                toolbar);
 
             var actions = new List<string>();
             node.HasTerminal = TryReadActions(block, actions);
@@ -157,6 +172,102 @@ namespace Vgs.Game
         }
 
         /// <summary>
+        /// Rebuilds the edges of every toolbar-driven node from the items actually present in
+        /// its toolbar.
+        ///
+        /// Two directions, and both matter: an edge whose cell no longer holds that item is
+        /// removed (the player cleared the slot, or the target block was destroyed), and a
+        /// cell that holds a known item without an edge gets one (the player wired it in the
+        /// terminal, or the graph was just opened on a saved ship).
+        ///
+        /// Items that point at a block outside the graph — another grid, a block group — are
+        /// left alone: the editor cannot draw them, and deleting them would destroy wiring the
+        /// player made by hand.
+        /// </summary>
+        private static void ReconcileToolbarEdges(GridGraph graph)
+        {
+            int budget = VgsConstants.MaxToolbarCellsScanned;
+            IList<Node> nodes = graph.Nodes;
+
+            for (int n = 0; n < nodes.Count && budget > 0; n++)
+            {
+                Node node = nodes[n];
+                if (!node.CanDriveBlocks || node.Toolbar == null || !node.Toolbar.CanDrive) continue;
+
+                IMyToolbar toolbar = ResolveToolbar(node.EntityId, node.Toolbar.ToolbarIndex);
+                if (toolbar == null) continue;
+                SyncCells(graph, node, toolbar, ref budget);
+            }
+        }
+
+        private static void SyncCells(GridGraph graph, Node node, IMyToolbar toolbar, ref int budget)
+        {
+            ToolbarLayout layout = node.Toolbar;
+
+            // 1. Drop edges whose cell no longer holds that item.
+            IList<Edge> edges = graph.Edges;
+            for (int i = edges.Count - 1; i >= 0; i--)
+            {
+                Edge edge = edges[i];
+                if (edge.SourceEntityId != node.EntityId) continue;
+
+                long blockId;
+                string action;
+                bool present = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index, out blockId, out action);
+
+                if (!present || blockId != edge.TargetEntityId
+                    || !string.Equals(action, edge.TargetPortKey, StringComparison.Ordinal))
+                {
+                    graph.RemoveEdge(edge);
+                }
+            }
+
+            // 2. Add an edge for every known item that has none.
+            for (int index = 0; index < layout.CellCount && budget > 0; index++)
+            {
+                budget--;
+
+                long blockId;
+                string action;
+                if (!ToolbarWriter.TryDescribe(toolbar, index, out blockId, out action)) continue;
+
+                var cell = new ToolbarCell(layout.ToolbarIndex, index);
+                if (graph.FindEdgeInCell(node.EntityId, cell) != null) continue;
+
+                PortGroup group = ToolbarPlanner.GroupOfCell(layout, index);
+                Port port = node.PrimaryEventFor(group);
+                if (port == null) continue;
+
+                // TryConnect re-checks that the target node and its action port exist, so an
+                // item pointing outside the graph is skipped without a special case here.
+                graph.TryConnect(node.EntityId, port.Key, blockId, action, cell);
+            }
+        }
+
+        /// <summary>
+        /// Resolves a node's live toolbar, or null when the block is gone.
+        ///
+        /// The lookup goes through <see cref="ToolbarProbe.GetToolbar"/> rather than repeating
+        /// the component walk: one implementation of "where is this block's toolbar", used by
+        /// the probe, the writer and the reconcile pass alike.
+        /// </summary>
+        private static IMyToolbar ResolveToolbar(long entityId, int toolbarIndex)
+        {
+            try
+            {
+                var block = MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
+                if (block == null) return null;
+
+                return ToolbarProbe.GetToolbar(block, toolbarIndex);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("toolbar-resolve", "could not resolve block toolbar", e, 300);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Reads the terminal actions a block exposes. Returns false when the block has no
         /// terminal at all.
         /// </summary>
@@ -180,8 +291,8 @@ namespace Vgs.Game
             catch (Exception e)
             {
                 // A block whose action list cannot be read still belongs on the canvas: the
-                // node keeps its subtype and the shared events, so the user can see it and
-                // place it even though it offers no inputs.
+                // node keeps its subtype, so the user can see it and place it even though it
+                // offers no inputs.
                 VgsLog.Throttled("getactions", "GetActions failed", e, 300);
                 return false;
             }

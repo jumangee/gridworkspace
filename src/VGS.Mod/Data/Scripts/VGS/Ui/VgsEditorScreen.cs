@@ -82,6 +82,10 @@ namespace Vgs.Ui
         private static readonly Color ColMenuRowHot = new Color(52, 66, 88, 255);
         private static readonly Color ColBottomBar = new Color(24, 29, 38, 255);
 
+        /// <summary>Colour of a failure message: warm enough to read as a problem, dim enough
+        /// not to shout from a bar the user looks at only when something goes wrong.</summary>
+        private static readonly Color ColWarning = new Color(255, 176, 120, 255);
+
         /// <summary>
         /// Thickness of a hairline, as a fraction of the client-area height (about 1 px at
         /// 1080p). Horizontal lines keep that thickness; vertical lines are drawn from a width,
@@ -116,6 +120,16 @@ namespace Vgs.Ui
         /// <summary>Source card of a bind in progress. Non-null means bind mode is active.</summary>
         private Node _bindSource;
 
+        /// <summary>
+        /// The exact port the bind will write into. Chosen when the bind starts, because a
+        /// yes/no toolbar offers two ports for the same event and the user picked one by
+        /// clicking "T" or "F" — the choice must not be re-derived later from the node.
+        /// </summary>
+        private Port _bindPort;
+
+        /// <summary>Fire group the current bind belongs to; drives the hint text.</summary>
+        private PortGroup _bindGroup;
+
         /// <summary>Card whose action menu is open. Non-null implies bind mode.</summary>
         private Node _menuTarget;
 
@@ -141,6 +155,21 @@ namespace Vgs.Ui
         private bool _mouseValid;
         private Node _hoverNode;
         private Node _hoverPlus;
+
+        /// <summary>Which of the hovered node's bind buttons is under the pointer.</summary>
+        private PortGroup _hoverGroup;
+
+        /// <summary>
+        /// Last failure to write a connection, and the frame it stops being shown.
+        ///
+        /// A connection is an item in the source block's toolbar (ADR-0011), and the game
+        /// refuses some placements — the same action twice on one page, or a page list that is
+        /// full. Silently doing nothing would read as a broken screen, so the reason is shown
+        /// on the bottom bar for a few seconds.
+        /// </summary>
+        private string _warningText;
+
+        private int _warningUntilFrame;
 
         /// <summary>
         /// Scratch buffer for wire routes. Reused so that drawing a connection allocates
@@ -369,6 +398,7 @@ namespace Vgs.Ui
                 _draggedNode = null;
                 _selected = null;
                 _bindSource = null;
+                _bindPort = null;
                 _menuTarget = null;
                 _menuRows.Clear();
                 _menuLabels.Clear();
@@ -378,6 +408,7 @@ namespace Vgs.Ui
                 _gridNameCache = null;
                 _hoverNode = null;
                 _hoverPlus = null;
+                _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
 
@@ -535,6 +566,18 @@ namespace Vgs.Ui
 
             if (_bindSource != null && !_graph.Contains(_bindSource.EntityId)) CancelBind();
 
+            // A bind holds a specific port object, chosen when it started. A refresh that
+            // rebuilt the source's event list (its action set changed, or the block was
+            // rebuilt) leaves that object orphaned, and the line would then point at a port
+            // the node no longer has. Re-resolve by key instead of cancelling: the gesture is
+            // still meaningful as long as the port survives.
+            if (_bindSource != null && _bindPort != null)
+            {
+                Port live = _bindSource.FindEvent(_bindPort.Key);
+                if (live == null) CancelBind();
+                else _bindPort = live;
+            }
+
             if (_menuTarget != null)
             {
                 if (!_graph.Contains(_menuTarget.EntityId) || !SamePorts(_menuRows, _menuTarget.Actions))
@@ -664,19 +707,20 @@ namespace Vgs.Ui
 
             if (_panning && !rightDown && !middleDown) _panning = false;
 
-            // ---- hover: the "+" button and the card under the pointer ----
+            // ---- hover: the bind button and the card under the pointer ----
             UpdateHover(mouse, canvasTopLeft, canvasSize);
 
             if (leftNew && insideCanvas)
             {
                 Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
 
-                // The "+" wins over the card underneath: it sits on the card's right edge and
-                // starting a drag instead of a bind would be maddening.
-                Node plus = HitTestPlus(graphPos);
+                // The bind button wins over the card underneath: it sits on the card's right
+                // edge and starting a drag instead of a bind would be maddening.
+                PortGroup group;
+                Node plus = HitTestBindButton(graphPos, out group);
                 if (plus != null)
                 {
-                    BeginBind(plus);
+                    BeginBind(plus, group);
                     return;
                 }
 
@@ -826,31 +870,34 @@ namespace Vgs.Ui
 
         // ------------------------------------------------------------------ bind mode
 
-        private void BeginBind(Node source)
+        private void BeginBind(Node source, PortGroup group)
         {
             if (source == null) return;
 
-            Port primary = source.PrimaryEvent;
-            if (primary == null)
+            Port port = source.PrimaryEventFor(group);
+            if (port == null)
             {
-                VgsLog.Debug("bind not started: block exposes no events");
+                VgsLog.Debug("bind not started: block has no port for group " + group);
                 return;
             }
 
             _bindSource = source;
+            _bindPort = port;
+            _bindGroup = group;
             _selected = source;
             _dragging = false;
             _draggedNode = null;
             _panning = false;
             CloseActionMenu();
 
-            VgsLog.Debug("bind started from " + source.EntityId + " via " + primary.Key);
+            VgsLog.Debug("bind started from " + source.EntityId + " via " + port.Key);
         }
 
         private void CancelBind()
         {
             if (_bindSource != null) VgsLog.Debug("bind cancelled");
             _bindSource = null;
+            _bindPort = null;
             _hoverNode = null;
             _panning = false;
             CloseActionMenu();
@@ -962,39 +1009,105 @@ namespace Vgs.Ui
         /// <summary>
         /// Creates the connection the bind was aiming at.
         ///
-        /// Returns true when the user's intent is satisfied — including the case where the
-        /// connection already exists. That case is not an error to report and not a reason to
-        /// keep the menu open: the user asked for "timer drives this reactor", and after the
-        /// call it does. Returning false there would leave a menu that silently ignores clicks,
-        /// which reads as a broken screen.
+        /// The order is deliberate: the item goes into the source block's real toolbar first,
+        /// and only then into the graph. The toolbar is what makes the connection work
+        /// (ADR-0011), so a graph edge without an item would be a line that does nothing. If
+        /// the game refuses the placement — every page already holds that action, or the page
+        /// list is full — the user is told why and nothing is changed.
+        ///
+        /// Returns true only when the block really holds the connection afterwards. A click
+        /// that could not be satisfied returns false, so the menu stays open and the user can
+        /// pick another action instead of wondering whether the click registered.
         /// </summary>
         private bool TryCompleteBind(Port action)
         {
             Node source = _bindSource;
             Node target = _menuTarget;
-            if (source == null || target == null || action == null) return false;
+            Port port = _bindPort;
+            if (source == null || target == null || action == null || port == null) return false;
 
-            Port primary = source.PrimaryEvent;
-            if (primary == null) return false;
-
-            if (_graph.HasEdge(source.EntityId, primary.Key, target.EntityId, action.Key))
+            IMyTerminalBlock sourceBlock = ResolveBlock(source.EntityId);
+            IMyTerminalBlock targetBlock = ResolveBlock(target.EntityId);
+            if (sourceBlock == null || targetBlock == null)
             {
-                VgsLog.Debug("bind already satisfied: " + primary.Key + " -> " + action.Key);
-                return true;
+                Warn(VgsText.WarnBlockGone);
+                return false;
             }
 
-            if (!_graph.TryConnect(source.EntityId, primary.Key, target.EntityId, action.Key))
+            ToolbarCell cell;
+            ToolbarWriter.WriteResult result =
+                ToolbarWriter.TryWrite(sourceBlock, source, port, targetBlock, action.Key, out cell);
+
+            if (result != ToolbarWriter.WriteResult.Ok)
             {
-                VgsLog.Warn("bind rejected by graph: " + primary.Key + " -> " + action.Key);
+                Warn(DescribeWriteFailure(result, source, target, action));
+                return false;
+            }
+
+            if (!_graph.TryConnect(source.EntityId, port.Key, target.EntityId, action.Key, cell))
+            {
+                // The graph refused an item the block now holds: put the cell back the way it
+                // was rather than leaving wiring the editor does not show.
+                VgsLog.Warn("bind rejected by graph: " + port.Key + " -> " + action.Key + " @ " + cell);
+                ToolbarWriter.TryClear(sourceBlock, source, cell);
+                Warn(VgsText.WarnRejected);
                 return false;
             }
 
             // The new connection changes which port bars exist, so the stacks are recomputed.
             _graph.LayoutPorts();
 
-            VgsLog.Info("connected " + source.EntityId + " (" + primary.Key + ") -> "
-                        + target.EntityId + " (" + action.Key + ")");
+            VgsLog.Info("connected " + source.EntityId + " (" + port.Key + ") -> "
+                        + target.EntityId + " (" + action.Key + ") @ " + cell);
             return true;
+        }
+
+        /// <summary>
+        /// Turns a write failure into the sentence the user sees. Each reason has its own
+        /// wording because they call for different actions: a full toolbar needs a page freed,
+        /// a duplicate needs a different target action, a vanished action needs a refresh.
+        /// </summary>
+        private static string DescribeWriteFailure(ToolbarWriter.WriteResult result, Node source,
+                                                   Node target, Port action)
+        {
+            switch (result)
+            {
+                case ToolbarWriter.WriteResult.NotDrivable:
+                    return string.Format(VgsText.WarnNotDrivableFormat, source.DisplayName);
+                case ToolbarWriter.WriteResult.ActionOnEveryPage:
+                    return string.Format(VgsText.WarnEveryPageFormat, action.DisplayName, source.DisplayName);
+                case ToolbarWriter.WriteResult.NoFreeCell:
+                    return string.Format(VgsText.WarnNoFreeCellFormat, source.DisplayName);
+                case ToolbarWriter.WriteResult.ActionUnavailable:
+                    return string.Format(VgsText.WarnActionGoneFormat, target.DisplayName, action.DisplayName);
+                default:
+                    return VgsText.WarnRejected;
+            }
+        }
+
+        /// <summary>Shows a failure on the bottom bar and records it in the log.</summary>
+        private void Warn(string text)
+        {
+            _warningText = text;
+            _warningUntilFrame = VgsSession.Frame + VgsConstants.WarningFrames;
+            VgsLog.Warn(text);
+        }
+
+        /// <summary>
+        /// Resolves a node back to its live block. The entity id can be stale — the block may
+        /// have been destroyed since the last refresh — so the result is checked, never assumed.
+        /// </summary>
+        private static IMyTerminalBlock ResolveBlock(long entityId)
+        {
+            try
+            {
+                return MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("resolve-block", "could not resolve block", e, 120);
+                return null;
+            }
         }
 
         // ------------------------------------------------------------------ hit testing
@@ -1023,20 +1136,26 @@ namespace Vgs.Ui
             return null;
         }
 
-        /// <summary>Topmost node whose "+" button is under the pointer, or null.</summary>
-        private Node HitTestPlus(Vector2 graphPoint)
+        /// <summary>Topmost node whose bind button is under the pointer, and which one.</summary>
+        private Node HitTestBindButton(Vector2 graphPoint, out PortGroup group)
         {
+            group = PortGroup.Single;
             float aspect = VgsScreenDraw.ClientAspect;
             IList<Node> nodes = _graph.Nodes;
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
-                if (PortGeometry.HitPlusButton(nodes[i], graphPoint, aspect)) return nodes[i];
+                PortGroup hit;
+                if (PortGeometry.HitBindButton(nodes[i], graphPoint, aspect, out hit))
+                {
+                    group = hit;
+                    return nodes[i];
+                }
             }
             return null;
         }
 
         /// <summary>
-        /// Refreshes the hover targets used for the highlight of a card and of its "+".
+        /// Refreshes the hover targets used for the highlight of a card and of its bind button.
         ///
         /// Hover is recomputed from the pointer every input pass rather than cached until a
         /// move event: the canvas pans and zooms under a still pointer, so "under the pointer"
@@ -1052,9 +1171,12 @@ namespace Vgs.Ui
             }
 
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
-            _hoverPlus = HitTestPlus(graphPos);
 
-            // A card under the "+" is not "hovered": the button is the thing about to be
+            PortGroup group;
+            _hoverPlus = HitTestBindButton(graphPos, out group);
+            _hoverGroup = group;
+
+            // A card under the button is not "hovered": the button is the thing about to be
             // clicked, and highlighting the card as well would suggest a drag.
             _hoverNode = _hoverPlus == null ? HitTest(graphPos) : null;
         }
@@ -1155,18 +1277,24 @@ namespace Vgs.Ui
         /// <summary>
         /// Draws every connection as an orthogonal route from an output dot to an input dot.
         ///
+        /// It walks <see cref="GridGraph.Lines"/>, not <see cref="GridGraph.Edges"/>: the same
+        /// event may drive the same action several times (one toolbar page each), and those
+        /// repeats are separate connections but the same line between the same two dots. The
+        /// de-duplication is done once by <see cref="GridGraph.LayoutPorts"/>, so this per-frame
+        /// path stays a single pass.
+        ///
         /// A connection whose ports have no drawing slot (the block has more ports than
         /// <see cref="GridGraph.MaxPortsPerSide"/>) is skipped: it exists in the graph but has
         /// no dot to attach to, and drawing it from nowhere would be a lie.
         /// </summary>
         private void DrawEdges(Vector2 topLeft, Vector2 size)
         {
-            IList<Edge> edges = _graph.Edges;
+            IList<Edge> lines = _graph.Lines;
             int drawn = 0;
 
-            for (int i = 0; i < edges.Count && drawn < VgsConstants.MaxRenderedEdges; i++)
+            for (int i = 0; i < lines.Count && drawn < VgsConstants.MaxRenderedEdges; i++)
             {
-                Edge edge = edges[i];
+                Edge edge = lines[i];
 
                 Node source = _graph.GetNode(edge.SourceEntityId);
                 Node target = _graph.GetNode(edge.TargetEntityId);
@@ -1196,10 +1324,10 @@ namespace Vgs.Ui
         /// </summary>
         private void DrawPendingLine(Vector2 topLeft, Vector2 size)
         {
-            if (_bindSource == null || !_mouseValid) return;
+            if (_bindSource == null || _bindPort == null || !_mouseValid) return;
 
             Vector2 from;
-            if (!PortGeometry.TryPendingSourceDot(_bindSource, _bindSource.PrimaryEvent,
+            if (!PortGeometry.TryPendingSourceDot(_bindSource, _bindPort,
                                                   VgsScreenDraw.ClientAspect, out from)) return;
 
             Vector2 start = GraphToScreen(from, topLeft);
@@ -1292,21 +1420,26 @@ namespace Vgs.Ui
             float pad = cardSize.X * 0.05f;
             float textRight = cardSize.X - pad;
 
-            // The "+" occupies the right end of the card, so the labels must stop before it
-            // instead of running underneath a circle that is drawn on top of them.
+            // The bind button occupies the right end of the card, so the labels must stop
+            // before it instead of running underneath a circle that is drawn on top of them.
             //
             // The button is round on *screen*, which makes it an ellipse in layout units: its
             // horizontal half-extent is radius × aspect, not radius. Reserving the vertical
             // radius would leave the text running under the circle on any window that is not
             // square — which is every window.
-            if (node.CanSourceEvents)
+            if (node.CanDriveBlocks)
             {
-                Vector2 plusCenter;
-                if (PortGeometry.TryPlusButton(node, VgsScreenDraw.ClientAspect, out plusCenter))
+                float radius = PortGeometry.HasGroupButtons(node)
+                    ? VgsConstants.GroupButtonRadius
+                    : VgsConstants.PlusButtonRadius;
+
+                Vector2 buttonCenter;
+                if (PortGeometry.TryBindButton(node, FirstGroupOf(node), VgsScreenDraw.ClientAspect,
+                                               out buttonCenter))
                 {
-                    float plusHalfWidth = VgsScreenDraw.AspectX(VgsConstants.PlusButtonRadius);
-                    float plusLeftInCard = plusCenter.X - node.Position.X - plusHalfWidth;
-                    textRight = (plusLeftInCard - VgsConstants.PlusButtonTextGap) * _zoom;
+                    float halfWidth = VgsScreenDraw.AspectX(radius);
+                    float leftInCard = buttonCenter.X - node.Position.X - halfWidth;
+                    textRight = (leftInCard - VgsConstants.PlusButtonTextGap) * _zoom;
                 }
             }
 
@@ -1323,34 +1456,60 @@ namespace Vgs.Ui
 
             DrawPortBars(node, clipTopLeft, clipSize);
 
-            // The "+" is drawn last so it is never covered by a port bar of a neighbouring
-            // card that happens to be drawn later.
-            if (node.CanSourceEvents) DrawPlusButton(node, clipTopLeft, clipSize);
+            // The bind buttons are drawn last so they are never covered by a port bar of a
+            // neighbouring card that happens to be drawn later.
+            if (node.CanDriveBlocks) DrawBindButtons(node, clipTopLeft, clipSize);
+        }
+
+        /// <summary>The group whose button sits highest on the card; used to reserve text width.</summary>
+        private static PortGroup FirstGroupOf(Node node)
+        {
+            return PortGeometry.HasGroupButtons(node) ? PortGroup.Yes : PortGroup.Single;
         }
 
         /// <summary>
-        /// Draws the round "+" that starts bind mode: a solid white disc with the plus knocked
-        /// out in the card's own colour.
+        /// Draws the control that starts bind mode.
         ///
-        /// Round, not a square, because it must not read as part of the card: it is a control
+        /// Two shapes, and the difference is not decoration:
+        ///
+        ///  * a single-group toolbar (a timer) gets one round "+" centred on the card;
+        ///  * a yes/no toolbar (a sensor, an event controller) gets a "T" and an "F" stacked
+        ///    on the card's right edge, because the game keeps two independent lists of
+        ///    actions and a connection has to say which one it joins.
+        ///
+        /// Round, not square, because it must not read as part of the card: it is a control
         /// that starts a modal gesture, and the one thing the user must never do is drag the
         /// card when they meant to drag a connection.
         ///
         /// The plus is <b>geometry, not a glyph</b>. A font glyph is positioned by its baseline
         /// and carries side bearings, so "centred" text is never exactly centred — which is the
         /// defect this replaces. Two rectangles, both built around the same centre, are centred
-        /// by construction at every zoom and cost no font lookup.
+        /// by construction at every zoom and cost no font lookup. The T/F buttons carry a
+        /// letter because the two groups are otherwise indistinguishable; a letter is the one
+        /// thing a player already reads on the vanilla toolbar-config screen.
         /// </summary>
-        private void DrawPlusButton(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawBindButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (!PortGeometry.HasGroupButtons(node))
+            {
+                DrawPlusButton(node, PortGroup.Single, clipTopLeft, clipSize);
+                return;
+            }
+
+            DrawGroupButton(node, PortGroup.Yes, VgsText.TrueButtonGlyph, clipTopLeft, clipSize);
+            DrawGroupButton(node, PortGroup.No, VgsText.FalseButtonGlyph, clipTopLeft, clipSize);
+        }
+
+        private void DrawPlusButton(Node node, PortGroup group, Vector2 clipTopLeft, Vector2 clipSize)
         {
             Vector2 center;
-            if (!PortGeometry.TryPlusButton(node, VgsScreenDraw.ClientAspect, out center)) return;
+            if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
 
             Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
             float radius = VgsConstants.PlusButtonRadius * _zoom;
             float diameter = radius * 2f;
 
-            bool hot = ReferenceEquals(node, _hoverPlus);
+            bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
             VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
                                hot ? ColPlusFillHot : ColPlusFill);
 
@@ -1375,6 +1534,31 @@ namespace Vgs.Ui
                 new Vector2(screenCenter.X - strokeWidth * 0.5f, screenCenter.Y - arm * 0.5f),
                 new Vector2(strokeWidth, arm),
                 clipTopLeft, clipSize, glyph);
+        }
+
+        /// <summary>
+        /// One of the two discs of a yes/no toolbar: the same inverted disc as the "+", with
+        /// "T" or "F" in the card's colour.
+        ///
+        /// The letter is drawn by the text primitive rather than as geometry. That is the one
+        /// place in this file where a glyph is preferred: a plus is two rectangles, but a
+        /// letter is not, and the two groups need a label a player recognises.
+        /// </summary>
+        private void DrawGroupButton(Node node, PortGroup group, string glyph, Vector2 clipTopLeft,
+                                     Vector2 clipSize)
+        {
+            Vector2 center;
+            if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
+
+            Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
+            float radius = VgsConstants.GroupButtonRadius * _zoom;
+
+            bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
+            VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
+                               hot ? ColPlusFillHot : ColPlusFill);
+
+            VgsScreenDraw.TextCentered(glyph, screenCenter,
+                                       VgsConstants.GroupButtonGlyphScale * CardTextScale, ColNode);
         }
 
         /// <summary>
@@ -1513,19 +1697,54 @@ namespace Vgs.Ui
 
             VgsScreenDraw.Text(GetStatusText(),
                                new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.18f), 0.7f, ColText);
-            VgsScreenDraw.Text(BottomBarHint,
-                               new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f, ColTextDim);
+
+            // The hint line has two jobs and one slot: it either explains the gesture, or it
+            // says why the last click did not produce a connection. The failure wins, because
+            // the user is looking at a line that did not appear and needs to know why.
+            string warning = ActiveWarning;
+            if (warning != null)
+            {
+                VgsScreenDraw.Text(warning,
+                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f,
+                                   ColWarning);
+            }
+            else
+            {
+                VgsScreenDraw.Text(BottomBarHint,
+                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f, ColTextDim);
+            }
 
             DrawCloseButton();
         }
 
         /// <summary>
+        /// The warning to show, or null once it has expired. Expiry is checked here rather
+        /// than by a timer so nothing has to run between frames.
+        /// </summary>
+        private string ActiveWarning
+        {
+            get
+            {
+                if (_warningText == null) return null;
+                if (VgsSession.Frame > _warningUntilFrame) { _warningText = null; return null; }
+                return _warningText;
+            }
+        }
+
+        /// <summary>
         /// Second line of the bottom bar. Bind mode replaces the static hint, because while
-        /// binding the only thing the user needs to know is how to finish or cancel.
+        /// binding the only thing the user needs to know is how to finish or cancel — and on
+        /// a yes/no toolbar, which of the two lists the connection is going into.
         /// </summary>
         private string BottomBarHint
         {
-            get { return _bindSource != null ? VgsText.BindHint : VgsText.Hint; }
+            get
+            {
+                if (_bindSource == null) return VgsText.Hint;
+                if (_bindGroup == PortGroup.Yes) return VgsText.BindHintTrue;
+                if (_bindGroup == PortGroup.No) return VgsText.BindHintFalse;
+                return VgsText.BindHint;
+            }
         }
 
         /// <summary>

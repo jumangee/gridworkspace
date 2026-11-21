@@ -19,6 +19,7 @@
 | [0008](adr/0008-mod-screen-api.md) | UI-стек: `MyModScreen` + экранное пространство мода (заменяет 0001) |
 | [0009](adr/0009-screen-coordinate-space.md) | Раскладка — в клиентской области, отрисовка — в safe-GUI (исправляет 0008) |
 | [0010](adr/0010-port-presentation-and-binding.md) | Карточка-метка, порты-стаканы под карточкой, режим привязки, fan-in разрешён |
+| [0011](adr/0011-toolbar-is-the-connection.md) | Связь — элемент в тулбаре блока; «может управлять» = компонент `IMyToolbarProvider` + `ButtonPanel`; «да»/«нет» — две группы портов |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -149,7 +150,50 @@ classDiagram
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
         -TryReadActions(IMyTerminalBlock, List~string~) bool
-        -BuildSubtitle(Node) string
+        -ReconcileToolbarEdges(GridGraph)
+        -SyncCells(GridGraph, Node, IMyToolbar, ref int)
+        -ResolveToolbar(long, int) IMyToolbar
+    }
+
+    class ToolbarProbe {
+        <<static>>
+        +Probe(IMyTerminalBlock) ToolbarLayout
+    }
+
+    class ToolbarWriter {
+        <<static>>
+        +TryWrite(IMyTerminalBlock, Node, Port, IMyTerminalBlock, string, out ToolbarCell) WriteResult
+        +TryClear(IMyTerminalBlock, Node, ToolbarCell) bool
+        +TryDescribe(IMyToolbar, int, out long, out string) bool
+        -BuildItem(IMyTerminalBlock, string) MyToolbarItem
+    }
+
+    class ToolbarPlanner {
+        <<static>>
+        +Plan(ToolbarLayout, PortGroup, Func~int,bool~, Func~int,bool~, out int) ToolbarPlacement
+        +GroupOfCell(ToolbarLayout, int) PortGroup
+    }
+
+    class ToolbarLayout {
+        +int ToolbarIndex
+        +int SlotCount
+        +int PageCount
+        +bool YesNo
+        +ToolbarLayout None$
+        +int CellCount
+        +bool CanDrive
+        +SlotFor(PortGroup) int
+        +CellIndex(int, int) int
+        +PageOf(int) int
+        +SlotOf(int) int
+    }
+
+    class ToolbarCell {
+        +int ToolbarIndex
+        +int Index
+        +ToolbarCell None$
+        +bool IsValid
+        +SameAs(ToolbarCell) bool
     }
 
     class VgsEditorScreen {
@@ -161,11 +205,14 @@ classDiagram
         -Node _draggedNode
         -Node _selected
         -Node _bindSource
+        -Port _bindPort
+        -PortGroup _bindGroup
         -Node _menuTarget
         -List~Port~ _menuRows
         -List~string~ _menuLabels
         -List~Vector4~ _route
         -string _statusText
+        -string _warningText
         -bool _closeHot
         +OpenFor(IMyCockpit)$
         +CloseIfOpen()$
@@ -178,15 +225,17 @@ classDiagram
         -HandleCanvasInput(Vector2) void
         -HandleBindInput(Vector2) void
         -HandleMenuInput(Vector2) void
-        -BeginBind(Node) void
+        -BeginBind(Node, PortGroup) void
         -CancelBind() void
         -OpenActionMenu(Node, Vector2) void
         -CloseActionMenu() void
         -TryCompleteBind(Port) bool
+        -DescribeWriteFailure(WriteResult, Node, Node, Port) string
+        -Warn(string) void
         -ValidateInteractionState() void
         -ScreenToGraph(Vector2, Vector2) Vector2
         -HitTest(Vector2) Node
-        -HitTestPlus(Vector2) Node
+        -HitTestBindButton(Vector2, out PortGroup) Node
         -GetMenuRect(out Vector2, out Vector2) void
         -DrawNodes(Vector2, Vector2) void
         -DrawNode(Node, Vector2, Vector2, Vector2) void
@@ -194,7 +243,9 @@ classDiagram
         -DrawEdges(Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
-        -DrawPlusButton(Node, Vector2, Vector2) void
+        -DrawBindButtons(Node, Vector2, Vector2) void
+        -DrawPlusButton(Node, PortGroup, Vector2, Vector2) void
+        -DrawGroupButton(Node, PortGroup, string, Vector2, Vector2) void
         -GetStatusText() string
         -ResolveGridName()
     }
@@ -202,7 +253,9 @@ classDiagram
     class PortGeometry {
         <<static>>
         +CardRect(Node, out Vector2, out Vector2)
-        +TryPlusButton(Node, out Vector2) bool
+        +HasGroupButtons(Node) bool
+        +TryBindButton(Node, PortGroup, float aspectX, out Vector2) bool
+        +HitBindButton(Node, Vector2, float aspectX, out PortGroup) bool
         +TryPortBarRect(Node, Port, out Vector2, out Vector2) bool
         +TryPortDot(Node, Port, float aspectX, out Vector2) bool
         +TryPendingSourceDot(Node, Port, float aspectX, out Vector2) bool
@@ -211,7 +264,6 @@ classDiagram
         +TotalHeight(Node) float
         +DrawnPortCount(Node, PortDirection) int
         +HitNode(Node, Vector2) bool
-        +HitPlusButton(Node, Vector2, float aspectX) bool
         +Contains(Vector2, Vector2, Vector2) bool
     }
 
@@ -249,11 +301,15 @@ classDiagram
         +int EdgeCount
         +IList~Node~ Nodes
         +IList~Edge~ Edges
+        +IList~Edge~ Lines
         +AddNode(Node) Node
         +RemoveNode(long) bool
-        +TryConnect(long, string, long, string) bool
+        +TryConnect(long, string, long, string, ToolbarCell) bool
+        +IsCellValidFor(Node, Port, ToolbarCell) bool$
+        +FindEdgeInCell(long, ToolbarCell) Edge
         +HasEdge(long, string, long, string) bool
         +CountEdgesToInput(long, string) int
+        +CountEdgesFromOutput(long, string) int
         +RemoveEdgesFromOutput(long, string) int
         +RemoveEdge(Edge) bool
         +LayoutPorts()
@@ -267,10 +323,12 @@ classDiagram
         +Vector2 Position
         +Vector3I GridPosition
         +bool HasTerminal
-        +bool CanSourceEvents
+        +ToolbarLayout Toolbar
+        +bool CanDriveBlocks
         +List~Port~ Actions
         +List~Port~ Events
         +Port PrimaryEvent
+        +PrimaryEventFor(PortGroup) Port
         +FindAction(key) Port
         +FindEvent(key) Port
     }
@@ -280,6 +338,7 @@ classDiagram
         +string DisplayName
         +PortKind Kind
         +PortDirection Direction
+        +PortGroup Group
         +float Anchor
         +int Slot
     }
@@ -289,16 +348,21 @@ classDiagram
         +string SourcePortKey
         +long TargetEntityId
         +string TargetPortKey
+        +ToolbarCell Cell
         +SameAs(Edge) bool
+        +SameCellAs(Edge) bool
     }
 
     class BlockPortCatalog {
         <<static>>
-        +string GenericOutputKey
+        +string GenericEventKey
+        +string TrueKeySuffix
+        +string FalseKeySuffix
         +ResolveFamily(subtypeId) string
-        +IsCommonEvent(key) bool
         +FillActions(Node, IList~string~)
         +FillEvents(Node)
+        +EventKey(baseKey, PortGroup) string
+        +EventDisplayName(baseKey, PortGroup) string
         +Humanize(key) string
     }
 
@@ -320,6 +384,15 @@ classDiagram
     class IMyTerminalBlock {
         <<game>>
     }
+    class IMyToolbarProvider {
+        <<game>>
+    }
+    class IMyToolbar {
+        <<game>>
+    }
+    class MyToolbarItemInfo {
+        <<game>>
+    }
 
     VgsSessionComponent --|> MySessionComponentBase : наследует
     VgsEditorScreen --|> MyModScreen : наследует
@@ -335,6 +408,7 @@ classDiagram
 
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Refresh
+    VgsEditorScreen --> ToolbarWriter : запись связи
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
     VgsEditorScreen --> EdgeRouting : маршрут линии
@@ -344,13 +418,28 @@ classDiagram
     GridGraphBuilder --> GridGraph
     GridGraphBuilder --> Node
     GridGraphBuilder --> BlockPortCatalog
+    GridGraphBuilder --> ToolbarProbe : форма тулбара
+    GridGraphBuilder --> ToolbarWriter : чтение ячеек
+    GridGraphBuilder --> ToolbarPlanner : группа ячейки
     GridGraphBuilder --> IMyTerminalBlock
+    GridGraphBuilder --> IMyToolbar
+
+    ToolbarProbe --> ToolbarLayout
+    ToolbarProbe --> IMyToolbarProvider
+    ToolbarProbe --> IMyToolbar
+    ToolbarWriter --> ToolbarPlanner
+    ToolbarWriter --> ToolbarLayout
+    ToolbarWriter --> IMyToolbar
+    ToolbarWriter --> MyToolbarItemInfo
 
     GridGraph "1" *-- "0..*" Node : содержит
     GridGraph "1" *-- "0..*" Edge : содержит
     Node "1" *-- "0..*" Port : действия/события
+    Node --> ToolbarLayout
+    Edge --> ToolbarCell : занимает ячейку
     Edge ..> Node : ссылается по EntityId
     GridGraph ..> Port : LayoutPorts назначает Slot
+    GridGraph ..> ToolbarLayout : проверяет ячейку
 
     BlockPortCatalog --> Node
     BlockPortCatalog --> Port
@@ -413,9 +502,10 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 
 | Файл | Ответственность |
 |---|---|
-| `Node.cs` | `Port`, `PortKind`, `PortDirection`, `Node`, `Edge` |
+| `Node.cs` | `Port`, `PortKind`, `PortDirection`, `PortGroup`, `ToolbarLayout`, `ToolbarCell`, `Node`, `Edge` |
 | `GridGraph.cs` | контейнер узлов и связей, инварианты связей, раскладка портов по слотам |
-| `BlockPortCatalog.cs` | какие порты у какого семейства блоков |
+| `BlockPortCatalog.cs` | какие события у какого семейства блоков и как они делятся по группам «да»/«нет» |
+| `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 
 Слой **не содержит** ссылок на `Sandbox.*` и `VRage.Game.ModAPI`. Это не стилистика:
 это единственная часть проекта, которую можно проверить без запуска игры, а запуск игры —
@@ -425,13 +515,20 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 
 - связи хранятся по **ключу порта**, а не по индексу — добавление порта в тип блока не
   должно перекоммутировать существующие графы;
+- **каждая связь занимает ячейку тулбара** (`Edge.Cell`), и две связи не могут занимать одну
+  ячейку; ячейка обязана лежать внутри тулбара источника и попадать в слот своей группы
+  ([ADR-0011](adr/0011-toolbar-is-the-connection.md));
 - **исходящий порт уникален**: одна связь — одно событие одного блока; два разных события
   в один исходящий порт слить нельзя (fan-out из одной точки разрешён);
 - **входящий порт общий**: несколько связей могут приходить в один вход, потому что
   «включить» — одно действие, и просить его могут разные блоки (fan-in разрешён, см.
   [ADR-0010](adr/0010-port-presentation-and-binding.md));
-- петля на себя, дубликат и связь на несуществующий порт отклоняются (`TryConnect`
-  возвращает `false` и ничего не меняет);
+- петля на себя, связь на несуществующий порт, ячейка вне тулбара и занятая ячейка
+  отклоняются (`TryConnect` возвращает `false` и ничего не меняет);
+- **«дубликат» — это дубликат ячейки, а не связи**: то же действие на том же блоке на другой
+  странице — законная отдельная связь, игра её принимает и исполняет. Линия при этом одна:
+  `GridGraph.Lines` (пересчитывается в `LayoutPorts`) отдаёт по одному ребру на пару
+  (исходящий порт, входящий порт), иначе повтор рисовался бы поверх себя;
 - удаление узла удаляет все его связи;
 - **порт рисуется только при наличии связи**: `LayoutPorts()` назначает `Port.Slot` из
   рёбер, `-1` — «не рисовать».
@@ -446,11 +543,22 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | Файл | Ответственность |
 |---|---|
 | `VgsTerminalControls.cs` | регистрация кнопки «Grid setup», проверка прав, открытие экрана |
-| `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid` |
+| `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами |
+| `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
+| `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
-`Refresh` сохраняет позиции и связи выживших узлов, удаляет узлы уничтоженных блоков и
-пересчитывает слоты портов: именно это делает редактор устойчивым, пока игрок режет корабль.
+`Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет
+связи с тем, что реально лежит в тулбарах** (`ReconcileToolbarEdges`) и пересчитывает слоты
+портов: именно это делает редактор устойчивым, пока игрок режет корабль и правит тулбары
+руками.
+
+`ToolbarProbe` и `ToolbarWriter` — единственные места, где мод трогает тулбар. Первый
+отвечает на вопрос «может ли этот блок управлять другими» (компонент `IMyToolbarProvider` +
+`ToolbarType == ButtonPanel`, а не таблица подтипов), второй — единственный, кто пишет в
+мир по действию пользователя. Разделение намеренное: чтение происходит при каждом
+обновлении, запись — только по клику, и смешивать их значило бы дать пути обновления
+возможность менять блоки.
 
 ### `Vgs.Ui` — экран
 
@@ -577,28 +685,56 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 - **Входы** (действия) — реальные, из `IMyTerminalBlock.GetActions()`. Работают и для блоков
   других модов.
 - **Выходы** (события) — синтезированные. API их перечисления не существует
-  (см. [02-feasibility.md](02-feasibility.md) §3.2).
+  (см. [02-feasibility.md](02-feasibility.md) §3.2). Синтезируются они не «вообще», а как
+  **то, чем блок запускает свой тулбар**: связь — это элемент в тулбаре
+  ([ADR-0011](adr/0011-toolbar-is-the-connection.md)).
 
 `BlockPortCatalog` решает это так:
 
-1. `ResolveFamily(subtype)` — по подстроке определяет семейство (`cockpit`, `battery`, …).
+1. `ResolveFamily(subtype)` — по подстроке определяет семейство (`cockpit`, `sensor`, …).
    Порядок проверок от специфичного к общему: `eventcontroller` раньше `cockpit`.
-2. Для известного семейства — его специфичные события.
-3. Для всех — общий набор (`StateChanged`, `BlockAdded`, `BlockRemoved`,
-   `IntegrityChanged`, `OnOffChanged`).
-4. Неизвестный тип не остаётся пустым: получает реальные действия + общий набор.
+2. `FillEvents(node)` смотрит на `Node.Toolbar`. Если тулбара нет — **портов нет вообще**:
+   связи некуда лечь, и показывать её было бы обещанием, которое мод не выполнит.
+3. Если тулбар есть — для известного семейства берутся его события, иначе общее `Triggered`.
+4. Если у тулбара две группы (`YesNo`) — каждое событие превращается в два порта,
+   `… #true` и `… #false`. Ключ порта содержит группу, потому что связь хранится по ключу и
+   должна помнить, в какой из двух списков она легла.
 
-Ключи портов (`StateChanged`, `TriggerNow`) — стабильные идентификаторы для сохранения.
-Отображаемые имена получаются через `Humanize` (`TriggerNow` → `Trigger Now`).
+Ключи портов (`Triggered`, `Detected#true`, `TriggerNow`) — стабильные идентификаторы для
+сохранения. Отображаемые имена получаются через `Humanize` (`TriggerNow` → `Trigger Now`), у
+групповых портов добавляется `· true` / `· false`.
 
-`FillEvents` заодно выставляет `Node.CanSourceEvents`: истинно, если у типа есть **хотя бы
-одно собственное** событие, то есть не только общий набор. Это признак «блок может
-управлять другими» и единственное условие существования кнопки «+». Общий набор есть у всех,
-поэтому он признаком быть не может — иначе кнопка оказалась бы на каждой карточке.
+`FillEvents` заодно выставляет `Node.CanDriveBlocks` и `ToolbarLayout.CanDrive` — признак
+«блок может управлять другими» и единственное условие существования кнопки привязки.
 
 Считать ответом на тот же вопрос флаг игры `ShowInToolbarConfig` нельзя: он говорит, что
 блок можно **приводить в действие**, то есть описывает противоположное отношение (блок как
-получатель, а не как источник).
+получатель, а не как источник). Ответ даёт компонент `IMyToolbarProvider` вместе с типом
+тулбара: `ButtonPanel` — тулбар, который блок активирует сам; `Ship`/`LargeCockpit` и
+`BuildCockpit` у кокпита — панели игрока, в них писать событие нельзя.
+
+### Как связь попадает в тулбар
+
+Правило размещения — `Vgs.Model.ToolbarPlanner`, чистая функция от формы тулбара и ответов
+на два вопроса о текущем содержимом:
+
+1. группа «да» пишет слот 0 страницы, «нет» — слот 1; одногрупповой тулбар берёт любую
+   свободную ячейку;
+2. страницы перебираются по порядку и берётся первая, где нужный слот свободен **и** это
+   действие ещё не стоит: игра удаляет дубликат действия на одной странице, поэтому повтор
+   кладётся на следующую;
+3. если действие стоит на всех страницах — связь невозможна (`ActionOnEveryPage`);
+   если свободных ячеек нужного слота нет — тоже (`NoFreeCell`). Это разные сообщения,
+   потому что требуют разных действий от пользователя.
+
+Запись — `Vgs.Game.ToolbarWriter.TryWrite`: `BeginChanges()` → `Set(cell,
+MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **чтение ячейки
+обратно** через `TryGetItem`. Путь через `MyToolbar.SetItemAtIndex` делает то же самое, но
+`MyToolbar` живёт в `Sandbox.Game.Screens.Helpers`, которое вайтлист IL-скриптов не разрешает
+(разрешён `Sandbox.Game` точно, без подпространств) — мод с такой ссылкой не загружается.
+`Apply()` возвращает `false`, когда машина не владеет тулбаром блока
+(`MyToolbar.SendChanges` → `IsOwnedHere` → `Sync.IsServer`): в одиночной игре и на хосте
+запись проходит, на удалённом клиенте — нет, и это сообщается пользователю.
 
 ### Как порт попадает на экран
 
@@ -645,18 +781,18 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 | Возможность | Точка расширения |
 |---|---|
 | Создание и удаление связей | `GridGraph.TryConnect` / `RemoveEdge` / `RemoveEdgesFromOutput` / `HasEdge` |
+| Запись связи в мир | `ToolbarWriter.TryWrite` / `TryClear` (единственное место, где мод меняет блоки) |
 | Отрисовка связей | `VgsEditorScreen.DrawEdges` (между `DrawGrid` и `DrawNodes`) |
-| Исполнение логики | новый `Vgs.Game.GraphEvaluator` в `UpdateAfterSimulation` |
-| Генерация событий | новый `Vgs.Game.EventSources` (поллинг состояния + сравнение) |
-| Сохранение | `VgsSessionComponent.LoadData/SaveData` + `MyModStorageComponent` |
-| Синхронизация | `MyAPIGateway.Multiplayer.RegisterSecureMessageHandler` |
-| Удаление связи мышью | hit-test по маршруту из `EdgeRouting.Build`; у линии уже есть геометрия |
+| Исполнение логики | не нужно для базовых связей: их исполняет игра из тулбара. Для условий и значений — новый `Vgs.Game.GraphEvaluator` в `UpdateAfterSimulation` |
+| Генерация событий | не нужно для тулбаров: событие — это факт активации тулбара. Для того, чего тулбар не умеет (порог, значение), — новый `Vgs.Game.EventSources` |
+| Сохранение | уже есть и бесплатно: тулбар сериализуется игрой вместе с блоком. Собственный формат нужен только для того, что не выражается тулбаром |
+| Синхронизация | уже есть: запись идёт через `BeginChanges().Apply()`, игру уведомляет `MyToolbar.SendChanges`; на клиенте мультиплеера запись отклоняется, чтение работает |
+| Удаление связи мышью | hit-test по маршруту из `EdgeRouting.Build`; у линии уже есть геометрия; удаление обязано звать `ToolbarWriter.TryClear` |
 | Новые виджеты (скроллбар, поле ввода) | новые методы `VgsScreenDraw`; штатных контролов в разрешённом API нет |
 
-Сохранение намеренно не реализовано: формат графа должен устояться после этапа 3,
-иначе первая же версия станет несовместимой с собой. Что уже можно считать устойчивым —
-ключи портов (`Port.Key`) и направление связи: они и попадут в сохранение, а `Port.Slot` —
-нет, потому что это производное от связей состояние.
+Собственный формат сохранения намеренно не вводится: он понадобится только для того, чего
+тулбар выразить не может (условия, сравнения, задержки). Что уже можно считать устойчивым —
+ключи портов (`Port.Key`) и номер ячейки (`ToolbarCell`).
 
 ---
 
@@ -676,6 +812,10 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 | Fan-in разрешён | Один вход может иметь несколько источников — вычислитель обязан это учитывать | [0010](adr/0010-port-presentation-and-binding.md) |
 | Линия — ортогональные прямоугольники | Нет скруглений и диагоналей; зато нет угадывания семантики `rotation` | [0010](adr/0010-port-presentation-and-binding.md) |
 | Отсечение пересечением, не scissor | Лишние вызовы `Rect` для далёких прямоугольников; зато очередь отрисовки не разбалансируется | [0010](adr/0010-port-presentation-and-binding.md) |
+| Связь — элемент в тулбаре блока | Предел ёмкости стал видимым (90 ячеек у таймера); используются типы `VRage.Game.ModAPI`, привязанные к версии игры; движковые `MyToolbar*` моду запрещены | [0011](adr/0011-toolbar-is-the-connection.md) |
+| «Может управлять» = `IMyToolbarProvider` + `ButtonPanel` | Нужно читать тулбар при обновлении; зато ответ точный для блоков других модов | [0011](adr/0011-toolbar-is-the-connection.md) |
+| «Да»/«нет» — две группы портов | Порт раздваивается, на карточке две кнопки вместо одной | [0011](adr/0011-toolbar-is-the-connection.md) |
+| Одно действие — один раз на страницу | Повтор уходит на следующую страницу, после последней — отказ с сообщением | [0011](adr/0011-toolbar-is-the-connection.md) |
 
 ---
 

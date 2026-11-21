@@ -21,74 +21,56 @@ namespace Vgs.Model
     ///    events from changes. This class is the curated table; <c>Vgs.Game.EventSources</c>
     ///    is the polling half.
     ///
-    /// Because the table is curated, it must degrade gracefully: an unknown block type still
-    /// gets a node with its real actions and the shared events, rather than an empty node the
-    /// user cannot reason about.
+    /// Because the table is curated, it must degrade gracefully: a toolbar-driven block with
+    /// no entry still gets the generic event, so a modded timer-like block is usable.
+    ///
+    /// <b>Events are gated by the toolbar.</b> A connection is an item in the source block's
+    /// real toolbar (ADR-0011), so a block with no logic-driven toolbar has nowhere to put
+    /// one and therefore exposes no event ports at all — even if it does announce state
+    /// changes to C# subscribers. The curated list names <i>what fires the toolbar</i>, not
+    /// everything the block can do.
     /// </summary>
     public static class BlockPortCatalog
     {
-        /// <summary>Generic event every block gets, backed by polling its OnOff state.</summary>
-        public const string GenericOutputKey = "StateChanged";
+        /// <summary>Event a toolbar-driven block gets when its family has no curated entry.</summary>
+        public const string GenericEventKey = "Triggered";
 
-        /// <summary>Events that every functional block shares, in display order.</summary>
-        private static readonly string[] CommonOutputs =
-        {
-            GenericOutputKey,
-            "BlockAdded",
-            "BlockRemoved",
-            "IntegrityChanged",
-            "OnOffChanged"
-        };
+        /// <summary>Suffix appended to an event key for the "yes" fire group. Stable in save data.</summary>
+        public const string TrueKeySuffix = "#true";
+
+        /// <summary>Suffix appended to an event key for the "no" fire group. Stable in save data.</summary>
+        public const string FalseKeySuffix = "#false";
 
         /// <summary>
-        /// Curated per-family events. Key is a family prefix matched against the block
-        /// subtype with <see cref="ResolveFamily"/>, so "LargeBlockCockpitIndustrial" and
+        /// Curated per-family events — the ones that make the block's own toolbar fire.
+        /// Key is a family prefix matched against the block subtype with
+        /// <see cref="ResolveFamily"/>, so "LargeBlockCockpitIndustrial" and
         /// "SmallBlockCockpit" both resolve to "cockpit".
+        ///
+        /// Only toolbar-triggering events belong here. A battery announcing a charge change
+        /// to C# code cannot put anything on its own toolbar, so it is not a source in this
+        /// editor and has no entry.
         /// </summary>
-        private static readonly Dictionary<string, string[]> FamilyOutputs =
+        private static readonly Dictionary<string, string[]> FamilyEvents =
             new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
             {
-                { "cockpit", new[] { "OccupiedChanged", "HandBrakeChanged", "DampenersChanged", "ControlAcquired" } },
+                { "cockpit", new[] { "TargetLocked", "TargetLost" } },
                 { "timer", new[] { "Triggered" } },
-                { "sensor", new[] { "DetectedChanged", "EntityDetected" } },
-                { "eventcontroller", new[] { "EventTriggered", "EventTriggeredElse" } },
-                { "battery", new[] { "StoredPowerChanged", "ChargeModeChanged", "FullyCharged", "FullyDischarged" } },
-                { "thruster", new[] { "ThrustChanged" } },
-                { "gyro", new[] { "OverriddenChanged" } },
-                { "connector", new[] { "LockedChanged", "ConnectedChanged" } },
-                { "landinggear", new[] { "LockedChanged" } },
-                { "warhead", new[] { "CountdownChanged", "Detonated" } },
-                { "door", new[] { "OpenChanged" } },
-                { "piston", new[] { "PositionChanged", "AtLimit" } },
-                { "rotor", new[] { "AngleChanged", "AtLimit" } },
-                { "hinge", new[] { "AngleChanged", "AtLimit" } },
-                { "cargocontainer", new[] { "FillRatioChanged", "Full", "Empty" } },
-                { "reactor", new[] { "FuelChanged", "OutOfFuel" } },
-                { "solarpanel", new[] { "OutputChanged" } },
-                { "oxygen", new[] { "FillRatioChanged" } },
-                { "hydrogen", new[] { "FillRatioChanged" } },
+                { "sensor", new[] { "Detected" } },
+                { "eventcontroller", new[] { "EventTriggered" } },
+                { "buttonpanel", new[] { "ButtonPressed" } },
                 { "airvent", new[] { "Depressurized", "Pressurized" } },
-                { "light", new[] { "IntensityChanged" } },
-                { "antenna", new[] { "BroadcastChanged" } },
-                { "beacon", new[] { "BroadcastChanged" } },
-                { "programmable", new[] { "ScriptRun", "ScriptFailed" } },
-                { "turret", new[] { "TargetAcquired", "TargetLost", "FiringChanged" } },
-                { "drill", new[] { "DrillingChanged" } },
-                { "welder", new[] { "WeldingChanged" } },
-                { "grinder", new[] { "GrindingChanged" } },
-                { "assembler", new[] { "ProductionCompleted", "QueueEmpty" } },
-                { "refinery", new[] { "ProductionCompleted" } },
-                { "jumpdrive", new[] { "Charged", "Jumped" } },
-                { "projector", new[] { "ProjectionChanged" } },
-                { "safezone", new[] { "Entered", "Left" } },
-                { "gate", new[] { "OpenChanged" } }
+                { "warhead", new[] { "Detonated" } },
+                { "door", new[] { "OpenChanged" } },
+                { "landinggear", new[] { "LockedChanged" } },
+                { "connector", new[] { "LockedChanged" } },
+                { "safezone", new[] { "Entered", "Left" } }
             };
 
         /// <summary>
         /// Maps a block subtype to a family key. Ordered from most specific to least, because
         /// several subtype names contain more than one family word (e.g.
-        /// "LargeBlockSmallThrust" contains neither; "LargeBlockCockpitIndustrial" contains
-        /// "cockpit").
+        /// "LargeBlockCockpitIndustrial" contains "cockpit").
         /// </summary>
         public static string ResolveFamily(string subtypeId)
         {
@@ -99,6 +81,7 @@ namespace Vgs.Model
             // Order matters: check the longer/more specific tokens first.
             if (s.Contains("eventcontroller")) return "eventcontroller";
             if (s.Contains("programmable")) return "programmable";
+            if (s.Contains("buttonpanel")) return "buttonpanel";
             if (s.Contains("landinggear")) return "landinggear";
             if (s.Contains("cargocontainer") || s.Contains("cargosmall")) return "cargocontainer";
             if (s.Contains("solarpanel")) return "solarpanel";
@@ -134,65 +117,83 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// True when the key belongs to the shared event set, i.e. it is not evidence that
-        /// the block has a family-specific behaviour worth a "+" button
-        /// (<see cref="Node.CanSourceEvents"/>).
-        /// </summary>
-        public static bool IsCommonEvent(string key)
-        {
-            if (string.IsNullOrEmpty(key)) return true;
-            for (int i = 0; i < CommonOutputs.Length; i++)
-            {
-                if (string.Equals(CommonOutputs[i], key, StringComparison.Ordinal)) return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Builds the event (output) port list for a block subtype: family-specific events
-        /// first, then the shared ones, de-duplicated and with anchors spread down the node
-        /// edge.
+        /// Builds the event (output) port list for a node: the events its toolbar can be
+        /// fired by, one port per fire group, with anchors spread down the node edge.
         ///
-        /// The anchor is only a hint for the catalog order; where a port is actually drawn is
-        /// decided by <see cref="GridGraph.LayoutPorts"/>, and only for ports the user has
-        /// connected.
+        /// A yes/no toolbar produces two ports per event ("… · true" and "… · false"), because
+        /// the two groups are independent lists of actions in the game and a connection has to
+        /// pick one. A single-group toolbar produces one port per event.
+        ///
+        /// Sets <see cref="Node.CanDriveBlocks"/>, which is the flag the "+" button and the
+        /// bind gesture depend on.
         /// </summary>
         public static void FillEvents(Node node)
         {
             node.Events.Clear();
+            node.CanDriveBlocks = false;
 
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var ordered = new List<string>();
-            bool hasOwn = false;
+            if (node == null || node.Toolbar == null || !node.Toolbar.CanDrive) return;
 
+            node.CanDriveBlocks = true;
+
+            var baseKeys = new List<string>(4);
             string family = ResolveFamily(node.SubtypeId);
             string[] specific;
-            if (family.Length > 0 && FamilyOutputs.TryGetValue(family, out specific))
+            if (family.Length > 0 && FamilyEvents.TryGetValue(family, out specific))
             {
-                for (int i = 0; i < specific.Length; i++)
+                for (int i = 0; i < specific.Length; i++) baseKeys.Add(specific[i]);
+            }
+            if (baseKeys.Count == 0) baseKeys.Add(GenericEventKey);
+
+            int total = node.Toolbar.YesNo ? baseKeys.Count * 2 : baseKeys.Count;
+            int index = 0;
+
+            for (int i = 0; i < baseKeys.Count; i++)
+            {
+                string key = baseKeys[i];
+                if (node.Toolbar.YesNo)
                 {
-                    if (seen.Add(specific[i]))
-                    {
-                        ordered.Add(specific[i]);
-                        hasOwn = true;
-                    }
+                    AddEvent(node, key, PortGroup.Yes, index++, total);
+                    AddEvent(node, key, PortGroup.No, index++, total);
+                }
+                else
+                {
+                    AddEvent(node, key, PortGroup.Single, index++, total);
                 }
             }
+        }
 
-            for (int i = 0; i < CommonOutputs.Length; i++)
-            {
-                if (seen.Add(CommonOutputs[i])) ordered.Add(CommonOutputs[i]);
-            }
+        private static void AddEvent(Node node, string baseKey, PortGroup group, int index, int total)
+        {
+            float anchor = total <= 1 ? 0.5f : (float)index / (total - 1);
+            node.Events.Add(new Port(
+                EventKey(baseKey, group),
+                EventDisplayName(baseKey, group),
+                PortKind.Event,
+                PortDirection.Output,
+                anchor,
+                group));
+        }
 
-            for (int i = 0; i < ordered.Count; i++)
-            {
-                float anchor = ordered.Count == 1 ? 0.5f : (float)i / (ordered.Count - 1);
-                node.Events.Add(new Port(ordered[i], Humanize(ordered[i]), PortKind.Event, PortDirection.Output, anchor));
-            }
+        /// <summary>
+        /// Stable key of an event port for a fire group. The group is part of the key because
+        /// two ports of one node cannot share a key, and because a saved graph must be able to
+        /// say which of the two toolbars the connection belongs to.
+        /// </summary>
+        public static string EventKey(string baseKey, PortGroup group)
+        {
+            if (group == PortGroup.Yes) return baseKey + TrueKeySuffix;
+            if (group == PortGroup.No) return baseKey + FalseKeySuffix;
+            return baseKey;
+        }
 
-            // Cached here, next to the list it describes: the draw path asks this for every
-            // visible card on every frame, and re-scanning the list there would be pure waste.
-            node.CanSourceEvents = hasOwn;
+        /// <summary>Display name of an event port, marked with its fire group when it has one.</summary>
+        public static string EventDisplayName(string baseKey, PortGroup group)
+        {
+            string name = Humanize(baseKey);
+            if (group == PortGroup.Yes) return name + " · true";
+            if (group == PortGroup.No) return name + " · false";
+            return name;
         }
 
         /// <summary>

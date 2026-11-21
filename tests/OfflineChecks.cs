@@ -6,14 +6,16 @@ using Vgs.Model;
 using Vgs.Ui;
 
 // Offline checks for the parts of the editor that are pure data and pure geometry: the graph
-// invariants, the port-slot layout, the card and port rectangles, and the wire router.
+// invariants, the toolbar placement rules, the port-slot layout, the card and port rectangles,
+// and the wire router.
 //
 // Why this file exists: the in-game feedback loop costs a full game launch, and these are
 // exactly the things that decide whether the picture matches what the player did. If the slot
 // layout is wrong the bars overlap; if the geometry is wrong the dots and the hit tests
-// disagree; if the router is wrong the lines land somewhere else. None of that needs Space
-// Engineers, and `Vgs.Model` plus `Vgs.Ui.PortGeometry`/`EdgeRouting` deliberately have no
-// game references so this can run without it.
+// disagree; if the router is wrong the lines land somewhere else; if the toolbar rules are
+// wrong a connection is written into a cell the game will not fire or will silently clear.
+// None of that needs Space Engineers, and `Vgs.Model` plus `Vgs.Ui.PortGeometry`/`EdgeRouting`
+// deliberately have no game references so this can run without it.
 //
 // Run it with `pwsh -File tools/offline-check.ps1`. It compiles this file together with the
 // model and geometry sources against the game's math assemblies only, then executes it.
@@ -41,9 +43,44 @@ internal static class OfflineChecks
         Console.WriteLine("FAIL: " + what + " (expected " + expected + ", got " + actual + ")");
     }
 
+    /// <summary>
+    /// A timer-shaped node: one fire group, nine slots, ten pages. That is what the game
+    /// builds for <c>MyTimerBlock</c> (<c>new MyToolbar(ButtonPanel, 9, 10)</c>).
+    /// </summary>
+    private static ToolbarLayout TimerToolbar()
+    {
+        return new ToolbarLayout(0, 9, 10, false);
+    }
+
+    /// <summary>
+    /// A sensor-shaped node: two slots, ten pages, yes/no. That is what the game builds for
+    /// <c>MySensorBlock</c> (<c>new MyToolbar(ButtonPanel, 2, 10)</c> plus
+    /// <c>CanShowYesNoBackgrounds</c> left at its default).
+    /// </summary>
+    private static ToolbarLayout SensorToolbar()
+    {
+        return new ToolbarLayout(0, 2, 10, true);
+    }
+
     private static Node MakeNode(long id, string subtype, params string[] actions)
     {
-        var node = new Node(id, subtype, "block" + id, Vector3I.Zero);
+        return MakeNode(id, subtype, TimerToolbar(), actions);
+    }
+
+    private static Node MakeNode(long id, string subtype, ToolbarLayout toolbar, params string[] actions)
+    {
+        var node = new Node(id, subtype, "block" + id, Vector3I.Zero, toolbar);
+        var list = new List<string>(actions);
+        BlockPortCatalog.FillActions(node, list);
+        BlockPortCatalog.FillEvents(node);
+        node.HasTerminal = list.Count > 0;
+        return node;
+    }
+
+    /// <summary>A block that cannot drive anything: no toolbar at all.</summary>
+    private static Node MakeTarget(long id, string subtype, params string[] actions)
+    {
+        var node = new Node(id, subtype, "block" + id, Vector3I.Zero, ToolbarLayout.None);
         var list = new List<string>(actions);
         BlockPortCatalog.FillActions(node, list);
         BlockPortCatalog.FillEvents(node);
@@ -53,6 +90,18 @@ internal static class OfflineChecks
 
     public static int Main()
     {
+        Console.WriteLine("=== toolbar layout ===");
+        ToolbarLayouts();
+
+        Console.WriteLine("=== toolbar placement (single group) ===");
+        PlacementSingleGroup();
+
+        Console.WriteLine("=== toolbar placement (yes/no) ===");
+        PlacementYesNo();
+
+        Console.WriteLine("=== which blocks can drive others ===");
+        Drivability();
+
         Console.WriteLine("=== port slots and fan-in ===");
         SlotsAndFanIn();
 
@@ -61,6 +110,9 @@ internal static class OfflineChecks
 
         Console.WriteLine("=== card and port geometry ===");
         Geometry();
+
+        Console.WriteLine("=== bind buttons ===");
+        BindButtons();
 
         Console.WriteLine("=== wire routing ===");
         Routing();
@@ -79,39 +131,218 @@ internal static class OfflineChecks
         return _failures == 0 ? 0 : 1;
     }
 
+    private static void ToolbarLayouts()
+    {
+        ToolbarLayout timer = TimerToolbar();
+        Check(timer.CanDrive, "a 9x10 toolbar can drive");
+        Check(timer.CellCount == 90, "a 9x10 toolbar has 90 cells");
+        Check(!timer.YesNo, "a timer toolbar is a single-group toolbar");
+        Check(timer.SlotFor(PortGroup.Single) == -1, "a single-group port may take any slot");
+
+        ToolbarLayout sensor = SensorToolbar();
+        Check(sensor.YesNo, "a 2x10 toolbar is a yes/no toolbar");
+        Check(sensor.CellCount == 20, "a 2x10 toolbar has 20 cells");
+        Check(sensor.SlotFor(PortGroup.Yes) == 0, "the yes group writes slot 0");
+        Check(sensor.SlotFor(PortGroup.No) == 1, "the no group writes slot 1");
+
+        // The game's linear index is page * SlotCount + slot; the checks below depend on it
+        // matching, because a cell read back from the toolbar is addressed that way.
+        Check(sensor.CellIndex(0, 0) == 0, "page 0 slot 0 is cell 0");
+        Check(sensor.CellIndex(0, 1) == 1, "page 0 slot 1 is cell 1");
+        Check(sensor.CellIndex(3, 1) == 7, "page 3 slot 1 is cell 7");
+        Check(sensor.PageOf(7) == 3, "cell 7 is on page 3");
+        Check(sensor.SlotOf(7) == 1, "cell 7 is in slot 1");
+        Check(sensor.SlotOf(6) == 0, "cell 6 is in slot 0");
+
+        Check(ToolbarLayout.None.CanDrive == false, "the empty layout cannot drive");
+        Check(ToolbarLayout.None.CellCount == 0, "the empty layout has no cells");
+        Check(ToolbarLayout.None.SlotFor(PortGroup.Yes) == 0,
+              "the empty layout still answers the slot question without throwing");
+    }
+
+    /// <summary>
+    /// A single-group toolbar: any free cell, and the same action may appear once per page.
+    /// This is the timer case, and it is where "the tenth repeating action" comes from.
+    /// </summary>
+    private static void PlacementSingleGroup()
+    {
+        ToolbarLayout layout = TimerToolbar();
+
+        // Empty toolbar: the first cell of the first page.
+        int index;
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => false, out index)
+              == ToolbarPlacement.Ok, "an empty toolbar accepts a connection");
+        Check(index == 0, "the first connection takes cell 0");
+
+        // Page 0 full, page 1 empty: the next free page is used, not a refusal.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single,
+                                  c => c >= 9, p => false, out index) == ToolbarPlacement.Ok,
+              "a full first page pushes the connection to the next page");
+        Check(index == 9, "the connection lands on cell 9, i.e. page 1 slot 0");
+
+        // The duplicate rule: page 0 already holds this action, so page 1 is used even though
+        // page 0 has free cells. The vanilla screen would delete the duplicate.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => p == 0, out index)
+              == ToolbarPlacement.Ok, "a duplicate on page 0 still finds a cell");
+        Check(index == 9, "the repeat is written to the next page, not next to the first copy");
+
+        // Every page holds it: impossible, and the caller has to say so.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => true, out index)
+              == ToolbarPlacement.ActionOnEveryPage,
+              "the same action on every page is refused as a duplicate, not as a full toolbar");
+        Check(index == -1, "a refused placement reports no cell");
+
+        // Every page is full with other actions: a different failure, and a different message.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => false, p => false, out index)
+              == ToolbarPlacement.NoFreeCell, "a completely full toolbar is reported as full");
+
+        // Ten pages is exactly the limit for ten identical connections: the eleventh is the
+        // case the roadmap calls out, and it must be a refusal rather than a silent overwrite.
+        var taken = new bool[layout.CellCount];
+        int placed = 0;
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            ToolbarPlacement p = ToolbarPlanner.Plan(
+                layout, PortGroup.Single,
+                c => !taken[c],
+                page => PageHolds(taken, layout, page),
+                out index);
+            if (p != ToolbarPlacement.Ok) break;
+            taken[index] = true;
+            placed++;
+        }
+        Check(placed == 10, "ten identical connections fit a ten-page timer (got " + placed + ")");
+
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => !taken[c], page => PageHolds(taken, layout, page),
+                                  out index) == ToolbarPlacement.ActionOnEveryPage,
+              "the eleventh identical connection is refused");
+    }
+
+    /// <summary>True when the page already holds the action we are trying to place.</summary>
+    private static bool PageHolds(bool[] taken, ToolbarLayout layout, int page)
+    {
+        // In this fixture every placed cell is "the same action", so a page holds it as soon
+        // as one of its cells is taken.
+        for (int s = 0; s < layout.SlotCount; s++)
+        {
+            if (taken[layout.CellIndex(page, s)]) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// A yes/no toolbar: the two groups write different slots, and they never mix. This is the
+    /// sensor and event-controller case.
+    /// </summary>
+    private static void PlacementYesNo()
+    {
+        ToolbarLayout layout = SensorToolbar();
+
+        int index;
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => true, p => false, out index)
+              == ToolbarPlacement.Ok, "a yes connection fits an empty yes/no toolbar");
+        Check(index == 0, "the yes group writes cell 0 (page 0 slot 0)");
+
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => true, p => false, out index)
+              == ToolbarPlacement.Ok, "a no connection fits an empty yes/no toolbar");
+        Check(index == 1, "the no group writes cell 1 (page 0 slot 1)");
+
+        // A "no" connection must never take slot 0, even when slot 0 is the only free cell:
+        // the game fires slot 0 on "yes", so the item would fire on the wrong event.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c % 2 == 0, p => false, out index)
+              == ToolbarPlacement.NoFreeCell,
+              "a no connection never falls back to a free yes slot");
+
+        // With page 0's no slot taken by something else, the connection goes to page 1's no
+        // slot — not to page 0's free yes slot, and not to page 1's yes slot.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c >= 2, p => false, out index)
+              == ToolbarPlacement.Ok, "a no connection skips a page whose no slot is taken");
+        Check(index == 3, "the no connection goes to page 1 slot 1, not to a free yes slot");
+
+        // Both groups exhausted: the yes group has its own message and its own cell space.
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => c % 2 == 1, p => false, out index)
+              == ToolbarPlacement.NoFreeCell, "a yes connection with only no slots free is refused");
+
+        // The group of a cell read back from the toolbar: slot 0 is yes, slot 1 is no.
+        Check(ToolbarPlanner.GroupOfCell(layout, 0) == PortGroup.Yes, "cell 0 is a yes cell");
+        Check(ToolbarPlanner.GroupOfCell(layout, 1) == PortGroup.No, "cell 1 is a no cell");
+        Check(ToolbarPlanner.GroupOfCell(layout, 8) == PortGroup.Yes, "cell 8 is a yes cell");
+        Check(ToolbarPlanner.GroupOfCell(layout, 9) == PortGroup.No, "cell 9 is a no cell");
+        Check(ToolbarPlanner.GroupOfCell(TimerToolbar(), 5) == PortGroup.Single,
+              "every cell of a single-group toolbar is a single-group cell");
+    }
+
+    /// <summary>
+    /// "Can this block drive other blocks" is answered by the toolbar shape, not by a table of
+    /// subtypes. These checks pin that: the same subtype with and without a toolbar differs,
+    /// and a block with no toolbar has no ports and no button.
+    /// </summary>
+    private static void Drivability()
+    {
+        Node timer = MakeNode(1, "LargeBlockTimerBlock", "TriggerNow");
+        Check(timer.CanDriveBlocks, "a block with a toolbar can drive others");
+        Check(timer.Events.Count == 1, "a single-group block exposes one port per event");
+        Check(timer.PrimaryEvent != null && timer.PrimaryEvent.Key == "Triggered",
+              "a timer's primary event is its own Triggered");
+        Check(timer.PrimaryEvent.Group == PortGroup.Single, "a timer's port belongs to no group");
+
+        Node sensor = MakeNode(2, "LargeBlockSensor", SensorToolbar(), "OnOff");
+        Check(sensor.CanDriveBlocks, "a sensor can drive others");
+        Check(sensor.Events.Count == 2, "a yes/no block exposes two ports per event");
+        Check(sensor.FindEvent("Detected#true") != null, "the yes port has the #true suffix");
+        Check(sensor.FindEvent("Detected#false") != null, "the no port has the #false suffix");
+        Check(sensor.FindEvent("Detected#true").Group == PortGroup.Yes, "the #true port is the yes group");
+        Check(sensor.FindEvent("Detected#false").Group == PortGroup.No, "the #false port is the no group");
+        Check(sensor.PrimaryEventFor(PortGroup.Yes).Key == "Detected#true",
+              "the yes group resolves to the yes port");
+        Check(sensor.PrimaryEventFor(PortGroup.No).Key == "Detected#false",
+              "the no group resolves to the no port");
+        Check(sensor.PrimaryEventFor(PortGroup.Single) == null,
+              "a yes/no block has no single-group port");
+
+        // A subtype with no curated entry still gets a port: a modded timer-like block must
+        // be usable, and "Triggered" is the honest generic name for "the toolbar fired".
+        Node modded = MakeNode(3, "MyModdedSequencer", "Run");
+        Check(modded.CanDriveBlocks, "an unknown subtype with a toolbar can still drive");
+        Check(modded.FindEvent(BlockPortCatalog.GenericEventKey) != null,
+              "an unknown subtype falls back to the generic event");
+
+        // No toolbar: not a source, no ports, no button — even though the subtype is one the
+        // curated table knows.
+        Node noToolbar = MakeTarget(4, "LargeBlockTimerBlock", "TriggerNow");
+        Check(!noToolbar.CanDriveBlocks, "a block without a toolbar cannot drive others");
+        Check(noToolbar.Events.Count == 0, "a block without a toolbar exposes no event ports");
+        Check(noToolbar.PrimaryEvent == null, "a block without a toolbar has no primary event");
+
+        // A block with no curated event but a toolbar is still a source: the toolbar is the
+        // evidence, not the table.
+        Node conveyor = MakeNode(5, "LargeBlockConveyorTube");
+        Check(conveyor.CanDriveBlocks, "the toolbar, not the subtype, decides drivability");
+    }
+
     private static void SlotsAndFanIn()
     {
         var graph = new GridGraph(1);
 
         Node timer = MakeNode(10, "LargeBlockTimerBlock", "Start", "Stop", "TriggerNow");
-        Node reactor = MakeNode(20, "LargeBlockSmallGenerator", "OnOff", "OnOff_On", "OnOff_Off");
-        Node door = MakeNode(30, "LargeBlockDoor", "Open", "Close", "OnOff");
-        Node sensor = MakeNode(40, "LargeBlockSensor", "OnOff");
+        Node reactor = MakeTarget(20, "LargeBlockSmallGenerator", "OnOff", "OnOff_On", "OnOff_Off");
+        Node door = MakeTarget(30, "LargeBlockDoor", "Open", "Close", "OnOff");
 
         graph.AddNode(timer);
         graph.AddNode(reactor);
         graph.AddNode(door);
-        graph.AddNode(sensor);
-
-        // A timer is a source: it has an event of its own.
-        Check(timer.CanSourceEvents, "timer can source events");
-        Check(timer.PrimaryEvent != null && timer.PrimaryEvent.Key == "Triggered",
-              "timer's primary event is its own Triggered, not the shared StateChanged");
-
-        // A block with no family events cannot source anything.
-        Node tube = MakeNode(50, "LargeBlockConveyorTube");
-        Check(!tube.CanSourceEvents, "conveyor tube cannot source events (no own events)");
-        Check(tube.PrimaryEvent != null && tube.PrimaryEvent.Key == BlockPortCatalog.GenericOutputKey,
-              "a block without own events still falls back to the generic event");
 
         // Nothing connected: no port is drawn at all.
         graph.LayoutPorts();
         Check(DrawnOutputs(timer) == 0 && DrawnInputs(reactor) == 0,
               "unconnected ports are not drawn");
 
-        Check(graph.TryConnect(10, "Triggered", 20, "OnOff"), "timer -> reactor OnOff");
-        Check(graph.TryConnect(40, "DetectedChanged", 20, "OnOff"), "sensor -> reactor OnOff (fan-in)");
-        Check(graph.TryConnect(10, "Triggered", 30, "Open"), "timer -> door Open (fan-out)");
+        Check(graph.TryConnect(10, "Triggered", 20, "OnOff", new ToolbarCell(0, 0)),
+              "timer -> reactor OnOff");
+        Check(graph.TryConnect(10, "Triggered", 30, "Open", new ToolbarCell(0, 1)),
+              "timer -> door Open (fan-out)");
+        Check(graph.TryConnect(20, "Triggered", 30, "Close", new ToolbarCell(0, 0)) == false,
+              "a block without a toolbar cannot be a source");
         graph.LayoutPorts();
 
         // One output bar per output port, however many edges leave it.
@@ -119,15 +350,15 @@ internal static class OfflineChecks
         Check(timer.FindEvent("Triggered").Slot == 0, "timer's Triggered sits in slot 0");
 
         // One input bar per input port, however many edges arrive at it.
-        Check(DrawnInputs(reactor) == 1, "reactor draws exactly one input bar for two incoming edges");
+        Check(DrawnInputs(reactor) == 1, "reactor draws exactly one input bar for one incoming edge");
         Check(reactor.FindAction("OnOff").Slot == 0, "reactor's OnOff sits in slot 0");
-        Check(graph.CountEdgesToInput(20, "OnOff") == 2, "reactor OnOff reports two sources");
+        Check(graph.CountEdgesToInput(20, "OnOff") == 1, "reactor OnOff reports one source");
 
         Check(door.FindAction("Open").Slot == 0, "door's Open sits in slot 0");
-        Check(sensor.FindEvent("DetectedChanged").Slot == 0, "sensor's DetectedChanged sits in slot 0");
 
         // A second connection to a different action of the same block stacks the next bar.
-        Check(graph.TryConnect(10, "Triggered", 30, "Close"), "timer -> door Close");
+        Check(graph.TryConnect(10, "Triggered", 30, "Close", new ToolbarCell(0, 2)),
+              "timer -> door Close");
         graph.LayoutPorts();
         Check(door.FindAction("Open").Slot == 0 && door.FindAction("Close").Slot == 1,
               "two input ports on one block occupy slots 0 and 1");
@@ -141,42 +372,67 @@ internal static class OfflineChecks
     {
         var graph = new GridGraph(2);
         Node a = MakeNode(1, "LargeBlockTimerBlock", "TriggerNow");
-        Node b = MakeNode(2, "LargeBlockSmallGenerator", "OnOff");
+        Node b = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
         graph.AddNode(a);
         graph.AddNode(b);
 
-        Check(!graph.TryConnect(1, "Triggered", 1, "TriggerNow"), "self-loop is rejected");
-        Check(!graph.TryConnect(1, "Triggered", 2, "Nope"), "unknown action port is rejected");
-        Check(!graph.TryConnect(1, "Nope", 2, "OnOff"), "unknown event port is rejected");
-        Check(!graph.TryConnect(1, "Triggered", 99, "OnOff"), "unknown target node is rejected");
-        Check(!graph.TryConnect(1, "TriggerNow", 2, "OnOff"),
+        Check(!graph.TryConnect(1, "Triggered", 1, "TriggerNow", new ToolbarCell(0, 0)),
+              "self-loop is rejected");
+        Check(!graph.TryConnect(1, "Triggered", 2, "Nope", new ToolbarCell(0, 0)),
+              "unknown action port is rejected");
+        Check(!graph.TryConnect(1, "Nope", 2, "OnOff", new ToolbarCell(0, 0)),
+              "unknown event port is rejected");
+        Check(!graph.TryConnect(1, "Triggered", 99, "OnOff", new ToolbarCell(0, 0)),
+              "unknown target node is rejected");
+        Check(!graph.TryConnect(1, "TriggerNow", 2, "OnOff", new ToolbarCell(0, 0)),
               "an action cannot be used as a source (directions are not interchangeable)");
-        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff_On"),
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff_On", new ToolbarCell(0, 0)),
               "an event cannot be used as a target");
 
-        Check(graph.TryConnect(1, "Triggered", 2, "OnOff"), "valid connection accepted");
-        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff"), "duplicate is rejected");
+        Check(graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0)),
+              "valid connection accepted");
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0)),
+              "the same cell cannot hold two connections");
         Check(graph.EdgeCount == 1, "rejected attempts changed nothing");
         Check(graph.HasEdge(1, "Triggered", 2, "OnOff"), "HasEdge sees the connection");
 
-        // Fan-out from one output port to different targets is allowed.
-        Node c = MakeNode(3, "LargeBlockDoor", "Open");
-        graph.AddNode(c);
-        Check(graph.TryConnect(1, "Triggered", 3, "Open"), "one output port may feed several targets");
-        Check(graph.EdgeCount == 2, "both edges kept");
+        // A cell outside the toolbar is not a cell.
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 90)),
+              "a cell past the end of the toolbar is rejected");
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(3, 0)),
+              "a cell of a toolbar the block does not have is rejected");
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", ToolbarCell.None),
+              "an edge without a cell is rejected");
+
+        // The same action on another page is a legal, separate connection: that is exactly
+        // the rule the toolbar writer relies on, and the graph must not "deduplicate" it.
+        Check(graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 9)),
+              "the same action on another page is a separate connection");
+        Check(graph.EdgeCount == 2, "both connections kept");
+        Check(graph.CountEdgesFromOutput(1, "Triggered") == 2, "both edges leave the same port");
+
+        // …but they are one line between the same two dots, so only one of them is drawn.
+        graph.LayoutPorts();
+        Check(graph.Lines.Count == 1, "two connections of one port pair draw one line");
+        Check(graph.Edges.Count == 2, "the second connection still exists in the graph");
+
+        // A duplicate is now only a duplicate of the *cell*.
+        Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 9)),
+              "the same cell is still refused");
     }
 
     private static void Geometry()
     {
         var graph = new GridGraph(3);
         Node src = MakeNode(1, "LargeBlockTimerBlock", "Start");
-        Node dst = MakeNode(2, "LargeBlockSmallGenerator", "OnOff");
+        Node dst = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
         src.Position = new Vector2(0.30f, 0.20f);
         dst.Position = new Vector2(0.10f, 0.50f);
         graph.AddNode(src);
         graph.AddNode(dst);
 
-        Check(graph.TryConnect(1, "Triggered", 2, "OnOff"), "connect for geometry test");
+        Check(graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0)),
+              "connect for geometry test");
         graph.LayoutPorts();
 
         // Card.
@@ -258,15 +514,16 @@ internal static class OfflineChecks
               "dot is no taller than its bar");
 
         // A node with both stacks: input bars are pushed below the output stack.
-        Node both = MakeNode(3, "LargeBlockSensor", "OnOff", "Trigger");
+        Node both = MakeNode(3, "LargeBlockSensor", SensorToolbar(), "OnOff", "Trigger");
         both.Position = new Vector2(0.6f, 0.1f);
         graph.AddNode(both);
-        Check(graph.TryConnect(1, "Triggered", 3, "OnOff"), "timer -> sensor OnOff");
-        graph.AddNode(MakeNode(4, "LargeBlockDoor", "Open"));
-        Check(graph.TryConnect(3, "DetectedChanged", 4, "Open"), "sensor -> door Open");
+        Check(graph.TryConnect(1, "Triggered", 3, "OnOff", new ToolbarCell(0, 1)), "timer -> sensor OnOff");
+        graph.AddNode(MakeTarget(4, "LargeBlockDoor", "Open"));
+        Check(graph.TryConnect(3, "Detected#true", 4, "Open", new ToolbarCell(0, 0)),
+              "sensor -> door Open");
         graph.LayoutPorts();
 
-        Port bothOut = both.FindEvent("DetectedChanged");
+        Port bothOut = both.FindEvent("Detected#true");
         Port bothIn = both.FindAction("OnOff");
         Vector2 bothOutTopLeft, bothOutSize, bothInTopLeft, bothInSize;
         Check(PortGeometry.TryPortBarRect(both, bothOut, out bothOutTopLeft, out bothOutSize),
@@ -294,62 +551,6 @@ internal static class OfflineChecks
         Check(PortGeometry.HitNode(src, src.Position + new Vector2(0.01f, 0.01f)), "card hit");
         Check(PortGeometry.HitNode(src, outTopLeft + new Vector2(0.005f, 0.005f)), "port bar hit");
         Check(!PortGeometry.HitNode(src, src.Position + new Vector2(-0.05f, 0f)), "miss to the left");
-        // The "+" exists only on a block that can source events, and it is on the right.
-        Vector2 plusCenter;
-        Check(PortGeometry.TryPlusButton(src, aspect, out plusCenter), "timer has a plus button");
-        Check(plusCenter.X > src.Position.X + VgsConstants.NodeWidth * 0.8f,
-              "plus button sits near the card's right edge");
-
-        // The button is 75% of the card's height and centred vertically in the card.
-        CheckClose(VgsConstants.PlusButtonRadius * 2f, VgsConstants.NodeHeight * 0.75f,
-                   "plus button diameter is 75% of the card height");
-        CheckClose(plusCenter.Y, src.Position.Y + VgsConstants.NodeHeight * 0.5f,
-                   "plus button is vertically centred in the card");
-
-        // It stays inside the card's right border: margin + diameter must not exceed the width.
-        float plusHalfWidth = VgsConstants.PlusButtonRadius * aspect;
-        Check(plusCenter.X + plusHalfWidth <= src.Position.X + VgsConstants.NodeWidth + 1e-5f,
-              "plus button does not cross the card's right edge");
-        Check(plusCenter.X - plusHalfWidth >= src.Position.X,
-              "plus button does not cross the card's left edge");
-
-        // Hit testing is done in a round space: a point offset horizontally by less than the
-        // aspect-corrected radius still hits, and a point well outside does not.
-        Check(PortGeometry.HitPlusButton(src, plusCenter, aspect), "plus button centre hits");
-        Check(PortGeometry.HitPlusButton(
-                  src, plusCenter + new Vector2(plusHalfWidth * 0.8f, 0f), aspect),
-              "plus button hits slightly to the right of centre");
-        Check(!PortGeometry.HitPlusButton(
-                  src, plusCenter + new Vector2(plusHalfWidth * 4f, 0f), aspect),
-              "plus button misses far to the right");
-
-        // The button must stay inside the card and centred at *any* window shape, and its
-        // distance from the right border must not depend on the shape: that was the bug when
-        // the horizontal margin was applied in vertical units.
-        float[] aspects = { 0.5625f, 0.625f, 0.75f, 1f, 1.6f };
-        for (int i = 0; i < aspects.Length; i++)
-        {
-            float a = aspects[i];
-            Vector2 c;
-            Check(PortGeometry.TryPlusButton(src, a, out c), "plus button at aspect " + a);
-            CheckClose(c.Y, src.Position.Y + VgsConstants.NodeHeight * 0.5f,
-                       "plus button vertically centred at aspect " + a);
-
-            float halfW = VgsConstants.PlusButtonRadius * a;
-            float rightEdge = c.X + halfW;
-            CheckClose(rightEdge,
-                       src.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin,
-                       "plus button right edge is a fixed distance from the border at aspect " + a);
-            Check(rightEdge <= src.Position.X + VgsConstants.NodeWidth + 1e-5f,
-                  "plus button stays inside the card at aspect " + a);
-            Check(c.X - halfW >= src.Position.X,
-                  "plus button does not cross the left edge at aspect " + a);
-        }
-
-        Node noPlus = MakeNode(5, "LargeBlockConveyorTube");
-        Vector2 unused;
-        Check(!PortGeometry.TryPlusButton(noPlus, aspect, out unused),
-              "no plus on a block with no own events");
 
         // The pending dot of a fresh bind is where the bar will appear.
         Node fresh = MakeNode(6, "LargeBlockTimerBlock");
@@ -367,6 +568,96 @@ internal static class OfflineChecks
               "pending dot for an already-drawn port");
         CheckClose(pendingDrawn.Y, outDot.Y, "pending dot coincides with the drawn output dot");
         CheckClose(pendingDrawn.X, outDot.X, "pending dot coincides with the drawn output dot (x)");
+    }
+
+    /// <summary>
+    /// The bind buttons: one "+" for a single-group block, a "T"/"F" pair for a yes/no one.
+    /// What matters is that the control exists exactly where it can be clicked, that the two
+    /// discs do not overlap, and that each of them reports its own group.
+    /// </summary>
+    private static void BindButtons()
+    {
+        const float aspect = 1f;
+
+        Node timer = MakeNode(1, "LargeBlockTimerBlock");
+        timer.Position = new Vector2(0.2f, 0.2f);
+
+        Vector2 plusCenter;
+        Check(PortGeometry.TryBindButton(timer, PortGroup.Single, aspect, out plusCenter),
+              "a single-group block has a bind button");
+        CheckClose(plusCenter.Y, timer.Position.Y + VgsConstants.NodeHeight * 0.5f,
+                   "the plus is vertically centred in the card");
+        Check(!PortGeometry.HasGroupButtons(timer), "a single-group block shows no T/F pair");
+
+        Vector2 noButton;
+        Check(!PortGeometry.TryBindButton(timer, PortGroup.Yes, aspect, out noButton),
+              "a single-group block has no separate yes button");
+
+        CheckClose(VgsConstants.PlusButtonRadius * 2f, VgsConstants.NodeHeight * 0.75f,
+                   "plus button diameter is 75% of the card height");
+
+        PortGroup hit;
+        Check(PortGeometry.HitBindButton(timer, plusCenter, aspect, out hit), "the plus centre hits");
+        Check(hit == PortGroup.Single, "the plus reports the single group");
+        Check(!PortGeometry.HitBindButton(timer, plusCenter + new Vector2(0.05f, 0f), aspect, out hit),
+              "far to the right of the plus is a miss");
+
+        // A yes/no block: two discs, one above the other, each hit-testing to its own group.
+        Node sensor = MakeNode(2, "LargeBlockSensor", SensorToolbar());
+        sensor.Position = new Vector2(0.2f, 0.4f);
+        Check(PortGeometry.HasGroupButtons(sensor), "a yes/no block shows the T/F pair");
+
+        Vector2 trueCenter, falseCenter;
+        Check(PortGeometry.TryBindButton(sensor, PortGroup.Yes, aspect, out trueCenter), "true button");
+        Check(PortGeometry.TryBindButton(sensor, PortGroup.No, aspect, out falseCenter), "false button");
+        Check(trueCenter.Y < falseCenter.Y, "the true button is above the false one");
+        CheckClose(trueCenter.X, falseCenter.X, "both buttons sit on the same vertical line");
+
+        // The discs must not overlap, or the pair reads as one blob and a click is ambiguous.
+        Check(falseCenter.Y - trueCenter.Y > VgsConstants.GroupButtonRadius * 2f,
+              "the two group buttons do not overlap");
+
+        // Both stay inside the card.
+        float halfWidth = VgsConstants.GroupButtonRadius * aspect;
+        Check(trueCenter.X + halfWidth <= sensor.Position.X + VgsConstants.NodeWidth + 1e-5f,
+              "the true button stays inside the card's right edge");
+        Check(trueCenter.X - halfWidth >= sensor.Position.X,
+              "the true button stays inside the card's left edge");
+        Check(trueCenter.Y - VgsConstants.GroupButtonRadius >= sensor.Position.Y - 1e-5f,
+              "the true button stays inside the card's top edge");
+        Check(falseCenter.Y + VgsConstants.GroupButtonRadius
+              <= sensor.Position.Y + VgsConstants.NodeHeight + 1e-5f,
+              "the false button stays inside the card's bottom edge");
+
+        Check(PortGeometry.HitBindButton(sensor, trueCenter, aspect, out hit) && hit == PortGroup.Yes,
+              "clicking the upper disc binds the yes group");
+        Check(PortGeometry.HitBindButton(sensor, falseCenter, aspect, out hit) && hit == PortGroup.No,
+              "clicking the lower disc binds the no group");
+
+        // Aspect independence: the button is round on screen, so its distance from the card's
+        // right border must not depend on the window's shape.
+        float[] aspects = { 0.5625f, 0.75f, 1f, 1.6f };
+        for (int i = 0; i < aspects.Length; i++)
+        {
+            float a = aspects[i];
+            Vector2 c;
+            Check(PortGeometry.TryBindButton(sensor, PortGroup.Yes, a, out c),
+                  "true button at aspect " + a);
+            float rightEdge = c.X + VgsConstants.GroupButtonRadius * a;
+            CheckClose(rightEdge,
+                       sensor.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin,
+                       "true button right edge is a fixed distance from the border at aspect " + a);
+            Check(rightEdge <= sensor.Position.X + VgsConstants.NodeWidth + 1e-5f,
+                  "true button stays inside the card at aspect " + a);
+        }
+
+        // A block that cannot drive anything has no control at all.
+        Node conveyor = MakeTarget(3, "LargeBlockConveyorTube");
+        Vector2 unused;
+        Check(!PortGeometry.TryBindButton(conveyor, PortGroup.Single, aspect, out unused),
+              "no button on a block without a toolbar");
+        Check(!PortGeometry.HitBindButton(conveyor, conveyor.Position, aspect, out hit),
+              "nothing is clickable on a block without a toolbar");
     }
 
     private static void Routing()
@@ -418,10 +709,10 @@ internal static class OfflineChecks
     {
         var graph = new GridGraph(4);
         Node a = MakeNode(1, "LargeBlockTimerBlock");
-        Node b = MakeNode(2, "LargeBlockSmallGenerator", "OnOff");
+        Node b = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
         graph.AddNode(a);
         graph.AddNode(b);
-        graph.TryConnect(1, "Triggered", 2, "OnOff");
+        graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0));
         graph.LayoutPorts();
         Check(b.FindAction("OnOff").Slot == 0, "target port is drawn while connected");
 
@@ -431,12 +722,24 @@ internal static class OfflineChecks
         Check(b.FindAction("OnOff").Slot < 0, "the target's port is no longer drawn");
 
         // A port shared by several edges keeps its bar until the last edge is gone.
-        Node c = MakeNode(3, "LargeBlockSensor");
+        Node c = MakeNode(3, "LargeBlockSensor", SensorToolbar());
         graph.AddNode(c);
-        graph.TryConnect(3, "DetectedChanged", 2, "OnOff");
+        graph.TryConnect(3, "Detected#true", 2, "OnOff", new ToolbarCell(0, 0));
         graph.LayoutPorts();
         Check(b.FindAction("OnOff").Slot == 0, "port drawn again after reconnect");
         Check(graph.CountEdgesToInput(2, "OnOff") == 1, "one source");
+
+        // Two connections of the same event, one per fire group, are two edges and one bar.
+        Node d = MakeNode(4, "LargeBlockSensor", SensorToolbar());
+        graph.AddNode(d);
+        graph.TryConnect(4, "Detected#true", 2, "OnOff", new ToolbarCell(0, 0));
+        graph.TryConnect(4, "Detected#false", 2, "OnOff", new ToolbarCell(0, 1));
+        graph.LayoutPorts();
+        Check(graph.CountEdgesFromOutput(4, "Detected#true") == 1, "the yes edge exists");
+        Check(graph.CountEdgesFromOutput(4, "Detected#false") == 1, "the no edge exists");
+        Check(DrawnOutputs(d) == 2, "the two groups draw two output bars");
+        Check(graph.CountEdgesToInput(2, "OnOff") == 3, "three sources on the shared input");
+        Check(DrawnInputs(b) == 1, "the shared input still draws one bar");
     }
 
     /// <summary>
@@ -448,19 +751,19 @@ internal static class OfflineChecks
     {
         var graph = new GridGraph(9);
         Node src = MakeNode(1, "LargeBlockTimerBlock");
-        Node dst = MakeNode(2, "LargeBlockSmallGenerator", "OnOff", "OnOff_On", "OnOff_Off", "Enable");
+        Node dst = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff", "OnOff_On", "OnOff_Off", "Enable");
         graph.AddNode(src);
         graph.AddNode(dst);
 
         // Three separate inputs on the target, from three separate sources.
-        graph.AddNode(MakeNode(3, "LargeBlockSensor"));
+        graph.AddNode(MakeNode(3, "LargeBlockSensor", SensorToolbar()));
         graph.AddNode(MakeNode(4, "LargeBlockBatteryBlock"));
         graph.AddNode(MakeNode(5, "LargeBlockCockpit"));
 
-        Check(graph.TryConnect(1, "Triggered", 2, "OnOff"), "c1");
-        Check(graph.TryConnect(3, "DetectedChanged", 2, "OnOff_On"), "c2");
-        Check(graph.TryConnect(4, "FullyCharged", 2, "OnOff_Off"), "c3");
-        Check(graph.TryConnect(5, "OccupiedChanged", 2, "Enable"), "c4");
+        Check(graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0)), "c1");
+        Check(graph.TryConnect(3, "Detected#true", 2, "OnOff_On", new ToolbarCell(0, 0)), "c2");
+        Check(graph.TryConnect(4, "Triggered", 2, "OnOff_Off", new ToolbarCell(0, 1)), "c3");
+        Check(graph.TryConnect(5, "TargetLocked", 2, "Enable", new ToolbarCell(0, 0)), "c4");
         graph.LayoutPorts();
 
         Check(DrawnInputs(dst) == 4, "four input bars on the target");
@@ -494,14 +797,14 @@ internal static class OfflineChecks
         }
 
         // And the input stack as a whole clears the output stack of the same card.
-        Node both = MakeNode(6, "LargeBlockSensor", "OnOff");
+        Node both = MakeNode(6, "LargeBlockSensor", SensorToolbar(), "OnOff");
         graph.AddNode(both);
-        Check(graph.TryConnect(1, "Triggered", 6, "OnOff"), "sensor gets an input");
-        Check(graph.TryConnect(6, "DetectedChanged", 2, "OnOff"), "sensor also sources");
+        Check(graph.TryConnect(1, "Triggered", 6, "OnOff", new ToolbarCell(0, 4)), "sensor gets an input");
+        Check(graph.TryConnect(6, "Detected#true", 2, "OnOff", new ToolbarCell(0, 2)), "sensor also sources");
         graph.LayoutPorts();
 
         Vector2 outTop, outSize, inTop, inSize;
-        PortGeometry.TryPortBarRect(both, both.FindEvent("DetectedChanged"), out outTop, out outSize);
+        PortGeometry.TryPortBarRect(both, both.FindEvent("Detected#true"), out outTop, out outSize);
         PortGeometry.TryPortBarRect(both, both.FindAction("OnOff"), out inTop, out inSize);
         Check(inTop.Y >= outTop.Y + outSize.Y, "input stack clears the output stack");
 
@@ -512,16 +815,16 @@ internal static class OfflineChecks
 
         // And the same identity must hold for a card with inputs only and one with outputs
         // only: TotalHeight is used for culling, so a mismatch hides a card's lower bars.
-        Node inOnly = MakeNode(7, "LargeBlockSmallGenerator", "OnOff");
+        Node inOnly = MakeTarget(7, "LargeBlockSmallGenerator", "OnOff");
         inOnly.Position = new Vector2(0.9f, 0.9f);
         graph.AddNode(inOnly);
-        Check(graph.TryConnect(1, "Triggered", 7, "OnOff"), "input-only target");
+        Check(graph.TryConnect(1, "Triggered", 7, "OnOff", new ToolbarCell(0, 3)), "input-only target");
 
         Node outOnly = MakeNode(8, "LargeBlockTimerBlock");
         outOnly.Position = new Vector2(0.9f, 0.2f);
         graph.AddNode(outOnly);
-        graph.AddNode(MakeNode(9, "LargeBlockDoor", "Open"));
-        Check(graph.TryConnect(8, "Triggered", 9, "Open"), "output-only source");
+        graph.AddNode(MakeTarget(9, "LargeBlockDoor", "Open"));
+        Check(graph.TryConnect(8, "Triggered", 9, "Open", new ToolbarCell(0, 0)), "output-only source");
         graph.LayoutPorts();
 
         Vector2 onlyTop, onlySize;
@@ -554,4 +857,3 @@ internal static class OfflineChecks
         return PortGeometry.DrawnPortCount(node, PortDirection.Input);
     }
 }
-

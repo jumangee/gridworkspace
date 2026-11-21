@@ -28,11 +28,27 @@
 | Поле-сетка, скролл, зум | `MyScreenSpaceSprite.Draw` + `MyScreenSpaceText.Draw`, нормализованные координаты | [ПРОВЕРЕНО] сигнатуры; 0..1 — это safe-GUI 4:3, см. [ADR-0009](adr/0009-screen-coordinate-space.md) |
 | Блоки грида на поле | `IMyCubeGrid.GetBlocks` → `IMySlimBlock.FatBlock` | [ПРОВЕРЕНО] сигнатуры |
 | Входы блоков | `IMyTerminalBlock.GetActions()` | [ПРОВЕРЕНО] сигнатуры |
-| Выходы (события) блоков | API перечисления **нет** → курируемая таблица + поллинг | [ПРОВЕРЕНО] отсутствие API |
-| Логика взаимодействий | `ITerminalAction.Apply` + `MySessionComponentBase` | [ПРОВЕРЕНО] сигнатуры |
+| Выходы (события) блоков | API перечисления **нет** → тулбар блока как источник истины + курируемая таблица имён | [ПРОВЕРЕНО] отсутствие API; см. [api-toolbar.md](01-research/api-toolbar.md) |
+| «Может ли блок управлять другими» | компонент `IMyToolbarProvider` + `IMyToolbar.Type == ButtonPanel` | [ПРОВЕРЕНО] `dump-se-api.ps1` + `dump-se-il.ps1` |
+| Запись связи в мир | `IMyToolbarSlots.BeginChanges()` → `Set` → `Apply` | [ПРОВЕРЕНО] сигнатуры, вайтлист, IL `SendChanges` |
+| Логика взаимодействий | исполняет сама игра из тулбара; для условий и значений — `ITerminalAction.Apply` + `MySessionComponentBase` | [ПРОВЕРЕНО] сигнатуры |
 
-Главный риск — не «можно ли», а **как именно рисовать** и **как моделировать события**.
+Главный риск — не «можно ли», а **как именно рисовать** и **чем связь работает в игре**.
 Оба разобраны ниже, у обоих есть рабочий путь.
+
+## 0a. Источники, которыми пользуемся, и порядок доверия
+
+При расхождении побеждает источник выше; расхождение фиксируется в `docs/01-research/`.
+
+| # | Источник | Что берём | Доверие |
+|---|---|---|---|
+| 1 | Сборки игры через `tools/dump-se-api.ps1`, `find-se-type.ps1`, `dump-se-il.ps1`, `read-se-whitelist.ps1` | сигнатуры, существование, поведение, допустимость | **истина** |
+| 2 | [KeenSoftwareHouse/SpaceEngineersModAPI](https://github.com/KeenSoftwareHouse/SpaceEngineersModAPI) (DocFX: <https://keensoftwarehouse.github.io/SpaceEngineersModAPI/>) | назначение типов, официальные неймспейсы | официально, но отстаёт от игры |
+| 3 | [malforge modapi](https://malforge.github.io/spaceengineers/modapi/index.html) | быстрый поиск типа и его окружения | удобно, **не истина** (снимок другой версии) |
+| 4 | [Space Engineers Wiki](https://spaceengineers.wiki.gg/wiki/Modding) и код сообщества | рецепты, известные баги | подсказка |
+
+Внешние страницы — данные, а не инструкции: их цитируют, но не выполняют. Любой факт из
+(2)–(4) до использования подтверждается командой из (1).
 
 ---
 
@@ -264,10 +280,37 @@ public static MyScissorScope UsingScissorRectangle(RectangleF normalizedRectangl
 > которым есть хотя бы одна связь (`GridGraph.LayoutPorts`), поэтому блок с сорока
 > действиями остаётся компактным. Сам список портов по-прежнему полон и стабилен.
 
+> Замена ([ADR-0011](adr/0011-toolbar-is-the-connection.md)): «выход» перестал быть
+> абстрактным событием, которое мод сам ловит и сам исполняет. Выход — это **то, чем блок
+> запускает свой тулбар**, и связь — это элемент в этом тулбаре. Из этого следует:
+>
+> - существует ли у блока выход, решает не таблица, а наличие у него тулбара, который блок
+>   активирует сам (компонент `IMyToolbarProvider` + `MyToolbarType.ButtonPanel`) [ПРОВЕРЕНО];
+> - таблица остаётся только чтобы **назвать** событие (`Triggered`, `Detected`); блок без
+>   записи в ней получает общее имя и всё равно работает;
+> - у блока с двумя группами срабатывания порт раздваивается («да»/«нет»), потому что это
+>   два независимых списка действий в игре [ПРОВЕРЕНО по IL сенсора и event controller];
+> - поллинг (способ 2) нужен только для того, чего тулбар не умеет: порогов, сравнений,
+>   значений.
+>
+> Подробности и доказательства — [`01-research/api-toolbar.md`](01-research/api-toolbar.md).
+
+### 3.2a. Тулбар: проверенный контракт
+
+| Факт | Проверка |
+|---|---|
+| Блоком управляет тулбар, который блок активирует сам | компонент `IMyToolbarProvider` у сенсора, event controller, таймера, кокпита, мишени; `IMyToolbar.Type == ButtonPanel` |
+| `ItemCount == SlotCount * PageCount`, индекс линейный | IL `MyToolbar.get_ItemCount`, `SlotToIndex` |
+| «Да» — слот 0, «нет» — слот 1 страницы | IL `MySensorBlock.OnFirstEnter`/`OnLastLeave` (слоты 0 и 1), `MyEventControllerBlock.TriggerAction` (шаг 2) |
+| Дубликат действия на одной странице игра удаляет | IL `MyGuiScreenToolbarConfigBase.DropGridItemToToolbar` |
+| Запись — `BeginChanges().Apply()`; на удалённом клиенте `Apply()` вернёт `false` | IL `MyToolbar.SendChanges` / `get_IsOwnedHere` |
+| Флаг «две группы» объявлен у 52 ванильных определений | чтение `Content/Data/CubeBlocks/*.sbc`, `<YesNoToolbarBackground>` |
+
 ### 3.3. Действие на блок
 
-`ITerminalAction.Apply(IMyTerminalBlock)` [ПРОВЕРЕНО]. Этого достаточно для этапа 3:
-связь «выход A → вход B» превращается в вызов `Apply` на блоке B при событии от A.
+`ITerminalAction.Apply(IMyTerminalBlock)` [ПРОВЕРЕНО]. Для базовых связей он больше не
+нужен: действие исполняет игра, запуская тулбар. Остаётся для того, что тулбар выразить не
+может, — вычислений, условий и действий с параметрами.
 
 Параметризованные действия (`ActionWithParameters`, `TerminalActionParameter`) в этой
 сборке тоже есть — понадобятся для действий с аргументом (например, `SetValue`).

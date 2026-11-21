@@ -135,6 +135,28 @@ namespace Vgs.Core
         /// <summary>Stroke thickness of the plus, as a fraction of the button diameter.</summary>
         public const float PlusStrokeRatio = 0.14f;
 
+        // ---- "true" / "false" buttons (yes/no toolbars) ----
+        //
+        // A block whose toolbar has two fire groups cannot offer one "+": the user has to say
+        // which list the connection goes into. Two smaller discs stack vertically on the
+        // card's right edge — vertically, because the card's width belongs to the text, while
+        // its height is otherwise empty. Radius 22% of the card height leaves a hairline gap
+        // between them, which is what makes them read as two controls rather than one blob.
+
+        /// <summary>Radius of one group button, as a fraction of the card height.</summary>
+        public const float GroupButtonHeightRatio = 0.22f;
+
+        public const float GroupButtonRadius = NodeHeight * GroupButtonHeightRatio;
+
+        /// <summary>Vertical centre of the "true" button, as a fraction of the card height.</summary>
+        public const float GroupButtonTrueY = 0.27f;
+
+        /// <summary>Vertical centre of the "false" button, as a fraction of the card height.</summary>
+        public const float GroupButtonFalseY = 0.73f;
+
+        /// <summary>Text scale of the T/F glyph inside a group button.</summary>
+        public const float GroupButtonGlyphScale = 0.46f;
+
         // ---- Connection lines ----
 
         /// <summary>Thickness of a connection line.</summary>
@@ -167,6 +189,17 @@ namespace Vgs.Core
 
         /// <summary>How many grid blocks we pull from the grid in one refresh.</summary>
         public const int MaxGridBlocksScanned = 2000;
+
+        /// <summary>
+        /// How many toolbar cells one refresh may read while reconciling the graph with the
+        /// blocks' toolbars. A timer has ninety cells and a cockpit three toolbars, so this is
+        /// a few dozen blocks' worth of reading per refresh — cheap, but bounded, because the
+        /// refresh runs on a frame.
+        /// </summary>
+        public const int MaxToolbarCellsScanned = 20000;
+
+        /// <summary>How long a failure message stays on the bottom bar, in frames.</summary>
+        public const int WarningFrames = 360;
     }
 
     /// <summary>
@@ -188,7 +221,7 @@ namespace Vgs.Core
         public const string EditorTitle = "Grid setup";
         public const string CloseButton = "Закрыть";
         public const string Hint =
-            "ЛКМ — выбрать · перетащить · «+» — режим привязки · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
+            "ЛКМ — выбрать · перетащить · «+» или «T»/«F» — режим привязки · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
@@ -197,6 +230,21 @@ namespace Vgs.Core
         // Bind mode: the round "+" turns the pointer into a live line from a source port
         // until the user picks a target or cancels with the right mouse button.
         public const string BindHint = "Режим привязки: нажмите блок-получатель · ПКМ — отмена";
+
+        /// <summary>
+        /// The two buttons of a yes/no toolbar. A block like a sensor or an event controller
+        /// keeps two independent lists of actions — what happens on "yes" and what happens on
+        /// "no" — so the user has to choose one before the target.
+        /// </summary>
+        public const string TrueButtonGlyph = "T";
+
+        public const string FalseButtonGlyph = "F";
+
+        public const string BindHintTrue =
+            "Привязка к «да»: нажмите блок-получатель · ПКМ — отмена";
+
+        public const string BindHintFalse =
+            "Привязка к «нет»: нажмите блок-получатель · ПКМ — отмена";
 
         // Action menu
         public const string ActionMenuTitleFormat = "Действие для «{0}»";
@@ -208,6 +256,25 @@ namespace Vgs.Core
         /// line to an input that is already driven.
         /// </summary>
         public const string ActionMenuFanInFormat = "  ·  источников: {0}";
+
+        // Write failures. A connection is an item in the block's toolbar (ADR-0011), and the
+        // game refuses some placements; saying which one failed is the whole point of the
+        // warning, so each reason has its own sentence.
+        public const string WarnNoFreeCellFormat =
+            "Связь не добавлена: в тулбаре «{0}» нет свободной ячейки";
+
+        public const string WarnEveryPageFormat =
+            "Связь не добавлена: «{0}» уже стоит на всех страницах тулбара «{1}» — игра не разрешает одно действие дважды на одной странице";
+
+        public const string WarnActionGoneFormat =
+            "Связь не добавлена: у блока «{0}» больше нет действия «{1}»";
+
+        public const string WarnNotDrivableFormat =
+            "Связь не добавлена: блок «{0}» не управляет другими блоками";
+
+        public const string WarnRejected = "Связь не добавлена: игра не приняла действие в тулбар";
+
+        public const string WarnBlockGone = "Связь не добавлена: блок исчез";
 
         // Status bar. Format arguments are documented at each use site: keeping the pattern
         // here means the wording is translated in one place, and the caller can cache the

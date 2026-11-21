@@ -62,28 +62,106 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// True when the node shows a "+" button, and where its centre is. The button is the
-        /// entry point of bind mode: it exists only for blocks that have events of their own
-        /// to offer, so a conveyor tube has no button at all.
+        /// True when the node shows the "true"/"false" pair instead of a single "+": its
+        /// toolbar has two fire groups, so a connection has to say which list it joins.
+        /// </summary>
+        public static bool HasGroupButtons(Node node)
+        {
+            return node != null && node.CanDriveBlocks && node.Toolbar != null && node.Toolbar.YesNo;
+        }
+
+        /// <summary>
+        /// True when the node shows a bind button for this group, and where its centre is.
+        /// The button is the entry point of bind mode: it exists only for blocks that can
+        /// drive other blocks, so a conveyor tube has no button at all.
         ///
-        /// <paramref name="aspectX"/> is needed because the button is round on screen: its
+        /// A single-group toolbar gets one round "+" centred on the card. A yes/no toolbar
+        /// gets two smaller discs stacked on the right edge — "T" above, "F" below — because
+        /// the two lists are independent and the user must pick one before the target.
+        ///
+        /// <paramref name="aspectX"/> is needed because the buttons are round on screen: their
         /// horizontal half-extent is <c>radius * aspectX</c>, and that — not the vertical
         /// radius — is what has to be subtracted from the card's right border. Using the
         /// vertical radius here would make the button's distance from the border depend on the
         /// window's shape, so it would look inset on a wide monitor and flush on a 4:3 one.
         /// </summary>
-        public static bool TryPlusButton(Node node, float aspectX, out Vector2 center)
+        public static bool TryBindButton(Node node, PortGroup group, float aspectX, out Vector2 center)
         {
             center = Vector2.Zero;
-            if (node == null || !node.CanSourceEvents) return false;
+            if (node == null || !node.CanDriveBlocks) return false;
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            float halfWidth = VgsConstants.PlusButtonRadius * aspectX;
-            center = new Vector2(
-                node.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin - halfWidth,
-                node.Position.Y + VgsConstants.NodeHeight * 0.5f);
+            float rightEdge = node.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin;
+
+            if (!HasGroupButtons(node))
+            {
+                if (group != PortGroup.Single) return false;
+
+                float halfWidth = VgsConstants.PlusButtonRadius * aspectX;
+                center = new Vector2(rightEdge - halfWidth,
+                                     node.Position.Y + VgsConstants.NodeHeight * 0.5f);
+                return true;
+            }
+
+            if (group == PortGroup.Single) return false;
+
+            float halfGroupWidth = VgsConstants.GroupButtonRadius * aspectX;
+            float centreY = group == PortGroup.Yes
+                ? VgsConstants.GroupButtonTrueY
+                : VgsConstants.GroupButtonFalseY;
+
+            center = new Vector2(rightEdge - halfGroupWidth,
+                                 node.Position.Y + VgsConstants.NodeHeight * centreY);
             return true;
+        }
+
+        /// <summary>
+        /// Which bind button of this node is under a graph-space point, if any. The tolerance
+        /// is slightly larger than the drawn radius: a small circle is a hard target with a
+        /// mouse, and a near-miss that starts bind mode is much cheaper than a click that does
+        /// nothing.
+        ///
+        /// The test is done in a space where the button is actually round. In layout units it
+        /// is an ellipse (X and Y units are different lengths), so comparing a plain Euclidean
+        /// distance would make the button easy to hit from above and hard from the side.
+        /// </summary>
+        public static bool HitBindButton(Node node, Vector2 graphPoint, float aspectX, out PortGroup group)
+        {
+            group = PortGroup.Single;
+            if (node == null || !node.CanDriveBlocks) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            if (!HasGroupButtons(node))
+            {
+                return Hits(node, PortGroup.Single, graphPoint, aspectX, VgsConstants.PlusButtonRadius);
+            }
+
+            // The two discs do not overlap, but the hit tolerance could make them touch, so
+            // "true" is tested first and wins a tie — it is the common case.
+            if (Hits(node, PortGroup.Yes, graphPoint, aspectX, VgsConstants.GroupButtonRadius))
+            {
+                group = PortGroup.Yes;
+                return true;
+            }
+            if (Hits(node, PortGroup.No, graphPoint, aspectX, VgsConstants.GroupButtonRadius))
+            {
+                group = PortGroup.No;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX, float radius)
+        {
+            Vector2 center;
+            if (!TryBindButton(node, group, aspectX, out center)) return false;
+
+            float r = radius * 1.2f;
+            float dx = (graphPoint.X - center.X) / aspectX;
+            float dy = graphPoint.Y - center.Y;
+            return dx * dx + dy * dy <= r * r;
         }
 
         /// <summary>
@@ -263,28 +341,6 @@ namespace Vgs.Ui
         {
             return point.X >= topLeft.X && point.X <= topLeft.X + size.X
                 && point.Y >= topLeft.Y && point.Y <= topLeft.Y + size.Y;
-        }
-
-        /// <summary>
-        /// True when a graph-space point hits the "+" button. The tolerance is slightly larger
-        /// than the drawn radius: a small circle is a hard target with a mouse, and a
-        /// near-miss that starts bind mode is much cheaper than a click that does nothing.
-        ///
-        /// The test is done in a space where the button is actually round. In layout units it
-        /// is an ellipse (X and Y units are different lengths), so comparing a plain Euclidean
-        /// distance would make the button easy to hit from above and hard to hit from the side.
-        /// </summary>
-        public static bool HitPlusButton(Node node, Vector2 graphPoint, float aspectX)
-        {
-            Vector2 center;
-            if (!TryPlusButton(node, aspectX, out center)) return false;
-
-            if (aspectX <= 0f) aspectX = 1f;
-
-            float r = VgsConstants.PlusButtonRadius * 1.2f;
-            float dx = (graphPoint.X - center.X) / aspectX;
-            float dy = graphPoint.Y - center.Y;
-            return dx * dx + dy * dy <= r * r;
         }
     }
 }

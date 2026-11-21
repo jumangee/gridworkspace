@@ -6,7 +6,7 @@ HTML-демке, а работа с блоками **живого грида** �
 ```
 Этап 1  кнопка «Grid setup» в кокпите → полноэкранный редактор с полем-сеткой
 Этап 2  блоки текущего грида на поле, перетаскивание, порты по типу блока
-Этап 3  связи между блоками: логика взаимодействий и реакции на игровые события
+Этап 3  связи между блоками: связь записывается в тулбар блока и работает в игре
 ```
 
 ## Быстрый старт
@@ -36,7 +36,7 @@ pwsh -File tools/tail-mod-log.ps1
 | [`docs/05-agents.md`](docs/05-agents.md) | Роли: архитектор, программист, ревьюер |
 | [`docs/04-dev-workflow.md`](docs/04-dev-workflow.md) | Цикл разработки и типичные ошибки |
 | [`docs/README.md`](docs/README.md) | Индекс всей документации |
-| `src/VGS.Mod/` | Исходники мода (10 файлов, компилируются) |
+| `src/VGS.Mod/` | Исходники мода (16 файлов, компилируются) |
 | `tools/` | 9 скриптов разработки: компиляция, ревью-гейт, деплой (`.ps1` и `.cmd`), лог, дамп API, поиск типа, вайтлист, каталог |
 | `data/block-catalog.json` | 1559 подтипов блоков, выгружены из игры |
 | `skills/` | Чеклисты трёх ролей: architect, programmer, reviewer |
@@ -50,8 +50,10 @@ pwsh -File tools/tail-mod-log.ps1
 - Готовые графовые редакторы на C# переиспользовать **нельзя** — они editor-only или
   тянут Unity.
 - Терминальные контролы регистрируются **на тип блока**, не на экземпляр.
-- **Входы** блока перечисляются API (`GetActions`), **выходы** — нет. Их приходится
-  моделировать таблицей + поллингом.
+- **Входы** блока перечисляются API (`GetActions`). **Выходы** — не API-перечисляемые:
+  сущность выхода определяется тулбаром блока (компонент `IMyToolbarProvider` + `ButtonPanel`), а имена
+  событий — курируемой таблицей. Связь записывается в реальный тулбар исходного блока, и
+  это её единственное хранилище ([ADR-0011](docs/adr/0011-toolbar-is-the-connection.md)).
 
 Подробнее с уровнем доверия каждого утверждения — в
 [`docs/02-feasibility.md`](docs/02-feasibility.md).
@@ -64,8 +66,19 @@ pwsh -File tools/tail-mod-log.ps1
 - `MyGuiScreenBase` наследуем, конструктор `protected` — [дамп](docs/01-research/api-surface.md);
 - `MyModScreen` / `MyScreenSpace*` существуют в этой сборке — [дамп](docs/01-research/api-modscreen.md);
 - `MyTerminalControlFactory.AddControl<TBlock>` и `CustomControlGetter` — есть;
+- тулбар блока: `IMyToolbarProvider`, `IMyToolbarSlots.BeginChanges()`, `MyToolbarItemInfo`;
+  слоты «да»/«нет» у сенсора и event controller — [дамп](docs/01-research/api-toolbar.md);
 - каталог из 1559 подтипов блоков, из них 50 кокпитов/сидений — `data/block-catalog.json`;
-- весь скелет мода компилируется: `COMPILE OK — 10 file(s), 0 warning(s)`.
+- весь мод компилируется: `COMPILE OK — 16 file(s), 0 warning(s)`.
+
+## Источники информации по модам
+
+Порядок доверия: сборки установленной игры (дампы) → официальная документация Keen
+([SpaceEngineersModAPI](https://github.com/KeenSoftwareHouse/SpaceEngineersModAPI),
+[DocFX](https://keensoftwarehouse.github.io/SpaceEngineersModAPI/)) → неофициальный
+сгенерированный справочник [malforge modapi](https://malforge.github.io/spaceengineers/modapi/index.html)
+→ вики и код сообщества. Внешние страницы называют члены API, но не доказывают их наличие в
+текущей сборке — доказательство даёт только дамп.
 
 ## Структура репозитория
 
