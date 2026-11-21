@@ -67,6 +67,25 @@ internal static class OfflineChecks
         return MakeNode(id, subtype, TimerToolbar(), actions);
     }
 
+    /// <summary>
+    /// A free cell, as the writer reports an empty toolbar slot. Used as the <c>cellAt</c>
+    /// answer in the placement checks below.
+    /// </summary>
+    private static CellContents Free()
+    {
+        return CellContents.Empty;
+    }
+
+    /// <summary>
+    /// A cell holding an item the placement rule must not touch: a block action on some other
+    /// block. The identity is irrelevant to the checks — what matters is that the value is not
+    /// <see cref="CellContents.Empty"/>.
+    /// </summary>
+    private static CellContents Taken()
+    {
+        return CellContents.BlockAction(424242L, "OnOff");
+    }
+
     private static Node MakeNode(long id, string subtype, ToolbarLayout toolbar, params string[] actions)
     {
         var node = new Node(id, subtype, "block" + id, Vector3I.Zero, toolbar);
@@ -98,6 +117,9 @@ internal static class OfflineChecks
 
         Console.WriteLine("=== toolbar placement (yes/no) ===");
         PlacementYesNo();
+
+        Console.WriteLine("=== cell contents and placement (R-009) ===");
+        CellContentsAndPlacement();
 
         Console.WriteLine("=== which blocks can drive others ===");
         Drivability();
@@ -137,6 +159,18 @@ internal static class OfflineChecks
 
         Console.WriteLine("=== automatic layout is deterministic (ADR-0012) ===");
         LayoutIsDeterministic();
+
+        Console.WriteLine("=== block group action rule (ADR-0015) ===");
+        GroupActionRule();
+
+        Console.WriteLine("=== block group nodes (ADR-0015) ===");
+        GroupNodes();
+
+        Console.WriteLine("=== connections to a block group (ADR-0015) ===");
+        GroupEdges();
+
+        Console.WriteLine("=== block group frame geometry (ADR-0015) ===");
+        GroupGeometry();
 
         Console.WriteLine();
         Console.WriteLine(_failures == 0
@@ -178,6 +212,10 @@ internal static class OfflineChecks
     /// <summary>
     /// A single-group toolbar: any free cell, and the same action may appear once per page.
     /// This is the timer case, and it is where "the tenth repeating action" comes from.
+    ///
+    /// The third argument is the cell contents, not a verdict — the planner decides what
+    /// "free" means. That is the shape R-009 asks for: when the caller passed a pre-computed
+    /// bool, an inverted argument made every empty toolbar report "no free cell".
     /// </summary>
     private static void PlacementSingleGroup()
     {
@@ -185,30 +223,31 @@ internal static class OfflineChecks
 
         // Empty toolbar: the first cell of the first page.
         int index;
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => Free(), p => false, out index)
               == ToolbarPlacement.Ok, "an empty toolbar accepts a connection");
         Check(index == 0, "the first connection takes cell 0");
 
         // Page 0 full, page 1 empty: the next free page is used, not a refusal.
         Check(ToolbarPlanner.Plan(layout, PortGroup.Single,
-                                  c => c >= 9, p => false, out index) == ToolbarPlacement.Ok,
+                                  c => c >= 9 ? Free() : Taken(), p => false, out index)
+              == ToolbarPlacement.Ok,
               "a full first page pushes the connection to the next page");
         Check(index == 9, "the connection lands on cell 9, i.e. page 1 slot 0");
 
         // The duplicate rule: page 0 already holds this action, so page 1 is used even though
         // page 0 has free cells. The vanilla screen would delete the duplicate.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => p == 0, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => Free(), p => p == 0, out index)
               == ToolbarPlacement.Ok, "a duplicate on page 0 still finds a cell");
         Check(index == 9, "the repeat is written to the next page, not next to the first copy");
 
         // Every page holds it: impossible, and the caller has to say so.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => true, p => true, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => Free(), p => true, out index)
               == ToolbarPlacement.ActionOnEveryPage,
               "the same action on every page is refused as a duplicate, not as a full toolbar");
         Check(index == -1, "a refused placement reports no cell");
 
         // Every page is full with other actions: a different failure, and a different message.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => false, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => Taken(), p => false, out index)
               == ToolbarPlacement.NoFreeCell, "a completely full toolbar is reported as full");
 
         // Ten pages is exactly the limit for ten identical connections: the eleventh is the
@@ -219,7 +258,7 @@ internal static class OfflineChecks
         {
             ToolbarPlacement p = ToolbarPlanner.Plan(
                 layout, PortGroup.Single,
-                c => !taken[c],
+                c => taken[c] ? Taken() : Free(),
                 page => PageHolds(taken, layout, page),
                 out index);
             if (p != ToolbarPlacement.Ok) break;
@@ -228,7 +267,8 @@ internal static class OfflineChecks
         }
         Check(placed == 10, "ten identical connections fit a ten-page timer (got " + placed + ")");
 
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Single, c => !taken[c], page => PageHolds(taken, layout, page),
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Single,
+                                  c => taken[c] ? Taken() : Free(), page => PageHolds(taken, layout, page),
                                   out index) == ToolbarPlacement.ActionOnEveryPage,
               "the eleventh identical connection is refused");
     }
@@ -254,28 +294,28 @@ internal static class OfflineChecks
         ToolbarLayout layout = SensorToolbar();
 
         int index;
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => true, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => Free(), p => false, out index)
               == ToolbarPlacement.Ok, "a yes connection fits an empty yes/no toolbar");
         Check(index == 0, "the yes group writes cell 0 (page 0 slot 0)");
 
-        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => true, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => Free(), p => false, out index)
               == ToolbarPlacement.Ok, "a no connection fits an empty yes/no toolbar");
         Check(index == 1, "the no group writes cell 1 (page 0 slot 1)");
 
         // A "no" connection must never take slot 0, even when slot 0 is the only free cell:
         // the game fires slot 0 on "yes", so the item would fire on the wrong event.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c % 2 == 0, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c % 2 == 0 ? Free() : Taken(), p => false, out index)
               == ToolbarPlacement.NoFreeCell,
               "a no connection never falls back to a free yes slot");
 
         // With page 0's no slot taken by something else, the connection goes to page 1's no
         // slot — not to page 0's free yes slot, and not to page 1's yes slot.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c >= 2, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.No, c => c >= 2 ? Free() : Taken(), p => false, out index)
               == ToolbarPlacement.Ok, "a no connection skips a page whose no slot is taken");
         Check(index == 3, "the no connection goes to page 1 slot 1, not to a free yes slot");
 
         // Both groups exhausted: the yes group has its own message and its own cell space.
-        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => c % 2 == 1, p => false, out index)
+        Check(ToolbarPlanner.Plan(layout, PortGroup.Yes, c => c % 2 == 1 ? Free() : Taken(), p => false, out index)
               == ToolbarPlacement.NoFreeCell, "a yes connection with only no slots free is refused");
 
         // The group of a cell read back from the toolbar: slot 0 is yes, slot 1 is no.
@@ -285,6 +325,67 @@ internal static class OfflineChecks
         Check(ToolbarPlanner.GroupOfCell(layout, 9) == PortGroup.No, "cell 9 is a no cell");
         Check(ToolbarPlanner.GroupOfCell(TimerToolbar(), 5) == PortGroup.Single,
               "every cell of a single-group toolbar is a single-group cell");
+    }
+
+    /// <summary>
+    /// What a cell contains, and what the placement rule does with each case.
+    ///
+    /// This group exists because of R-009: the game layer used to hand the planner a
+    /// pre-computed "is this cell free" bool, that bool was passed inverted, and every empty
+    /// toolbar answered "no free cell" — so no connection could be created at all, from any
+    /// block, while the planner's own checks stayed green. The planner now receives the cell
+    /// contents and decides for itself, which makes the decision testable here and leaves the
+    /// game layer nothing to invert.
+    /// </summary>
+    private static void CellContentsAndPlacement()
+    {
+        // The four cases, and the only one that may be written into.
+        Check(CellContents.Empty.IsEmpty, "an empty cell reports itself empty");
+        Check(!CellContents.BlockAction(7L, "OnOff").IsEmpty, "a block action is not an empty cell");
+        Check(!CellContents.GroupAction("Lamps", "OnOff").IsEmpty, "a group action is not an empty cell");
+        Check(!CellContents.Other("Definition").IsEmpty,
+              "an item the editor cannot draw is NOT a free cell — it is somebody's wiring");
+
+        // Identity: a block and a group with the same action id are different targets, so a
+        // cell holding one must not satisfy a check for the other.
+        CellContents blockCell = CellContents.BlockAction(7L, "OnOff");
+        Check(blockCell.HoldsBlockAction(7L, "OnOff"), "a cell holds the block action it names");
+        Check(!blockCell.HoldsBlockAction(8L, "OnOff"), "a different block is a different cell");
+        Check(!blockCell.HoldsGroupAction("Lamps", "OnOff"), "a block item is not a group item");
+
+        CellContents groupCell = CellContents.GroupAction("Lamps", "OnOff");
+        Check(groupCell.HoldsGroupAction("Lamps", "OnOff"), "a cell holds the group action it names");
+        Check(!groupCell.HoldsGroupAction("Doors", "OnOff"), "a different group is a different cell");
+        Check(!groupCell.HoldsBlockAction(7L, "OnOff"), "a group item is not a block item");
+
+        // The R-009 case, stated as a check: an empty toolbar takes the connection on the very
+        // first page. Before the fix this returned NoFreeCell for the same input.
+        int index;
+        ToolbarLayout timer = TimerToolbar();
+        Check(ToolbarPlanner.Plan(timer, PortGroup.Single, c => CellContents.Empty, p => false, out index)
+              == ToolbarPlacement.Ok, "an empty single-group toolbar is not reported as full");
+        Check(index == 0, "an empty single-group toolbar takes cell 0");
+
+        ToolbarLayout sensor = SensorToolbar();
+        Check(ToolbarPlanner.Plan(sensor, PortGroup.Yes, c => CellContents.Empty, p => false, out index)
+              == ToolbarPlacement.Ok, "an empty yes/no toolbar is not reported as full");
+        Check(index == 0, "an empty yes/no toolbar takes the yes cell of page 0");
+
+        // An item the editor cannot draw occupies its cell but does not make the page a
+        // duplicate: the connection goes to the next cell of the same page, not to page 1.
+        Check(ToolbarPlanner.Plan(timer, PortGroup.Single,
+                                  c => c == 0 ? CellContents.Other("Definition") : CellContents.Empty,
+                                  p => false, out index) == ToolbarPlacement.Ok,
+              "a foreign item in cell 0 still leaves the rest of the page usable");
+        Check(index == 1, "the connection takes cell 1, leaving the foreign item in cell 0 alone");
+
+        // A page whose cells are all foreign items is full for this purpose: the next page is
+        // used rather than overwriting one of them.
+        Check(ToolbarPlanner.Plan(timer, PortGroup.Single,
+                                  c => c < 9 ? CellContents.Other("Definition") : CellContents.Empty,
+                                  p => false, out index) == ToolbarPlacement.Ok,
+              "a page of foreign items pushes the connection to the next page");
+        Check(index == 9, "the connection lands on cell 9 instead of overwriting an item");
     }
 
     /// <summary>
@@ -1266,5 +1367,370 @@ internal static class OfflineChecks
     {
         // Node.GridPosition is readonly and set in the constructor, so rebuild the node.
         return new Node(node.EntityId, node.SubtypeId, node.DisplayName, position, node.Toolbar);
+    }
+
+    // ------------------------------------------------------------------ block groups (ADR-0015)
+
+    /// <summary>A member whose actions are enabled on it — the ordinary case.</summary>
+    private static GroupMemberActions EnabledMember(string typeKey, bool functional, params string[] actions)
+    {
+        var ids = new List<string>(actions);
+        return new GroupMemberActions(typeKey, functional, ids, new List<string>(ids));
+    }
+
+    /// <summary>
+    /// A member of the given type whose action list is <paramref name="actions"/> but which has
+    /// none of them enabled — a switched-off block.
+    /// </summary>
+    private static GroupMemberActions DisabledMember(string typeKey, params string[] actions)
+    {
+        return new GroupMemberActions(typeKey, true, new List<string>(actions), new List<string>(0));
+    }
+
+    /// <summary>
+    /// The rule the game itself uses to decide which actions a group accepts
+    /// (<c>docs/01-research/api-block-groups.md</c> §3). Every assertion here is a case the
+    /// game distinguishes, and each one decides what the editor offers in the action menu:
+    /// offering an action the game would not fire is a connection that silently does nothing.
+    /// </summary>
+    private static void GroupActionRule()
+    {
+        var ids = new List<string>();
+
+        // One type: that type's actions, in its order, without duplicates.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyTimerBlock", true, "TriggerNow", "Start", "Stop"),
+                EnabledMember("MyTimerBlock", true, "TriggerNow", "Start", "Stop")
+            }, ids);
+        Check(ids.Count == 3 && ids[0] == "TriggerNow" && ids[2] == "Stop",
+              "a single-type group takes its type's actions in order");
+
+        // Two types, all functional: the intersection, in the first member's order.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyDoor", true, "Open", "Close", "OnOff"),
+                EnabledMember("MyAirVent", true, "OnOff", "Depressurize")
+            }, ids);
+        Check(ids.Count == 1 && ids[0] == "OnOff",
+              "a mixed group keeps only the actions every member has");
+
+        // Intersection order follows the first member, not the second.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyDoor", true, "Close", "Open", "OnOff"),
+                EnabledMember("MyAirVent", true, "OnOff", "Open")
+            }, ids);
+        Check(ids.Count == 2 && ids[0] == "Open" && ids[1] == "OnOff",
+              "the intersection keeps the first member's order");
+
+        // A mixed group with one non-functional member has no actions at all. This is the
+        // game's rule (`isinst MyFunctionalBlock` per member), not a simplification: a group
+        // with one conveyor tube in it offers nothing in the vanilla toolbar either.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyDoor", true, "Open", "Close"),
+                EnabledMember("MyConveyorTube", false, "Open", "Close")
+            }, ids);
+        Check(ids.Count == 0, "a mixed group with a non-functional member has no actions");
+
+        // ...but the same non-functional block in a single-type group is fine, because the
+        // game takes the type's actions without the functional test in that branch.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyConveyorTube", false, "OnOff"),
+                EnabledMember("MyConveyorTube", false, "OnOff")
+            }, ids);
+        Check(ids.Count == 1 && ids[0] == "OnOff",
+              "a single-type group of non-functional blocks keeps its type's actions");
+
+        // The enabled filter, single type: "any member" (the game's own asymmetry).
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                DisabledMember("MyDoor", "Open", "Close"),
+                EnabledMember("MyDoor", true, "Open", "Close")
+            }, ids);
+        Check(ids.Count == 2 && ids[0] == "Open" && ids[1] == "Close",
+              "one type: an action enabled on any member survives");
+
+        // ...and when no member enables it, it is not offered.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                DisabledMember("MyDoor", "Open", "Close"),
+                DisabledMember("MyDoor", "Open", "Close")
+            }, ids);
+        Check(ids.Count == 0, "one type: an action no member enables is not offered");
+
+        // The enabled filter, mixed types: "every member". A switched-off block removes the
+        // action here, which is the opposite of the single-type branch.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                EnabledMember("MyDoor", true, "Open", "OnOff"),
+                new GroupMemberActions("MyAirVent", true,
+                    new List<string> { "Open", "OnOff" }, new List<string> { "OnOff" })
+            }, ids);
+        Check(ids.Count == 1 && ids[0] == "OnOff",
+              "mixed types: an action disabled on one member is dropped");
+
+        // No members, no actions — and no exception. A null member must not throw either: the
+        // caller builds this list from a world read and cannot guarantee every entry.
+        BlockPortCatalog.ComputeGroupActionIds(new List<GroupMemberActions>(), ids);
+        Check(ids.Count == 0, "an empty group has no actions");
+        BlockPortCatalog.ComputeGroupActionIds(null, ids);
+        Check(ids.Count == 0, "a null member list has no actions");
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions> { null, EnabledMember("MyDoor", true, "Open") }, ids);
+        Check(ids.Count == 1 && ids[0] == "Open", "a null member is skipped, not fatal");
+    }
+
+    /// <summary>
+    /// The group node and its two-sided visibility rule: the group exists while at least one
+    /// member is drawn, and its action list is computed from the whole group — including the
+    /// members that are hidden (ADR-0015).
+    /// </summary>
+    private static void GroupNodes()
+    {
+        var graph = new GridGraph(7);
+        Node timer = MakeNode(1, "LargeBlockTimerBlock");
+        Node door = MakeTarget(2, "LargeBlockDoor", "Open", "Close", "OnOff");
+        graph.AddNode(timer);
+        graph.AddNode(door);
+
+        var members = new List<long> { 1, 2 };
+        var actions = new List<GroupMemberActions>
+        {
+            EnabledMember("MyDoor", true, "Open", "Close", "OnOff"),
+            EnabledMember("MyDoor", true, "Open", "Close", "OnOff")
+        };
+
+        Node group = graph.SyncGroup("Doors", members, actions);
+        Check(group != null, "a group with a drawn member becomes a node");
+        Check(group.IsGroup, "the node knows it is a group");
+        Check(group.EntityId == 0, "a group has no entity id");
+        Check(group.GroupName == "Doors", "the group's identity is its name");
+        Check(group.Members.Count == 2, "the group remembers its drawn members");
+        Check(group.Actions.Count == 3, "the group exposes the actions its members share");
+        Check(group.Events.Count == 0, "a group has no output ports");
+        Check(!group.CanDriveBlocks, "a group cannot drive other blocks");
+        Check(group.Toolbar == ToolbarLayout.None, "a group has no toolbar");
+        Check(graph.GroupCount == 1 && graph.GetGroup("Doors") == group, "the graph can find the group by name");
+        Check(graph.ContainsNode(group), "the graph recognises the group as live");
+
+        // Hidden members are not drawn but still count for the action list: the caller passes
+        // the whole group's actions and only the drawn members.
+        Node group2 = graph.SyncGroup("Doors", new List<long> { 2 },
+                                      new List<GroupMemberActions>
+                                      {
+                                          EnabledMember("MyDoor", true, "Open", "Close", "OnOff"),
+                                          EnabledMember("MyDoor", true, "Open", "Close", "OnOff")
+                                      });
+        Check(ReferenceEquals(group, group2), "re-syncing keeps the same node object");
+        Check(group.Members.Count == 1, "only the drawn members are framed");
+        Check(group.Actions.Count == 3, "the action list still comes from the whole group");
+
+        // No drawn member: the group leaves the graph. This is how "Show in VGS" aggregates.
+        Check(graph.SyncGroup("Doors", new List<long>(), actions) == null,
+              "a group with no drawn member has no node");
+        Check(graph.GroupCount == 0, "the group is gone from the graph");
+        Check(!graph.ContainsNode(group), "the graph no longer recognises the group");
+
+        // A renamed group is a different group: the game addresses it by name.
+        graph.SyncGroup("Doors", members, actions);
+        Check(graph.GetGroup("Doors") != null, "the group is back under its name");
+        Check(graph.GetGroup("Other") == null, "a different name is a different group");
+
+        // When the composition changes so that an action drops out of the group's list, the
+        // edges that ended on that port go with it: a port the node no longer has would draw
+        // nothing at the target and leave a dot with no line at the source.
+        graph.SyncGroup("Doors", members,
+                        new List<GroupMemberActions>
+                        {
+                            EnabledMember("MyDoor", true, "Open", "Close", "OnOff")
+                        });
+        Check(graph.GetGroup("Doors").FindAction("OnOff") != null, "the group offers OnOff");
+        Check(graph.TryConnectToGroup(1, "Triggered", "Doors", "OnOff", new ToolbarCell(0, 4)),
+              "a connection to the new port");
+        graph.LayoutPorts();
+        Check(graph.GetGroup("Doors").FindAction("OnOff").Slot == 0, "the OnOff port is drawn");
+        Check(graph.EdgeCount == 1, "the connection to the new port exists");
+
+        graph.SyncGroup("Doors", members,
+                        new List<GroupMemberActions>
+                        {
+                            EnabledMember("MyDoor", true, "Open", "Close"),
+                            EnabledMember("MyDoor", true, "Open", "Close")
+                        });
+        Check(graph.GetGroup("Doors").FindAction("OnOff") == null, "OnOff is no longer offered");
+        Check(graph.EdgeCount == 0, "the edge to the vanished port is gone");
+        Check(graph.GetGroup("Doors").FindAction("Open").Slot < 0,
+              "the surviving port has no edge, so it draws no bar");
+    }
+
+    /// <summary>
+    /// Connections to a group: legal as a target, illegal as a source, and they keep the
+    /// graph's cell and port invariants (ADR-0015).
+    /// </summary>
+    private static void GroupEdges()
+    {
+        var graph = new GridGraph(8);
+        Node timer = MakeNode(1, "LargeBlockTimerBlock");
+        Node sensor = MakeNode(3, "LargeBlockSensor", SensorToolbar());
+        Node door = MakeTarget(2, "LargeBlockDoor", "Open", "Close", "OnOff");
+        graph.AddNode(timer);
+        graph.AddNode(sensor);
+        graph.AddNode(door);
+
+        var members = new List<long> { 2 };
+        var actions = new List<GroupMemberActions> { EnabledMember("MyDoor", true, "Open", "Close") };
+        Node group = graph.SyncGroup("Doors", members, actions);
+        Check(group.Actions.Count == 2, "the group exposes the two door actions");
+
+        Check(graph.TryConnectToGroup(1, "Triggered", "Doors", "Open", new ToolbarCell(0, 0)),
+              "a block connects to a group");
+        graph.LayoutPorts();
+        Check(graph.EdgeCount == 1, "the edge exists");
+        Check(group.FindAction("Open").Slot == 0, "the group's port gets a bar");
+        Check(timer.FindEvent("Triggered").Slot == 0, "the source's port gets a bar");
+        Check(graph.CountEdgesToInput(group, "Open") == 1, "the group's fan-in counts its own edges");
+        Check(graph.CountEdgesToInput(2, "Open") == 0, "a group edge is not counted as a block edge");
+        Check(graph.HasEdgeToGroup(1, "Triggered", "Doors", "Open"), "the group edge is findable");
+        Check(!graph.HasEdge(1, "Triggered", 2, "Open"), "a group edge is not a block edge");
+        Check(graph.GetTargetNode(graph.Edges[0]) == group, "the edge resolves to the group node");
+
+        // An action the group does not have is refused, exactly as for a block.
+        Check(!graph.TryConnectToGroup(1, "Triggered", "Doors", "Depressurize", new ToolbarCell(0, 1)),
+              "an action the group does not offer is refused");
+        Check(!graph.TryConnectToGroup(1, "Triggered", "Missing", "Open", new ToolbarCell(0, 1)),
+              "an unknown group is refused");
+        Check(!graph.TryConnectToGroup(1, "Triggered", "Doors", "Open", new ToolbarCell(0, 0)),
+              "the same cell cannot hold two connections");
+
+        // A second source on the same group port is normal fan-in, as for a block.
+        Check(graph.TryConnectToGroup(3, "Detected#true", "Doors", "Open", new ToolbarCell(0, 0)),
+              "a second source joins the same group port");
+        graph.LayoutPorts();
+        Check(graph.CountEdgesToInput(group, "Open") == 2, "two sources on the group's port");
+        Check(group.FindAction("Open").Slot == 0, "the shared group port still draws one bar");
+
+        // A group has no outputs, so nothing can start from it.
+        Check(!graph.TryConnect(group.EntityId, "Triggered", 2, "Open", new ToolbarCell(0, 0)),
+              "a group cannot be the source of an edge");
+
+        // Removing the group drops its edges and leaves the block edges alone.
+        Check(graph.TryConnect(1, "Triggered", 2, "Open", new ToolbarCell(0, 1)), "a block edge too");
+        Check(graph.RemoveGroup("Doors"), "the group is removed");
+        Check(graph.EdgeCount == 1, "only the block edge survives");
+        Check(!graph.ContainsGroup("Doors"), "the group is gone");
+        Check(!graph.RemoveGroup("Doors"), "removing it twice is a no-op");
+
+        // ...and the collect-for-port overload works for both kinds of node.
+        graph.SyncGroup("Doors", members, actions);
+        graph.TryConnectToGroup(1, "Triggered", "Doors", "Open", new ToolbarCell(0, 2));
+        var buffer = new List<Edge>();
+        graph.CollectEdgesForPort(graph.GetGroup("Doors"), "Open", PortDirection.Input, buffer);
+        Check(buffer.Count == 1, "the group's port collects its own edge");
+        buffer.Clear();
+        graph.CollectEdgesForPort(1, "Triggered", PortDirection.Output, buffer);
+        Check(buffer.Count == 2, "the source's port collects the block edge and the group edge");
+
+        // The same group connection repeated on another toolbar page is a second edge and one
+        // line: the repeat is legal in the game (a different page), but drawing it twice would
+        // only hide that a repeat happened.
+        Check(graph.TryConnectToGroup(1, "Triggered", "Doors", "Open", new ToolbarCell(0, 3)),
+              "the same group connection on another page is a separate edge");
+        graph.LayoutPorts();
+        Check(graph.CountEdgesFromOutput(1, "Triggered") == 3, "three edges leave the source port");
+        Check(graph.Lines.Count == 2, "but only two lines are drawn — one per distinct pair");
+
+        // Losing the last connection takes the group's bar away, like any other port.
+        var groupBuffer = new List<Edge>();
+        graph.CollectEdgesForPort(graph.GetGroup("Doors"), "Open", PortDirection.Input, groupBuffer);
+        Check(groupBuffer.Count == 2, "both group edges are collected");
+        for (int i = 0; i < groupBuffer.Count; i++) graph.RemoveEdge(groupBuffer[i]);
+        graph.LayoutPorts();
+        Check(graph.GetGroup("Doors").FindAction("Open").Slot < 0,
+              "the group's port is no longer drawn once its last edge is gone");
+    }
+
+    /// <summary>
+    /// The group frame: a derived box around the members' cards and their port stacks, with
+    /// the title strip above it. The draw pass and the hit test both read it, so it is asserted
+    /// here rather than discovered in game.
+    /// </summary>
+    private static void GroupGeometry()
+    {
+        var graph = new GridGraph(11);
+        Node a = MakeTarget(1, "LargeBlockConveyor");
+        Node b = MakeTarget(2, "LargeBlockConveyor");
+        Node source = MakeNode(3, "LargeBlockTimerBlock");
+        graph.AddNode(a);
+        graph.AddNode(b);
+        graph.AddNode(source);
+
+        a.Position = new Vector2(0.30f, 0.20f);
+        b.Position = new Vector2(0.10f, 0.40f);
+
+        var members = new List<long> { 1, 2 };
+        var actions = new List<GroupMemberActions> { EnabledMember("MyConveyor", false, "OnOff") };
+        Node group = graph.SyncGroup("Belt", members, actions);
+        Check(graph.TryConnectToGroup(3, "Triggered", "Belt", "OnOff", new ToolbarCell(0, 0)),
+              "a source connects to the group");
+        graph.LayoutPorts();
+        PortGeometry.LayoutGroupFrames(graph);
+
+        Vector2 frameTopLeft, frameSize;
+        Check(PortGeometry.TryBodyRect(group, out frameTopLeft, out frameSize), "the group has a frame");
+
+        float pad = VgsConstants.GroupFramePadding;
+        float title = VgsConstants.GroupTitleHeight;
+
+        // The box spans both cards horizontally and vertically, plus the padding and the strip.
+        CheckClose(frameTopLeft.X, 0.10f - pad, "the frame starts at the leftmost card minus padding");
+        CheckClose(frameTopLeft.Y, 0.20f - pad - title, "the frame starts above the topmost card, by the title strip");
+        CheckClose(frameSize.X, (0.30f + VgsConstants.NodeWidth) - 0.10f + pad * 2f,
+                   "the frame spans the cards' width plus padding");
+        Check(frameSize.Y > VgsConstants.NodeHeight * 2f, "the frame is taller than two cards");
+
+        // The frame contains the member's port stack: a member with a connected port is taller
+        // than its card, and a frame that ignored that would cut through its own ports.
+        CheckClose(frameTopLeft.Y + frameSize.Y,
+                   0.40f + PortGeometry.TotalHeight(b) + pad,
+                   "the frame's bottom edge clears the lowest member's port stack");
+
+        // The title strip is the group's click target and sits at the frame's top.
+        Vector2 titleTopLeft, titleSize;
+        Check(PortGeometry.TryGroupTitleRect(group, out titleTopLeft, out titleSize), "the group has a title strip");
+        CheckClose(titleTopLeft.Y, frameTopLeft.Y, "the title strip is at the frame's top");
+        CheckClose(titleSize.Y, title, "the title strip has the title height");
+
+        // Hit-testing: the strip and the port bars are the group; the interior is not.
+        Check(PortGeometry.HitNode(group, titleTopLeft + new Vector2(titleSize.X * 0.5f, titleSize.Y * 0.5f)),
+              "the title strip hits the group");
+        Check(!PortGeometry.HitNode(group, frameTopLeft + new Vector2(frameSize.X * 0.5f, frameSize.Y * 0.5f)),
+              "the frame's interior does not hit the group — the members are there");
+        Check(!PortGeometry.HitNode(group, new Vector2(0.5f, 0.5f)), "a point outside the frame misses");
+
+        Vector2 barTopLeft, barSize;
+        Check(PortGeometry.TryPortBarRect(group, group.FindAction("OnOff"), out barTopLeft, out barSize),
+              "the group's port bar has a rectangle");
+        CheckClose(barTopLeft.Y, frameTopLeft.Y + frameSize.Y,
+                   "the group's port bar hangs from the frame's bottom edge");
+        CheckClose(barSize.X, frameSize.X, "the group's port bar is as wide as the frame");
+        Check(PortGeometry.HitNode(group, barTopLeft + new Vector2(barSize.X * 0.5f, barSize.Y * 0.5f)),
+              "the port bar hits the group");
+
+        // A group with no members has no frame, so nothing is drawn at the origin.
+        Node orphan = new Node("Empty", "Empty");
+        Vector2 ignoredTopLeft, ignoredSize;
+        Check(!PortGeometry.TryBodyRect(orphan, out ignoredTopLeft, out ignoredSize),
+              "a group with no frame reports no body rectangle");
     }
 }

@@ -8,17 +8,25 @@ namespace Vgs.Model
     /// The editable graph for one grid: nodes plus edges, with the invariants the UI and
     /// the future evaluator both rely on.
     ///
+    /// A node is either a block or a named block group (ADR-0015). Both live in this type and
+    /// both can be the target of an edge; only a block can be its source, because only a block
+    /// owns a toolbar to fire from. Groups are kept in a map of their own, keyed by name: a
+    /// group is not an entity, so it has no id to key it by.
+    ///
     /// Deliberately a plain data structure with no game references. Everything that talks
     /// to Space Engineers lives in <c>Vgs.Game</c>; this type can therefore be exercised in
     /// a test harness that never starts the game, which is the only practical way to test
     /// graph logic given that the in-game feedback loop costs a full game launch.
     ///
     /// Invariants enforced here, not by callers:
-    ///  * an edge never starts and ends on the same node;
+    ///  * an edge never starts and ends on the same block;
     ///  * an edge only references ports that exist on both endpoints;
     ///  * an edge occupies a cell of the source's toolbar, and no two edges share a cell;
     ///  * a cell may only be used by a port whose fire group matches its slot;
     ///  * removing a node removes every edge that touched it;
+    ///  * a group exists only while at least one of its members is in the graph — which is
+    ///    how "Show in VGS" aggregates for a group: the group is hidden when every member is
+    ///    hidden (ADR-0015);
     ///  * a port is drawn only while it carries at least one connection
     ///    (<see cref="LayoutPorts"/>).
     ///
@@ -31,6 +39,10 @@ namespace Vgs.Model
     /// twice on one toolbar *page* and accepts it on another page, so two connections that
     /// differ only by their cell are two real, legal connections — and the reason the editor
     /// has to warn when the last page is taken (ADR-0011).
+    ///
+    /// Nor is "an edge to a group is not a self-loop". A block that belongs to the group it
+    /// fires is a legal and useful wiring: the game applies the action to every functional
+    /// member, the source included, so a timer inside a group can restart the whole group.
     /// </summary>
     public sealed class GridGraph
     {
@@ -46,8 +58,14 @@ namespace Vgs.Model
 
         private readonly Dictionary<long, Node> _nodes = new Dictionary<long, Node>();
         private readonly List<Node> _nodeList = new List<Node>();
+        private readonly Dictionary<string, Node> _groups = new Dictionary<string, Node>(StringComparer.Ordinal);
+        private readonly List<Node> _groupList = new List<Node>();
         private readonly List<Edge> _edges = new List<Edge>();
         private readonly List<Edge> _lines = new List<Edge>();
+
+        /// <summary>Scratch buffer for the group action rule; reused so a refresh allocates nothing.</summary>
+        private readonly List<string> _groupActionIds = new List<string>(16);
+
 
         /// <summary>
         /// Next cell of the automatic layout. Monotonic for the graph's lifetime so that a block
@@ -67,8 +85,19 @@ namespace Vgs.Model
         public int NodeCount { get { return _nodeList.Count; } }
         public int EdgeCount { get { return _edges.Count; } }
 
-        /// <summary>Read-only view of nodes; do not mutate the list itself.</summary>
+        /// <summary>Read-only view of block nodes; do not mutate the list itself.</summary>
         public IList<Node> Nodes { get { return _nodeList; } }
+
+        /// <summary>
+        /// Read-only view of group nodes; do not mutate the list itself.
+        ///
+        /// Separate from <see cref="Nodes"/> because the two are drawn in different passes: a
+        /// group is a frame *behind* the cards of its members, so it cannot be part of the
+        /// same list the card pass walks.
+        /// </summary>
+        public IList<Node> Groups { get { return _groupList; } }
+
+        public int GroupCount { get { return _groupList.Count; } }
 
         /// <summary>Read-only view of edges; do not mutate the list itself.</summary>
         public IList<Edge> Edges { get { return _edges; } }
@@ -97,6 +126,43 @@ namespace Vgs.Model
         public bool Contains(long entityId)
         {
             return _nodes.ContainsKey(entityId);
+        }
+
+        /// <summary>Group node with this name, or null.</summary>
+        public Node GetGroup(string groupName)
+        {
+            if (string.IsNullOrEmpty(groupName)) return null;
+            Node n;
+            return _groups.TryGetValue(groupName, out n) ? n : null;
+        }
+
+        public bool ContainsGroup(string groupName)
+        {
+            return !string.IsNullOrEmpty(groupName) && _groups.ContainsKey(groupName);
+        }
+
+        /// <summary>
+        /// True while this node is still part of the graph, whichever kind it is.
+        ///
+        /// The UI holds node references across refreshes (selection, hover, the open action
+        /// menu), and a refresh can drop either a block or a group. Asking by node rather than
+        /// by <see cref="Node.EntityId"/> is what keeps those references honest — a group has
+        /// no id to ask about.
+        /// </summary>
+        public bool ContainsNode(Node node)
+        {
+            if (node == null) return false;
+            if (node.IsGroup) return ContainsGroup(node.GroupName);
+
+            Node live;
+            return _nodes.TryGetValue(node.EntityId, out live) && ReferenceEquals(live, node);
+        }
+
+        /// <summary>Node an edge ends on: the block, or the group it names.</summary>
+        public Node GetTargetNode(Edge edge)
+        {
+            if (edge == null) return null;
+            return edge.TargetsGroup ? GetGroup(edge.TargetGroupName) : GetNode(edge.TargetEntityId);
         }
 
         /// <summary>
@@ -136,6 +202,120 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// Creates or updates the group node with this name, and returns it — or null when the
+        /// group has to disappear.
+        ///
+        /// <b>This is where "Show in VGS" aggregates for a group</b> (ADR-0015). The caller
+        /// passes only the members that are drawn on the canvas; a group with none of them is
+        /// not a group on the schema, so the node is dropped together with its incoming edges.
+        /// The block-level flag therefore needs no group-level counterpart: the group is
+        /// visible exactly when at least one of its blocks is.
+        ///
+        /// <paramref name="memberActions"/> is the whole group, not just the drawn members:
+        /// the game applies a group action to every functional member, including members that
+        /// are hidden or live on a subgrid, so the action list must be computed from all of
+        /// them or the editor would offer less than the connection really does.
+        ///
+        /// The action ports are rebuilt only when the computed id list actually changed, which
+        /// keeps the existing <see cref="Port"/> objects alive across refreshes — and with them
+        /// the user's selection, hover and open action menu.
+        /// </summary>
+        public Node SyncGroup(string groupName, List<long> members, IList<GroupMemberActions> memberActions)
+        {
+            if (string.IsNullOrEmpty(groupName) || members == null || members.Count == 0)
+            {
+                RemoveGroup(groupName);
+                return null;
+            }
+
+            Node node = GetGroup(groupName);
+            if (node == null)
+            {
+                node = new Node(groupName, groupName);
+                _groups.Add(groupName, node);
+                _groupList.Add(node);
+            }
+
+            node.DisplayName = groupName;
+
+            node.Members.Clear();
+            for (int i = 0; i < members.Count; i++) node.Members.Add(members[i]);
+
+            BlockPortCatalog.ComputeGroupActionIds(memberActions, _groupActionIds);
+            if (!SamePortKeys(node.Actions, _groupActionIds))
+            {
+                BlockPortCatalog.FillActions(node, _groupActionIds);
+
+                // An action that dropped out of the group's list — the composition changed, so
+                // it is no longer the intersection — cannot be executed any more. Its edges go
+                // with it: an edge to a port the node does not have would draw nothing on the
+                // target and leave a dot with no line on the source. The item stays in the
+                // source's toolbar, so restoring the composition brings the line back on the
+                // next reconcile pass.
+                RemoveEdgesToMissingGroupPorts(groupName);
+            }
+            return node;
+        }
+
+        /// <summary>
+        /// Drops the edges that end on a group port the group no longer has.
+        ///
+        /// Called only when the group's action list actually changed, so the ordinary refresh
+        /// costs nothing: a stable group keeps its ports and therefore its edges.
+        /// </summary>
+        private void RemoveEdgesToMissingGroupPorts(string groupName)
+        {
+            Node node = GetGroup(groupName);
+            if (node == null) return;
+
+            for (int i = _edges.Count - 1; i >= 0; i--)
+            {
+                Edge e = _edges[i];
+                if (!e.TargetsGroup) continue;
+                if (!string.Equals(e.TargetGroupName, groupName, StringComparison.Ordinal)) continue;
+                if (node.FindAction(e.TargetPortKey) != null) continue;
+
+                _edges.RemoveAt(i);
+            }
+        }
+
+        /// <summary>
+        /// Drops a group node and every edge that ended on it. Returns true when something was
+        /// removed. The item stays in the source block's toolbar — the group may simply be
+        /// hidden right now — so nothing is written to the world here.
+        /// </summary>
+        public bool RemoveGroup(string groupName)
+        {
+            if (string.IsNullOrEmpty(groupName)) return false;
+
+            Node node;
+            if (!_groups.TryGetValue(groupName, out node)) return false;
+
+            _groups.Remove(groupName);
+            _groupList.Remove(node);
+
+            for (int i = _edges.Count - 1; i >= 0; i--)
+            {
+                Edge e = _edges[i];
+                if (e.TargetsGroup && string.Equals(e.TargetGroupName, groupName, StringComparison.Ordinal))
+                {
+                    _edges.RemoveAt(i);
+                }
+            }
+            return true;
+        }
+
+        private static bool SamePortKeys(IList<Port> ports, IList<string> keys)
+        {
+            if (ports.Count != keys.Count) return false;
+            for (int i = 0; i < keys.Count; i++)
+            {
+                if (!string.Equals(ports[i].Key, keys[i], StringComparison.Ordinal)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Connects an event port of one node to an action port of another, recording the
         /// toolbar cell the item was written into. Returns false and changes nothing when the
         /// edge would be invalid: a self-loop, a port that does not exist, a cell outside the
@@ -153,14 +333,41 @@ namespace Vgs.Model
             Node target = GetNode(targetEntityId);
             if (source == null || target == null) return false;
 
+            return Connect(source, sourcePortKey, target, targetPortKey, cell, null);
+        }
+
+        /// <summary>
+        /// Connects an event port of a block to an action port of a named group.
+        ///
+        /// A group is a legal target and an illegal source: the game has a toolbar item that
+        /// applies one action to every functional member of a group, but a group has no
+        /// toolbar of its own, so nothing can fire from it (ADR-0015). The action must be one
+        /// the group's own action list contains — which is the intersection of its members'
+        /// actions, not a union — so a connection the game would not execute cannot be made.
+        /// </summary>
+        public bool TryConnectToGroup(long sourceEntityId, string sourcePortKey, string groupName,
+                                      string targetPortKey, ToolbarCell cell)
+        {
+            Node source = GetNode(sourceEntityId);
+            Node target = GetGroup(groupName);
+            if (source == null || target == null) return false;
+
+            return Connect(source, sourcePortKey, target, targetPortKey, cell, groupName);
+        }
+
+        private bool Connect(Node source, string sourcePortKey, Node target, string targetPortKey,
+                             ToolbarCell cell, string groupName)
+        {
             Port outPort = source.FindEvent(sourcePortKey);
             if (outPort == null) return false;
             if (target.FindAction(targetPortKey) == null) return false;
 
             if (!IsCellValidFor(source, outPort, cell)) return false;
-            if (FindEdgeInCell(sourceEntityId, cell) != null) return false;
+            if (FindEdgeInCell(source.EntityId, cell) != null) return false;
 
-            _edges.Add(new Edge(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell));
+            _edges.Add(groupName == null
+                ? new Edge(source.EntityId, sourcePortKey, target.EntityId, targetPortKey, cell)
+                : Edge.ToGroup(source.EntityId, sourcePortKey, groupName, targetPortKey, cell));
             return true;
         }
 
@@ -205,6 +412,7 @@ namespace Vgs.Model
             {
                 Edge e = _edges[i];
                 if (e.SourceEntityId == sourceEntityId
+                    && !e.TargetsGroup
                     && e.TargetEntityId == targetEntityId
                     && string.Equals(e.SourcePortKey, sourcePortKey, StringComparison.Ordinal)
                     && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
@@ -215,14 +423,58 @@ namespace Vgs.Model
             return false;
         }
 
-        /// <summary>Number of edges that end on the given input port.</summary>
+        /// <summary>True when this block's port is already joined to that group's port.</summary>
+        public bool HasEdgeToGroup(long sourceEntityId, string sourcePortKey, string groupName,
+                                   string targetPortKey)
+        {
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+                if (e.SourceEntityId == sourceEntityId
+                    && e.TargetsGroup
+                    && string.Equals(e.TargetGroupName, groupName, StringComparison.Ordinal)
+                    && string.Equals(e.SourcePortKey, sourcePortKey, StringComparison.Ordinal)
+                    && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Number of edges that end on the given input port of a block.</summary>
         public int CountEdgesToInput(long targetEntityId, string targetPortKey)
         {
             int count = 0;
             for (int i = 0; i < _edges.Count; i++)
             {
                 Edge e = _edges[i];
-                if (e.TargetEntityId == targetEntityId
+                if (!e.TargetsGroup
+                    && e.TargetEntityId == targetEntityId
+                    && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// Number of edges that end on the given input port of any node — the block or the
+        /// group. Used by the action menu, which shows the count next to each row without
+        /// caring which kind of node the row belongs to.
+        /// </summary>
+        public int CountEdgesToInput(Node target, string targetPortKey)
+        {
+            if (target == null) return 0;
+            if (!target.IsGroup) return CountEdgesToInput(target.EntityId, targetPortKey);
+
+            int count = 0;
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+                if (e.TargetsGroup
+                    && string.Equals(e.TargetGroupName, target.GroupName, StringComparison.Ordinal)
                     && string.Equals(e.TargetPortKey, targetPortKey, StringComparison.Ordinal))
                 {
                     count++;
@@ -271,11 +523,41 @@ namespace Vgs.Model
             {
                 Edge e = _edges[i];
 
+                // A group edge has no block on its target side, so it can only ever be
+                // collected from its *source*. Skipping it for the input direction and keeping
+                // it for the output one is what makes "clear this output port" remove a line to
+                // a group as well.
+                if (e.TargetsGroup && direction == PortDirection.Input) continue;
+
                 long endpoint = direction == PortDirection.Output ? e.SourceEntityId : e.TargetEntityId;
                 string key = direction == PortDirection.Output ? e.SourcePortKey : e.TargetPortKey;
 
                 if (endpoint != entityId) continue;
                 if (!string.Equals(key, portKey, StringComparison.Ordinal)) continue;
+
+                into.Add(e);
+            }
+        }
+
+        /// <summary>
+        /// Same, for either kind of node: a block's port or a group's port. A group has input
+        /// ports only, so <paramref name="direction"/> is only meaningful for a block.
+        /// </summary>
+        public void CollectEdgesForPort(Node node, string portKey, PortDirection direction, List<Edge> into)
+        {
+            if (node == null || into == null || string.IsNullOrEmpty(portKey)) return;
+            if (!node.IsGroup)
+            {
+                CollectEdgesForPort(node.EntityId, portKey, direction, into);
+                return;
+            }
+
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+                if (!e.TargetsGroup) continue;
+                if (!string.Equals(e.TargetGroupName, node.GroupName, StringComparison.Ordinal)) continue;
+                if (!string.Equals(e.TargetPortKey, portKey, StringComparison.Ordinal)) continue;
 
                 into.Add(e);
             }
@@ -295,6 +577,8 @@ namespace Vgs.Model
         {
             _nodes.Clear();
             _nodeList.Clear();
+            _groups.Clear();
+            _groupList.Clear();
             _edges.Clear();
             _lines.Clear();
             _layoutCell = 0;
@@ -331,6 +615,13 @@ namespace Vgs.Model
                 ClearSlots(_nodeList[i].Actions);
                 ClearSlots(_nodeList[i].Events);
             }
+            for (int i = 0; i < _groupList.Count; i++)
+            {
+                // A group has no events, but clearing both lists keeps the pass uniform: a
+                // group port that lost its last connection must lose its bar like any other.
+                ClearSlots(_groupList[i].Actions);
+                ClearSlots(_groupList[i].Events);
+            }
 
             _lines.Clear();
 
@@ -345,7 +636,7 @@ namespace Vgs.Model
                     if (outPort != null) TakeSlot(source.Events, outPort);
                 }
 
-                Node target = GetNode(e.TargetEntityId);
+                Node target = GetTargetNode(e);
                 if (target != null)
                 {
                     Port inPort = target.FindAction(e.TargetPortKey);
@@ -367,6 +658,7 @@ namespace Vgs.Model
                 Edge other = _edges[j];
                 if (other.SourceEntityId != edge.SourceEntityId) continue;
                 if (other.TargetEntityId != edge.TargetEntityId) continue;
+                if (!string.Equals(other.TargetGroupName, edge.TargetGroupName, StringComparison.Ordinal)) continue;
                 if (!string.Equals(other.SourcePortKey, edge.SourcePortKey, StringComparison.Ordinal)) continue;
                 if (!string.Equals(other.TargetPortKey, edge.TargetPortKey, StringComparison.Ordinal)) continue;
                 return true;

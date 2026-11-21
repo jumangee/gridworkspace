@@ -171,6 +171,47 @@ namespace Vgs.Core
         /// <summary>Vertical distance between an input stack and an output stack on one card.</summary>
         public const float PortStackSpacing = 0f;
 
+        // ---- Block group frame (ADR-0015) ----
+        //
+        // A group is not a card: it is a light frame drawn *behind* the cards of its members,
+        // with the group's name in a strip along its top edge, and its incoming port bars hang
+        // under the frame. The frame is derived from the members' positions, so these three
+        // numbers are the whole of its look.
+
+        /// <summary>
+        /// Gap between the frame's edge and the outermost member card, in layout units.
+        ///
+        /// Small on purpose: the frame has to read as "these blocks belong together" without
+        /// becoming a second, louder shape on a canvas whose cards are already rectangles.
+        /// </summary>
+        public const float GroupFramePadding = 0.012f;
+
+        /// <summary>
+        /// Height of the strip along the frame's top edge that carries the group's name.
+        ///
+        /// The strip is also the group's click target: a group has no card of its own, and the
+        /// frame's interior belongs to its members (a click there must select the member).
+        /// </summary>
+        public const float GroupTitleHeight = 0.028f;
+
+        /// <summary>Font scale of the group's name inside the title strip.</summary>
+        public const float GroupTitleScale = 0.5f;
+
+        /// <summary>
+        /// How many block groups one refresh reads from the grid's terminal system. Groups are
+        /// cheap (a name and a member set), but the pass runs on a frame and a pathological
+        /// ship should not be able to make it unbounded.
+        /// </summary>
+        public const int MaxGroupsScanned = 64;
+
+        /// <summary>
+        /// How many group members one refresh may inspect while computing a group's action
+        /// list. Members that are drawn on the canvas reuse their node's port list and cost
+        /// nothing; the budget is spent on members that are hidden or live on a subgrid and
+        /// have to be read from the world.
+        /// </summary>
+        public const int MaxGroupMembersScanned = 512;
+
         /// <summary>Padding between a port label and the control next to it.</summary>
         public const float PortLabelPadding = 0.006f;
 
@@ -392,6 +433,13 @@ namespace Vgs.Core
         public const string WarnBlockGone = "Связь не добавлена: блок исчез";
 
         /// <summary>
+        /// A group is addressed by name (ADR-0015): if the player renamed or dissolved it
+        /// between two refreshes, the connection cannot be written at all, and that is a
+        /// different sentence from "the block is gone".
+        /// </summary>
+        public const string WarnGroupGoneFormat = "Связь не добавлена: группы «{0}» больше нет";
+
+        /// <summary>
         /// Removing a connection goes the other way through the same writer, so it can fail
         /// for the same reason a write can: the machine does not own the block's toolbar (a
         /// remote multiplayer client). The connection is kept in that case, and this says why.
@@ -402,7 +450,8 @@ namespace Vgs.Core
         // Status bar. Format arguments are documented at each use site: keeping the pattern
         // here means the wording is translated in one place, and the caller can cache the
         // formatted result instead of rebuilding it every frame.
-        public const string StatusFormat = "Блоков: {0}   ·   Связей: {1}   ·   Масштаб: {2}%";
+        public const string StatusFormat =
+            "Блоков: {0}   ·   Групп: {1}   ·   Связей: {2}   ·   Масштаб: {3}%";
         public const string CullingFormat = "Показано {0} из {1} блоков — увеличьте масштаб";
 
         // Errors

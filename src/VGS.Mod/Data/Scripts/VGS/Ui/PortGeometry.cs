@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using VRageMath;
 using Vgs.Core;
 using Vgs.Model;
@@ -60,6 +61,178 @@ namespace Vgs.Ui
         {
             topLeft = node.Position;
             size = new Vector2(VgsConstants.NodeWidth, VgsConstants.NodeHeight);
+        }
+
+        /// <summary>
+        /// Rectangle of a node's *body*: the card of a block, the frame of a group.
+        ///
+        /// Everything that hangs under a node — its port bars, their dots and remove buttons —
+        /// is positioned from this rectangle, which is why it exists at all: a group has no
+        /// card, and duplicating "where do the bars start" in two places is how a group's ports
+        /// would end up drawn on top of its members.
+        ///
+        /// Returns false for a group whose frame has not been laid out yet (zero size), so a
+        /// missing layout pass shows as no bars rather than as bars stacked on the origin.
+        /// </summary>
+        public static bool TryBodyRect(Node node, out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (node == null) return false;
+
+            if (!node.IsGroup)
+            {
+                CardRect(node, out topLeft, out size);
+                return true;
+            }
+
+            topLeft = node.Position;
+            size = node.FrameSize;
+            return size.X > 0f && size.Y > 0f;
+        }
+
+        /// <summary>
+        /// Frame rectangle of a group: the smallest box that contains the cards of its drawn
+        /// members and their port stacks, plus the padding and the title strip (ADR-0015).
+        ///
+        /// The frame is *derived*, never stored as a layout the player can drag: it is a
+        /// function of where the member cards are, so moving a member resizes the group. The
+        /// caller applies the result with <see cref="Node.SetFrame"/>; keeping the arithmetic
+        /// here means the draw pass and the hit test cannot disagree about the box.
+        ///
+        /// Members that are no longer in the graph are skipped, which is why a group of
+        /// destroyed blocks shrinks instead of drawing an empty frame.
+        ///
+        /// The graph is taken directly rather than a resolver delegate: this runs for every
+        /// group on every pointer move while a card is dragged, and a delegate would be
+        /// allocated per call for no gain — the graph is the only thing that can answer.
+        /// </summary>
+        public static bool TryGroupFrame(Node group, GridGraph graph,
+                                         out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (group == null || !group.IsGroup || graph == null) return false;
+            if (group.Members.Count == 0) return false;
+
+            bool any = false;
+            float minX = 0f, minY = 0f, maxX = 0f, maxY = 0f;
+
+            for (int i = 0; i < group.Members.Count; i++)
+            {
+                Node member = graph.GetNode(group.Members[i]);
+                if (member == null || member.IsGroup) continue;
+
+                Vector2 cardTopLeft, cardSize;
+                CardRect(member, out cardTopLeft, out cardSize);
+
+                float right = cardTopLeft.X + cardSize.X;
+                float bottom = cardTopLeft.Y + TotalHeight(member);
+
+                if (!any)
+                {
+                    minX = cardTopLeft.X;
+                    minY = cardTopLeft.Y;
+                    maxX = right;
+                    maxY = bottom;
+                    any = true;
+                    continue;
+                }
+
+                if (cardTopLeft.X < minX) minX = cardTopLeft.X;
+                if (cardTopLeft.Y < minY) minY = cardTopLeft.Y;
+                if (right > maxX) maxX = right;
+                if (bottom > maxY) maxY = bottom;
+            }
+
+            if (!any) return false;
+
+            float pad = VgsConstants.GroupFramePadding;
+            float title = VgsConstants.GroupTitleHeight;
+
+            topLeft = new Vector2(minX - pad, minY - pad - title);
+            size = new Vector2(maxX - minX + pad * 2f, maxY - minY + pad * 2f + title);
+            return true;
+        }
+
+        /// <summary>
+        /// Recomputes the frame of every group in the graph from the current card positions.
+        ///
+        /// Called by the editor after every build and refresh, never from a draw path: the
+        /// frame is geometry, and geometry lives here, but a per-frame recomputation of every
+        /// group on a large ship would be wasted work — cards only move when the player drags
+        /// one or the graph is refreshed.
+        ///
+        /// It has to run <em>after</em> <c>GridGraph.LayoutPorts()</c>, because a member with
+        /// connected ports is taller than its card and the frame must contain its port stack.
+        /// </summary>
+        public static void LayoutGroupFrames(GridGraph graph)
+        {
+            if (graph == null) return;
+
+            IList<Node> groups = graph.Groups;
+            for (int i = 0; i < groups.Count; i++) LayoutGroupFrame(graph, groups[i]);
+        }
+
+        /// <summary>
+        /// Recomputes one group's frame. Used while a card is dragged, where only the groups
+        /// that contain that card can have changed — recomputing all of them on every pointer
+        /// move would make the cost of a drag grow with the number of groups on the ship.
+        /// </summary>
+        public static void LayoutGroupFrame(GridGraph graph, Node group)
+        {
+            if (graph == null || group == null || !group.IsGroup) return;
+
+            Vector2 topLeft, size;
+            if (!TryGroupFrame(group, graph, out topLeft, out size)) return;
+            group.SetFrame(topLeft, size);
+        }
+
+        /// <summary>
+        /// Recomputes the frames of the groups this block belongs to. A card that is not a
+        /// member of anything costs one null check.
+        /// </summary>
+        public static void LayoutFramesContaining(GridGraph graph, Node member)
+        {
+            if (graph == null || member == null || member.IsGroup) return;
+
+            IList<Node> groups = graph.Groups;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                Node group = groups[i];
+                if (!ContainsMember(group, member.EntityId)) continue;
+                LayoutGroupFrame(graph, group);
+            }
+        }
+
+        private static bool ContainsMember(Node group, long entityId)
+        {
+            for (int i = 0; i < group.Members.Count; i++)
+            {
+                if (group.Members[i] == entityId) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Title strip of a group's frame: the band along its top edge that carries the name.
+        ///
+        /// Separated from the frame itself because the strip is the group's only click target —
+        /// the interior belongs to the member cards — and the draw pass and the hit test must
+        /// agree on it to the pixel, which is the whole reason this type exists.
+        /// </summary>
+        public static bool TryGroupTitleRect(Node group, out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (group == null || !group.IsGroup) return false;
+
+            Vector2 frameTopLeft, frameSize;
+            if (!TryBodyRect(group, out frameTopLeft, out frameSize)) return false;
+
+            topLeft = frameTopLeft;
+            size = new Vector2(frameSize.X, VgsConstants.GroupTitleHeight);
+            return true;
         }
 
         /// <summary>Vertical distance from one port bar to the next in the same stack.</summary>
@@ -175,8 +348,10 @@ namespace Vgs.Ui
         /// Rectangle of the bar for one port, in graph units. Returns false for a port that is
         /// not drawn (no connection, or no free slot).
         ///
-        /// Both directions share one width and one left edge, so the bars of a card form a
-        /// single flush column under it.
+        /// Both directions share one width and one left edge, so the bars of a node form a
+        /// single flush column under it. The column hangs from the node's <em>body</em> — the
+        /// card of a block, the frame of a group — so a group's incoming bars sit under its
+        /// members rather than under an imaginary card at the group's origin.
         /// </summary>
         public static bool TryPortBarRect(Node node, Port port, out Vector2 topLeft, out Vector2 size)
         {
@@ -185,7 +360,10 @@ namespace Vgs.Ui
 
             if (node == null || port == null || port.Slot < 0) return false;
 
-            float y = node.Position.Y + VgsConstants.NodeHeight + port.Slot * PortBarStride;
+            Vector2 bodyTopLeft, bodySize;
+            if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return false;
+
+            float y = bodyTopLeft.Y + bodySize.Y + port.Slot * PortBarStride;
 
             // Input bars sit below the whole output stack, then stack downwards themselves.
             // The separating gap is added only when there *is* a stack above: otherwise the
@@ -196,8 +374,8 @@ namespace Vgs.Ui
                 if (outputHeight > 0f) y += outputHeight + VgsConstants.PortStackSpacing;
             }
 
-            topLeft = new Vector2(node.Position.X, y);
-            size = new Vector2(VgsConstants.PortBarWidth, VgsConstants.PortBarHeight);
+            topLeft = new Vector2(bodyTopLeft.X, y);
+            size = new Vector2(bodySize.X, VgsConstants.PortBarHeight);
             return true;
         }
 
@@ -382,13 +560,16 @@ namespace Vgs.Ui
             return count * PortBarStride - VgsConstants.PortBarGap;
         }
 
-        /// <summary>Total height a node occupies: card plus both port stacks.</summary>
+        /// <summary>Total height a node occupies: body plus both port stacks.</summary>
         public static float TotalHeight(Node node)
         {
+            Vector2 bodyTopLeft, bodySize;
+            if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return 0f;
+
             float output = OutputStackHeight(node);
             float input = InputStackHeight(node);
 
-            float total = VgsConstants.NodeHeight + output;
+            float total = bodySize.Y + output;
             if (input > 0f)
             {
                 if (output > 0f) total += VgsConstants.PortStackSpacing;
@@ -436,29 +617,50 @@ namespace Vgs.Ui
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            float y = node.Position.Y + VgsConstants.NodeHeight
+            Vector2 bodyTopLeft, bodySize;
+            if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return false;
+
+            float y = bodyTopLeft.Y + bodySize.Y
                       + DrawnPortCount(node, PortDirection.Output) * PortBarStride
                       + VgsConstants.PortBarHeight * 0.5f;
 
             center = new Vector2(
-                node.Position.X + VgsConstants.PortBarWidth - ControlOffset(aspectX),
+                bodyTopLeft.X + bodySize.X - ControlOffset(aspectX),
                 y);
             return true;
         }
 
         /// <summary>
-        /// True when a graph-space point is on this node — its card, or any of its drawn port
-        /// bars. Ports belong to the block for hit-testing purposes: clicking a port bar must
-        /// select the block rather than fall through to the canvas, otherwise a click on a
-        /// connected port would start a pan and the block would feel unselectable.
+        /// True when a graph-space point is on this node — its card or its title strip, or any
+        /// of its drawn port bars. Ports belong to the node for hit-testing purposes: clicking
+        /// a port bar must select the node rather than fall through to the canvas, otherwise a
+        /// click on a connected port would start a pan and the block would feel unselectable.
+        ///
+        /// <b>A group is not hit through its whole frame.</b> Only the title strip and the port
+        /// bars count; the interior of the frame belongs to the member cards, and the gaps
+        /// between them stay canvas. A frame that swallowed every click inside it would make
+        /// panning across a grouped cluster impossible, and a group cannot be dragged anyway —
+        /// its frame follows its members.
         /// </summary>
         public static bool HitNode(Node node, Vector2 graphPoint)
         {
             if (node == null) return false;
 
-            Vector2 cardTopLeft, cardSize;
-            CardRect(node, out cardTopLeft, out cardSize);
-            if (Contains(cardTopLeft, cardSize, graphPoint)) return true;
+            if (node.IsGroup)
+            {
+                Vector2 titleTopLeft, titleSize;
+                if (TryGroupTitleRect(node, out titleTopLeft, out titleSize)
+                    && Contains(titleTopLeft, titleSize, graphPoint))
+                {
+                    return true;
+                }
+            }
+            else
+            {
+                Vector2 cardTopLeft, cardSize;
+                CardRect(node, out cardTopLeft, out cardSize);
+                if (Contains(cardTopLeft, cardSize, graphPoint)) return true;
+            }
 
             return HitAnyPortBar(node.Events, node, graphPoint)
                 || HitAnyPortBar(node.Actions, node, graphPoint);

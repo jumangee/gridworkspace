@@ -22,6 +22,27 @@ namespace Vgs.Model
     }
 
     /// <summary>
+    /// What a node stands for: one grid block, or one named block group of the grid.
+    ///
+    /// The two are drawn differently (a block is a card, a group is a light frame around the
+    /// cards of its members) and they are not symmetric in what they can do: a group never
+    /// starts a connection, because a group has no toolbar and nothing to fire it
+    /// (ADR-0015). Everything else — an incoming port, an edge that ends on it, the action
+    /// menu — works the same way, which is why a group is a <see cref="Node"/> at all.
+    /// </summary>
+    public enum NodeKind
+    {
+        /// <summary>A real grid block. Identified by <see cref="Node.EntityId"/>.</summary>
+        Block = 0,
+
+        /// <summary>
+        /// A named block group of the grid's terminal system. Identified by
+        /// <see cref="Node.GroupName"/>: a group is not an entity, so it has no entity id.
+        /// </summary>
+        Group = 1
+    }
+
+    /// <summary>
     /// Direction of data flow for a port.
     ///
     /// This is the side of the node the port lives on: an <see cref="Input"/> is drawn as a
@@ -259,7 +280,69 @@ namespace Vgs.Model
     }
 
     /// <summary>
-    /// A block shown on the canvas.
+    /// What one member block of a group contributes to the group's action list: its runtime
+    /// type, whether it is a functional block, the action ids its type exposes, and which of
+    /// them are enabled on this very block.
+    ///
+    /// These four fields are exactly what the game's own rule reads for a group toolbar item
+    /// (ADR-0015, verified in `docs/01-research/api-block-groups.md` §3): the action set of a
+    /// group is derived from the members' action ids, and it collapses to nothing when the
+    /// members have different types and one of them is not a functional block.
+    ///
+    /// <see cref="ActionIds"/> and <see cref="EnabledActionIds"/> are two lists rather than one
+    /// because the game treats them differently in the two branches: with a single member type
+    /// an action survives when it is enabled on <em>any</em> member, and with mixed types only
+    /// when it is enabled on <em>every</em> member. Collapsing them would lose that distinction,
+    /// and the editor would offer an action the game will not fire.
+    ///
+    /// <see cref="TypeKey"/> is a string rather than a <see cref="System.Type"/> so that this
+    /// type stays in <c>Vgs.Model</c> and the rule can be asserted without the game. The game
+    /// layer passes the runtime type's name; the model only compares them for equality.
+    /// </summary>
+    public sealed class GroupMemberActions
+    {
+        /// <summary>Identity of the member's runtime block type. Compared for equality only.</summary>
+        public readonly string TypeKey;
+
+        /// <summary>
+        /// True when the member is a functional block. A mixed group with one non-functional
+        /// member has no actions at all, which is the game's rule, not a simplification.
+        /// </summary>
+        public readonly bool IsFunctional;
+
+        /// <summary>Action ids the member's type exposes, in the game's order.</summary>
+        public readonly IList<string> ActionIds;
+
+        /// <summary>
+        /// Action ids of <see cref="ActionIds"/> that report <c>IsEnabled</c> for this very
+        /// member. Empty when the block reports nothing enabled.
+        /// </summary>
+        public readonly IList<string> EnabledActionIds;
+
+        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds)
+            : this(typeKey, isFunctional, actionIds, actionIds)
+        {
+        }
+
+        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
+                                  IList<string> enabledActionIds)
+        {
+            TypeKey = typeKey ?? string.Empty;
+            IsFunctional = isFunctional;
+            ActionIds = actionIds ?? new List<string>(0);
+            EnabledActionIds = enabledActionIds ?? new List<string>(0);
+        }
+    }
+
+    /// <summary>
+    /// A block shown on the canvas — or a named block group of the grid, which is drawn as a
+    /// light frame around the cards of its members (ADR-0015).
+    ///
+    /// The two kinds share this type because almost everything the editor does with a node
+    /// (draw it, hit-test it, hang port bars under it, end an edge on its input port, offer
+    /// its actions in the menu) is the same for both. What differs is stated in one place
+    /// each: <see cref="Kind"/>, <see cref="GroupName"/>, <see cref="Members"/>,
+    /// <see cref="FrameSize"/>, and the fact that a group has no toolbar and no outputs.
     ///
     /// This is the *view model* of a grid block, not the block itself. Keeping it separate
     /// means the canvas never has to touch game entities while drawing, which is the single
@@ -268,7 +351,7 @@ namespace Vgs.Model
     /// cached struct, and the block may be destroyed mid-frame.
     ///
     /// <see cref="EntityId"/> is the link back to the live block; it can become stale and is
-    /// re-validated on refresh.
+    /// re-validated on refresh. A group has no entity at all — see <see cref="EntityId"/>.
     ///
     /// Two port lists, and they are not symmetric:
     ///
@@ -291,22 +374,56 @@ namespace Vgs.Model
     /// </summary>
     public sealed class Node
     {
+        /// <summary>
+        /// Entity id of the block, or zero for a group. A group is not an entity and has no
+        /// id; its identity is <see cref="GroupName"/>. Never use this as a key for a group:
+        /// <see cref="GridGraph"/> keeps groups in a map of their own, keyed by name.
+        /// </summary>
         public readonly long EntityId;
 
-        /// <summary>Block definition subtype, e.g. "LargeBlockCockpit".</summary>
+        /// <summary>Which of the two things this node is. See <see cref="NodeKind"/>.</summary>
+        public readonly NodeKind Kind;
+
+        /// <summary>
+        /// Name of the block group in the grid's terminal system, or null for a block.
+        ///
+        /// This is the identity of a group node: the game addresses a group by name (its
+        /// toolbar item stores the name, not an id), so a renamed group is a different group
+        /// and its connections stop resolving. That is the game's behaviour, not ours.
+        /// </summary>
+        public readonly string GroupName;
+
+        /// <summary>Block definition subtype, e.g. "LargeBlockCockpit". Empty for a group.</summary>
         public readonly string SubtypeId;
 
         /// <summary>Grid coordinates of the block, used to seed a readable initial layout.</summary>
         public readonly Vector3I GridPosition;
 
-        /// <summary>Player-visible block name (CustomName). Refreshed when the name changes.</summary>
+        /// <summary>Player-visible block name (CustomName), or the group's name. Refreshed when the name changes.</summary>
         public string DisplayName; // review:allow R009 written only by the refresh pass
+
+        /// <summary>
+        /// Entity ids of the members of a group that are drawn on the canvas, in the order the
+        /// game returned them. Empty for a block.
+        ///
+        /// Only members present in the graph are listed, because the frame is drawn around
+        /// them; the group's *action list*, on the other hand, is computed from the whole
+        /// group, including members on subgrids and members hidden with "Show in VGS"
+        /// (ADR-0015). A group with no listed member is not in the graph at all.
+        /// </summary>
+        public readonly List<long> Members = new List<long>();
 
         private Vector2 _position;
         private bool _placed;
+        private Vector2 _frameSize;
 
         /// <summary>
         /// Position on the canvas in graph units (not pixels, not normalized).
+        ///
+        /// For a block it is the card's top-left corner. For a group it is the top-left corner
+        /// of the group's frame, which <c>PortGeometry</c> derives from the members' cards and
+        /// is therefore never dragged: <see cref="GridGraph"/> owns it through
+        /// <see cref="SetFrame"/>.
         ///
         /// A property rather than a field so that "a position was written" and "the node has
         /// been placed" cannot disagree: every write, from the drag handler or from a saved
@@ -322,6 +439,38 @@ namespace Vgs.Model
                 _position = value;
                 _placed = true;
             }
+        }
+
+        /// <summary>
+        /// Size of a group's frame in graph units; zero for a block, whose body is the card
+        /// (<c>VgsConstants.NodeWidth</c> × <c>VgsConstants.NodeHeight</c>).
+        ///
+        /// The frame is derived state, recomputed from the members' cards and port stacks
+        /// whenever a card moves, so it is not persisted and not editable. Written only by
+        /// <see cref="SetFrame"/>.
+        /// </summary>
+        public Vector2 FrameSize
+        {
+            get { return _frameSize; }
+        }
+
+        /// <summary>True for a group node. Groups have no entity, no toolbar and no outputs.</summary>
+        public bool IsGroup
+        {
+            get { return Kind == NodeKind.Group; }
+        }
+
+        /// <summary>
+        /// Sets the body rectangle of a group: where the frame starts and how big it is.
+        ///
+        /// Unlike <see cref="Position"/> this does not touch the placed flag, because a group
+        /// is never "placed" by the player — its frame follows its members, and marking it
+        /// placed would suggest a layout decision that does not exist.
+        /// </summary>
+        public void SetFrame(Vector2 topLeft, Vector2 size)
+        {
+            _position = topLeft;
+            _frameSize = size;
         }
 
         /// <summary>
@@ -388,6 +537,8 @@ namespace Vgs.Model
                     ToolbarLayout toolbar)
         {
             EntityId = entityId;
+            Kind = NodeKind.Block;
+            GroupName = null;
             SubtypeId = subtypeId;
             DisplayName = displayName;
             GridPosition = gridPosition;
@@ -396,6 +547,27 @@ namespace Vgs.Model
             // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
             // placed, and the automatic layout would then never place it. A new node starts
             // unplaced at (0, 0) until something actually decides where it goes.
+        }
+
+        /// <summary>
+        /// A node standing for a named block group. It has no entity id, no toolbar and no
+        /// output ports; its <see cref="Members"/> and its input ports are filled by the graph
+        /// as it is refreshed.
+        /// </summary>
+        public Node(string groupName, string displayName)
+        {
+            EntityId = 0;
+            Kind = NodeKind.Group;
+            GroupName = groupName;
+            SubtypeId = string.Empty;
+            DisplayName = displayName;
+            GridPosition = Vector3I.Zero;
+            Toolbar = ToolbarLayout.None;
+
+            // A group has nothing that fires, so it cannot drive anything: no "+" button, no
+            // bind mode, no event ports. Filling this in explicitly is cheaper than defending
+            // every caller against the opposite assumption.
+            CanDriveBlocks = false;
         }
 
         /// <summary>
@@ -463,6 +635,12 @@ namespace Vgs.Model
     /// <summary>
     /// A directed connection between an event port of one node and an action port of another.
     ///
+    /// The target is either a block (<see cref="TargetEntityId"/>) or a named block group
+    /// (<see cref="TargetGroupName"/>) — never both. A group is a legitimate target because
+    /// the game has a toolbar item for it (`MyToolbarItemKind.GroupAction`) that applies one
+    /// action to every functional member (ADR-0015). The source is always a block: a group
+    /// has no toolbar, so nothing can fire from it.
+    ///
     /// Connections are stored by port *key*, never by port index: adding a port to a block
     /// type must not silently rewire every existing graph.
     ///
@@ -484,11 +662,23 @@ namespace Vgs.Model
     {
         public readonly long SourceEntityId;
         public readonly string SourcePortKey;
+
+        /// <summary>Entity id of the target block, or zero when the target is a group.</summary>
         public readonly long TargetEntityId;
+
+        /// <summary>Name of the target group, or null when the target is a block.</summary>
+        public readonly string TargetGroupName;
+
         public readonly string TargetPortKey;
 
         /// <summary>Cell of the source block's toolbar that holds this connection's item.</summary>
         public readonly ToolbarCell Cell;
+
+        /// <summary>True when this connection ends on a group instead of a single block.</summary>
+        public bool TargetsGroup
+        {
+            get { return TargetGroupName != null; }
+        }
 
         public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey)
             : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, ToolbarCell.None)
@@ -497,12 +687,30 @@ namespace Vgs.Model
 
         public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
                     ToolbarCell cell)
+            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell, null)
+        {
+        }
+
+        private Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
+                     ToolbarCell cell, string targetGroupName)
         {
             SourceEntityId = sourceEntityId;
             SourcePortKey = sourcePortKey;
             TargetEntityId = targetEntityId;
+            TargetGroupName = targetGroupName;
             TargetPortKey = targetPortKey;
             Cell = cell;
+        }
+
+        /// <summary>
+        /// A connection whose target is the named block group. The group is identified by name
+        /// because that is how the game's own toolbar item identifies it: a group has no entity
+        /// and no id.
+        /// </summary>
+        public static Edge ToGroup(long sourceEntityId, string sourcePortKey, string groupName,
+                                   string targetPortKey, ToolbarCell cell)
+        {
+            return new Edge(sourceEntityId, sourcePortKey, 0, targetPortKey, cell, groupName);
         }
 
         public bool SameAs(Edge other)
@@ -510,6 +718,7 @@ namespace Vgs.Model
             return other != null
                 && SourceEntityId == other.SourceEntityId
                 && TargetEntityId == other.TargetEntityId
+                && string.Equals(TargetGroupName, other.TargetGroupName, StringComparison.Ordinal)
                 && string.Equals(SourcePortKey, other.SourcePortKey, StringComparison.Ordinal)
                 && string.Equals(TargetPortKey, other.TargetPortKey, StringComparison.Ordinal)
                 && Cell.SameAs(other.Cell);
@@ -525,7 +734,8 @@ namespace Vgs.Model
 
         public override string ToString()
         {
-            return SourceEntityId + "." + SourcePortKey + " -> " + TargetEntityId + "." + TargetPortKey
+            string target = TargetsGroup ? "group:" + TargetGroupName : TargetEntityId.ToString();
+            return SourceEntityId + "." + SourcePortKey + " -> " + target + "." + TargetPortKey
                    + " @ " + Cell;
         }
     }

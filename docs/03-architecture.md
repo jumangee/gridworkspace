@@ -23,6 +23,7 @@
 | [0012](adr/0012-layout-lives-on-the-block.md) | Раскладка схемы — на блоке (`MyModStorageComponent` + GUID, зарегистрированный SBC), не в таблице «`EntityId` → позиция» |
 | [0013](adr/0013-show-in-vgs-flag.md) | Флаг видимости узла — на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [0014](adr/0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет все связи порта (сначала ячейка тулбара, потом ребро); точка — зеркало кнопки; подпись по центру и пропорционально зуму; рамка порта — цветом карточки |
+| [0015](adr/0015-block-groups.md) | Группы блоков — узлы второго вида: рамка позади карточек, «Show in VGS» агрегируется по участникам, входы по правилу игры (пересечение действий, а не «общий предок»), связь — элемент `GroupAction` |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -54,12 +55,12 @@
         │                  GridGraphBuilder      читает грид → GridGraph
         │                  (единственное место, где трогаются живые сущности)
         │
-        ├──► Vgs.Model ─── Node, Port, Edge, GridGraph, BlockPortCatalog
+        ├──► Vgs.Model ─── Node, Port, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
         └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
                            │                       читает только кэш модели
-                           ├─ PortGeometry         геометрия карточки и портов
+                           ├─ PortGeometry         геометрия карточки, портов и рамки группы
                            ├─ EdgeRouting          маршрут линии
                            └─ VgsScreenDraw        единственное место, где
                                                    вызывается API отрисовки
@@ -153,6 +154,12 @@ classDiagram
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
         -TryReadActions(IMyTerminalBlock, List~string~) bool
+        -ReadGroups(IMyCubeGrid) List~IMyBlockGroup~
+        -SyncGroups(GridGraph, List~IMyBlockGroup~)
+        -SyncOneGroup(GridGraph, IMyBlockGroup, string, List~long~, List~GroupMemberActions~, List~IMyTerminalBlock~, List~string~, List~string~, ref int) GroupOutcome
+        -ReadMemberActions(IMyTerminalBlock, List~string~, List~string~)
+        -SafeTypeKey(IMyTerminalBlock) string
+        -IsFunctional(IMyTerminalBlock) bool
         -ReconcileToolbarEdges(GridGraph)
         -SyncCells(GridGraph, Node, IMyToolbar, ref int)
         -ResolveToolbar(long, int) IMyToolbar
@@ -183,14 +190,43 @@ classDiagram
     class ToolbarWriter {
         <<static>>
         +TryWrite(IMyTerminalBlock, Node, Port, IMyTerminalBlock, string, out ToolbarCell) WriteResult
+        +TryWriteGroup(IMyTerminalBlock, Node, Port, string, string, out ToolbarCell) WriteResult
         +TryClear(IMyTerminalBlock, Node, ToolbarCell) bool
-        +TryDescribe(IMyToolbar, int, out long, out string) bool
-        -BuildItem(IMyTerminalBlock, string) MyToolbarItem
+        +TryDescribe(IMyToolbar, int) CellContents
+        -WriteItem(IMyTerminalBlock, Node, Port, MyToolbarItemInfo, Func, Func, out ToolbarCell) WriteResult
+        -ReadCell(IMyToolbar, int) CellContents
+        -PageHolds(IMyToolbar, ToolbarLayout, int, Func) bool
+        -ClearCell(IMyToolbar, int) bool
+    }
+
+    class CellContents {
+        +CellKind Kind
+        +long BlockEntityId
+        +string GroupName
+        +string ActionId
+        +string Label
+        +CellContents Empty$
+        +bool IsEmpty
+        +bool IsBlockAction
+        +bool IsGroupAction
+        +BlockAction(long, string)$ CellContents
+        +GroupAction(string, string)$ CellContents
+        +Other(string)$ CellContents
+        +HoldsBlockAction(long, string) bool
+        +HoldsGroupAction(string, string) bool
+    }
+
+    class CellKind {
+        <<enum>>
+        Empty
+        BlockAction
+        GroupAction
+        Other
     }
 
     class ToolbarPlanner {
         <<static>>
-        +Plan(ToolbarLayout, PortGroup, Func~int,bool~, Func~int,bool~, out int) ToolbarPlacement
+        +Plan(ToolbarLayout, PortGroup, Func~int,CellContents~, Func~int,bool~, out int) ToolbarPlacement
         +GroupOfCell(ToolbarLayout, int) PortGroup
     }
 
@@ -265,6 +301,8 @@ classDiagram
         -HitTestBindButton(Vector2, out PortGroup) Node
         -HitTestRemoveButton(Vector2, out Port) Node
         -GetMenuRect(out Vector2, out Vector2) void
+        -DrawGroupFrames(Vector2, Vector2) void
+        -DrawGroupPorts(Vector2, Vector2) void
         -DrawNodes(Vector2, Vector2) void
         -DrawNode(Node, Vector2, Vector2, Vector2) void
         -DrawPortBars(Node, Color, Vector2, Vector2) void
@@ -293,6 +331,12 @@ classDiagram
     class PortGeometry {
         <<static>>
         +CardRect(Node, out Vector2, out Vector2)
+        +TryBodyRect(Node, out Vector2, out Vector2) bool
+        +TryGroupFrame(Node, GridGraph, out Vector2, out Vector2) bool
+        +TryGroupTitleRect(Node, out Vector2, out Vector2) bool
+        +LayoutGroupFrames(GridGraph)
+        +LayoutGroupFrame(GridGraph, Node)
+        +LayoutFramesContaining(GridGraph, Node)
         +HasGroupButtons(Node) bool
         +TryBindButton(Node, PortGroup, float aspectX, out Vector2) bool
         +HitBindButton(Node, Vector2, float aspectX, out PortGroup) bool
@@ -342,37 +386,69 @@ classDiagram
         +int MaxPortsPerSide$
         +long GridEntityId
         +int NodeCount
+        +int GroupCount
         +int EdgeCount
         +IList~Node~ Nodes
+        +IList~Node~ Groups
         +IList~Edge~ Edges
         +IList~Edge~ Lines
         +AddNode(Node) Node
         +RemoveNode(long) bool
+        +GetGroup(string) Node
+        +ContainsGroup(string) bool
+        +ContainsNode(Node) bool
+        +GetTargetNode(Edge) Node
+        +SyncGroup(string, List~long~, IList~GroupMemberActions~) Node
+        +RemoveGroup(string) bool
+        -RemoveEdgesToMissingGroupPorts(string)
         +TryConnect(long, string, long, string, ToolbarCell) bool
+        +TryConnectToGroup(long, string, string, string, ToolbarCell) bool
         +IsCellValidFor(Node, Port, ToolbarCell) bool$
         +FindEdgeInCell(long, ToolbarCell) Edge
         +HasEdge(long, string, long, string) bool
+        +HasEdgeToGroup(long, string, string, string) bool
         +CountEdgesToInput(long, string) int
+        +CountEdgesToInput(Node, string) int
         +CountEdgesFromOutput(long, string) int
         +CollectEdgesForPort(long, string, PortDirection, List~Edge~) void
+        +CollectEdgesForPort(Node, string, PortDirection, List~Edge~) void
         +RemoveEdge(Edge) bool
         +LayoutPorts()
         +LayoutUnplaced()
     }
 
+    class NodeKind {
+        <<enum>>
+        Block
+        Group
+    }
+
+    class GroupMemberActions {
+        +string TypeKey
+        +bool IsFunctional
+        +IList~string~ ActionIds
+        +IList~string~ EnabledActionIds
+    }
+
     class Node {
         +long EntityId
+        +NodeKind Kind
+        +string GroupName
         +string SubtypeId
         +string DisplayName
         +Vector2 Position
+        +Vector2 FrameSize
         +bool Placed
+        +bool IsGroup
         +Vector3I GridPosition
         +bool HasTerminal
         +ToolbarLayout Toolbar
         +bool CanDriveBlocks
+        +List~long~ Members
         +List~Port~ Actions
         +List~Port~ Events
         +Port PrimaryEvent
+        +SetFrame(Vector2, Vector2)
         +PrimaryEventFor(PortGroup) Port
         +FindAction(key) Port
         +FindEvent(key) Port
@@ -392,8 +468,11 @@ classDiagram
         +long SourceEntityId
         +string SourcePortKey
         +long TargetEntityId
+        +string TargetGroupName
         +string TargetPortKey
         +ToolbarCell Cell
+        +bool TargetsGroup
+        +ToGroup(long, string, string, string, ToolbarCell)$ Edge
         +SameAs(Edge) bool
         +SameCellAs(Edge) bool
     }
@@ -406,6 +485,7 @@ classDiagram
         +ResolveFamily(subtypeId) string
         +FillActions(Node, IList~string~)
         +FillEvents(Node)
+        +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~)
         +EventKey(baseKey, PortGroup) string
         +EventDisplayName(baseKey, PortGroup) string
         +Humanize(key) string
@@ -433,6 +513,12 @@ classDiagram
         <<game>>
     }
     class IMyToolbar {
+        <<game>>
+    }
+    class IMyBlockGroup {
+        <<game>>
+    }
+    class IMyGridTerminalSystem {
         <<game>>
     }
     class MyToolbarItemInfo {
@@ -470,6 +556,8 @@ classDiagram
     GridGraphBuilder --> NodeStateStore : позиция и видимость
     GridGraphBuilder --> IMyTerminalBlock
     GridGraphBuilder --> IMyToolbar
+    GridGraphBuilder --> IMyBlockGroup
+    GridGraphBuilder --> IMyGridTerminalSystem
 
     NodeStateStore --> NodeStateFormat : формат позиции
     NodeStateStore --> IMyTerminalBlock
@@ -482,22 +570,31 @@ classDiagram
     ToolbarWriter --> ToolbarLayout
     ToolbarWriter --> IMyToolbar
     ToolbarWriter --> MyToolbarItemInfo
+    ToolbarWriter --> CellContents : читает ячейку в модель
+    ToolbarPlanner --> CellContents : решает по содержимому
+    CellContents --> CellKind
 
-    GridGraph "1" *-- "0..*" Node : содержит
+    GridGraph "1" *-- "0..*" Node : содержит блоки
+    GridGraph "1" *-- "0..*" Node : содержит группы (по имени)
     GridGraph "1" *-- "0..*" Edge : содержит
     Node "1" *-- "0..*" Port : действия/события
     Node --> ToolbarLayout
     Edge --> ToolbarCell : занимает ячейку
-    Edge ..> Node : ссылается по EntityId
+    Edge ..> Node : ссылается по EntityId или по имени группы
     GridGraph ..> Port : LayoutPorts назначает Slot
     GridGraph ..> ToolbarLayout : проверяет ячейку
+    GridGraph ..> GroupMemberActions : правило действий группы
+    Node ..> NodeKind : различает блок и группу
 
     BlockPortCatalog --> Node
     BlockPortCatalog --> Port
+    BlockPortCatalog ..> GroupMemberActions : ComputeGroupActionIds
 
-    PortGeometry ..> Node : читает Position и Slot
+    PortGeometry ..> Node : читает Position, FrameSize и Slot
     PortGeometry ..> Port : читает Slot и Direction
     EdgeRouting ..> VgsConstants
+
+    ToolbarWriter --> MyToolbarItemInfo : BlockAction / GroupAction
 
     VgsLog --> VgsSession : Frame
     VgsEditorScreen --> VgsText
@@ -553,9 +650,9 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 
 | Файл | Ответственность |
 |---|---|
-| `Node.cs` | `Port`, `PortKind`, `PortDirection`, `PortGroup`, `ToolbarLayout`, `ToolbarCell`, `Node`, `Edge` |
-| `GridGraph.cs` | контейнер узлов и связей, инварианты связей, раскладка портов по слотам |
-| `BlockPortCatalog.cs` | какие события у какого семейства блоков и как они делятся по группам «да»/«нет» |
+| `Node.cs` | `Port`, `PortKind`, `PortDirection`, `PortGroup`, `NodeKind`, `GroupMemberActions`, `ToolbarLayout`, `ToolbarCell`, `Node`, `Edge` |
+| `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам |
+| `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
 
@@ -582,8 +679,14 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
   `GridGraph.Lines` (пересчитывается в `LayoutPorts`) отдаёт по одному ребру на пару
   (исходящий порт, входящий порт), иначе повтор рисовался бы поверх себя;
 - удаление узла удаляет все его связи;
+- **группа — узел второго вида** ([ADR-0015](adr/0015-block-groups.md)): у неё нет `EntityId`,
+  её идентификатор — имя; она живёт, пока в графе есть хотя бы один её участник, и у неё не
+  бывает исходящих портов. Рёбра на группу хранят `Edge.TargetGroupName` вместо
+  `Edge.TargetEntityId`, и подсчёт fan-in различает эти два случая — иначе группа и блок с тем
+  же номером участника делили бы один счётчик;
 - **порт рисуется только при наличии связи**: `LayoutPorts()` назначает `Port.Slot` из
-  рёбер, `-1` — «не рисовать».
+  рёбер, `-1` — «не рисовать». Проход обходит и блоки, и группы: полоса порта группы теряется
+  по тому же правилу, что и полоса блока.
 
 Последний пункт — производное состояние, и это единственное место в модели, где поле
 переписывается не при создании. Поэтому `LayoutPorts()` вызывается **после любого изменения
@@ -608,6 +711,24 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 его узел снимается тем же проходом удаления, а связи к нему и от него исчезают из картинки,
 оставаясь при этом в тулбарах и работая в игре ([ADR-0013](adr/0013-show-in-vgs-flag.md)).
 
+`Refresh` делает **два прохода по миру, а не один**: сначала блоки, потом группы
+(`ReadGroups` → `SyncGroups`). Порядок обязателен — группа существует только при видимом
+участнике, а «видимый» определяется первым проходом. Правило «Show in VGS» для группы
+поэтому не имеет собственного кода: `SyncGroups` передаёт в `GridGraph.SyncGroup` лишь тех
+участников, что уже попали в граф, а группа без них удаляется вместе с входящими рёбрами.
+Набор действий группы при этом считается по **всей** группе, включая скрытых участников и
+блоки подгридов: игра применяет действие ко всем им, и список, посчитанный по видимым,
+обещал бы меньше, чем связь делает ([ADR-0015](adr/0015-block-groups.md)).
+
+**«Не удалось прочитать» — не «не существует».** `SyncGroups` снимает группу только тогда,
+когда она действительно прочитана и не имеет ни одного нарисованного участника. Исчерпанный
+бюджет участников, группа за пределом `MaxGroupsScanned` и исключение при чтении оставляют
+узел как есть: снятая группа уносит свои рёбра, а сверка их не вернёт — узла уже нет. Внутри
+одной группы проход тоже двойной: сначала полный (и бесплатный) обход ради нарисованных
+участников, который решает, жива ли группа, и только потом бюджет на чтение действий. Обратный
+порядок — реальный дефект этой реализации: `GetBlocks` отдаёт `HashSet`, обрыв на бюджете мог
+не увидеть нарисованного участника, и живая группа объявлялась мёртвой.
+
 `NodeStateStore` — единственное место, где мод читает и пишет **своё** состояние блока:
 позицию карточки и флаг видимости. Оба лежат в `MyModStorageComponent` самого блока, а не в
 таблице по `EntityId`, потому что `MyObjectBuilder_CubeBlock.Remap` переназначает id при
@@ -629,7 +750,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | Файл | Ответственность |
 |---|---|
 | `VgsEditorScreen.cs` | экран: камера, ввод, три режима указателя, меню действий, кэш строк |
-| `PortGeometry.cs` | геометрия карточки и портов — единственный источник правды для отрисовки **и** hit-testing |
+| `PortGeometry.cs` | геометрия карточки, портов и рамки группы — единственный источник правды для отрисовки **и** hit-testing |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева |
 | `VgsScreenDraw.cs` | единственная точка вызова API отрисовки; ресурсы; перевод координат клиента ↔ safe-GUI |
 
@@ -646,6 +767,22 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 По той же причине там лежит `CentredTextTop`: «подпись порта всегда по центру высоты полосы» —
 это требование к поведению, а не украшение, и путь отрисовки офлайн не проверяется. Одна
 формула, вынесенная из `DrawPortBar`, делает его утверждением в `tests/OfflineChecks.cs`.
+
+Так же устроена **рамка группы** ([ADR-0015](adr/0015-block-groups.md)).
+`PortGeometry.TryGroupFrame` — чистая функция от карточек участников: наименьший
+прямоугольник, содержащий их и их стаки портов, плюс отступ и полоса имени.
+`PortGeometry.LayoutGroupFrames` применяет результат к узлам. Вызывается после построения
+графа, после каждого `Refresh` и после изменения связей — и никогда из `OnDraw`: рамка
+производна от позиций, но пересчитывать её каждый кадр значило бы делать работу, которую никто
+не просил. При перетаскивании карточки пересчитываются только рамки групп, в которые она
+входит (`LayoutFramesContaining`), иначе стоимость одного движения указателя росла бы с числом
+групп на корабле. Перетаскивать рамку нельзя: она не хранит собственной позиции, потому что
+хранить её негде — у группы нет сущности.
+
+`HitNode` для группы смотрит **только полосу имени и полосы портов**, не внутренность рамки:
+внутренность принадлежит карточкам участников, а промежутки между ними — холсту. Иначе
+панорамирование по сгруппированному узлу стало бы невозможным, а клик по карточке выбирал бы
+группу вместо блока.
 
 `SyncScreenSpace()` вызывается первой строкой `OnDraw` и `OnHandleInput` и обновляет
 аффинное преобразование `layout → API` (формула — [ADR-0009](adr/0009-screen-coordinate-space.md)).
@@ -743,7 +880,8 @@ OnUpdate()    каждые RefreshIntervalFrames кадров:
               если грид исчез → Close()
 
 OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:
-                фон → сетка → узлы → нижняя панель → шапка
+                фон → сетка → рамки групп → линии → карточки → полосы портов групп
+                → нижняя панель → шапка
 
 OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hit-test),
               зум колесом вокруг курсора,
@@ -751,9 +889,12 @@ OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hi
                 обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ;
                            отпускание после перетаскивания пишет позицию в блок
                            (NodeStateStore.SavePosition); клик по «x» на полосе
-                           снимает связи этого порта (RemovePortConnections)
+                           снимает связи этого порта (RemovePortConnections).
+                           Группа выбирается, но не перетаскивается: её рамка
+                           следует за участниками (ADR-0015)
                 привязка — линия за курсором, ПКМ/void сбрасывают,
-                           клик по карточке открывает меню действий
+                           клик по карточке или по полосе имени группы открывает
+                           меню действий
                 меню     — строки действий, колесо прокручивает,
                            ПКМ сбрасывает привязку
 
@@ -821,8 +962,8 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 
 ### Как связь попадает в тулбар
 
-Правило размещения — `Vgs.Model.ToolbarPlanner`, чистая функция от формы тулбара и ответов
-на два вопроса о текущем содержимом:
+Правило размещения — `Vgs.Model.ToolbarPlanner`, чистая функция от формы тулбара и
+**содержимого ячеек**:
 
 1. группа «да» пишет слот 0 страницы, «нет» — слот 1; одногрупповой тулбар берёт любую
    свободную ячейку;
@@ -833,6 +974,16 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
    если свободных ячеек нужного слота нет — тоже (`NoFreeCell`). Это разные сообщения,
    потому что требуют разных действий от пользователя.
 
+**Планировщик получает содержимое ячейки, а не готовый ответ «свободна ли она».** Это не
+вкусовое решение: раньше он принимал `Func<int, bool> isCellEmpty`, игровой слой передавал
+туда `!ReadCell(...).IsEmpty` (остаток от той поры, когда чтение возвращало `bool` в смысле
+«ячейка занята»), и **пустой тулбар считался полным** — связь не создавалась ни у одного
+блока, а на непустом тулбаре мод писал поверх чужого элемента и стирал его. Шлюзы этого не
+видели: правила были верны, расходился смысл аргумента между слоями
+([R-009](review/regressions.md)). Теперь через границу идёт `Vgs.Model.CellContents` —
+«пусто / действие блока / действие группы / чужой элемент», — и вопрос «что считать
+свободным» имеет ровно одно определение, в `ToolbarPlanner`, проверяемое офлайн.
+
 Запись — `Vgs.Game.ToolbarWriter.TryWrite`: `BeginChanges()` → `Set(cell,
 MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **чтение ячейки
 обратно** через `TryGetItem`. Путь через `MyToolbar.SetItemAtIndex` делает то же самое, но
@@ -841,6 +992,31 @@ MyToolbarItemInfo.BlockAction(blockId, actionId))` → `Apply()`, затем **�
 `Apply()` возвращает `false`, когда машина не владеет тулбаром блока
 (`MyToolbar.SendChanges` → `IsOwnedHere` → `Sync.IsServer`): в одиночной игре и на хосте
 запись проходит, на удалённом клиенте — нет, и это сообщается пользователю.
+
+### Как связь попадает в группу
+
+У игры есть **второй вид элемента тулбара**: `MyToolbarItemInfo.GroupAction(contextBlockId,
+groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет одно действие к
+**каждому функциональному** блоку группы, когда элемент срабатывает, — это и есть причина,
+по которой группа вообще стоит на схеме ([ADR-0015](adr/0015-block-groups.md)).
+
+Отсюда всё остальное:
+
+- **группа — только получатель.** Тулбара у неё нет, сработать ей нечем, поэтому исходящих
+  портов у группы не бывает, а `Node.CanDriveBlocks` для неё `false` с самого конструктора;
+- **`contextBlockId` — блок-источник.** Игра находит грид по этому блоку и по нему же ищет
+  группу в терминальной системе; источник по построению на том же конструкте и живёт ровно
+  столько, сколько элемент;
+- **правило действий группы — правило игры**, а не наше: `BlockPortCatalog.
+  ComputeGroupActionIds` повторяет три ветви `MyToolbarItemTerminalGroup.GetActions` —
+  один тип → его действия, включённые хотя бы у одного участника; разные типы и все
+  функциональные → пересечение действий, включённых у каждого; разные типы и хоть один не
+  функциональный → пусто. «Общего предка» игра не ищет (проверено по IL,
+  см. [01-research/api-block-groups.md](01-research/api-block-groups.md) §3);
+- **чтение обратно и сверка** различают два вида элемента через `Vgs.Model.CellContents`
+  (игровое `MyToolbarItemKind` отображается на `CellKind` в `ToolbarWriter.ReadCell`),
+  поэтому элемент, поставленный руками в ванильном терминале, превращается в линию так же,
+  как записанный модом.
 
 ### Как порт попадает на экран
 

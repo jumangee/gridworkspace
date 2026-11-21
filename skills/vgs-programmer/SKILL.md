@@ -93,6 +93,27 @@ Rules that bite when ignored:
   key (`Detected#true`), so a saved connection remembers which list it joined. The yes/no flag
   is not on `IMyToolbar`; read `MyCubeBlockDefinition.YesNoToolbarBackground`.
 
+### Groups are a second item kind, not a second mechanism
+
+A connection may end on a named block group instead of a block (ADR-0015). The item is
+`MyToolbarItemInfo.GroupAction(contextBlockId, groupName, actionId)` — `ToolbarWriter.TryWriteGroup` —
+and `ToolbarWriter.CellContents` is what tells the two kinds apart when reading back. Things that
+bite:
+
+- **A group has no entity id.** Its identity is the name, so a rename is a different group and the
+  connection stops resolving. Never key a group by `EntityId` (it is zero), never assume
+  `GetNode(edge.TargetEntityId)` finds it — use `GridGraph.GetTargetNode(edge)`.
+- **A group is a target only.** It has no toolbar, so it has no output ports and `CanDriveBlocks`
+  is false. Do not "fix" that by giving it one.
+- **The action list is the game's rule, not a union:** one type → that type's actions; mixed types
+  and all members functional → intersection of action ids; mixed types with a non-functional member
+  → nothing. `BlockPortCatalog.ComputeGroupActionIds` is the single implementation, and it is
+  asserted offline — do not compute a second version anywhere else.
+- **Visibility aggregates.** The group node exists only while at least one member has a node; that
+  is the whole of "Show in VGS" for a group. Do not add a flag to the group.
+- **The action list is computed from the whole group**, including hidden members and members on
+  subgrids — the game applies the action to all of them.
+
 ## 3. API traps that cost the most time
 
 Each of these was hit while building the skeleton.

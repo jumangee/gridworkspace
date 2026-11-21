@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Sandbox.ModAPI;
 using VRage.Game;
 using VRage.Game.ModAPI;
@@ -16,6 +17,16 @@ namespace Vgs.Game
     /// own: it writes the item the player could have placed by hand, so the connection works
     /// with no session component running, survives a reload, and can be inspected and edited
     /// in the vanilla terminal.
+    ///
+    /// <b>Two kinds of target.</b> A cell holds either a block-plus-action item
+    /// (<see cref="MyToolbarItemKind.BlockAction"/>) or a group-plus-action item
+    /// (<see cref="MyToolbarItemKind.GroupAction"/>, ADR-0015). The second one names a block
+    /// group of the grid's terminal system and applies the action to every functional member
+    /// when it fires; the game finds the group through the block the item stores, which is why
+    /// a group item carries an entity id at all. The ModAPI's own
+    /// <c>MyToolbarApiExtensions.GroupAction</c> passes the *context* block's id there, and so
+    /// does this writer: the source block is on the same grid as the group by construction, and
+    /// it is the one block that must exist for the item to fire at all.
     ///
     /// <b>Which API.</b> <see cref="IMyToolbarSlots.BeginChanges"/> →
     /// <see cref="IMyToolbarChangeBuilder.Set"/> → <see cref="IMyToolbarChangeBuilder.Apply"/>,
@@ -38,13 +49,14 @@ namespace Vgs.Game
     ///
     ///  1. A yes/no toolbar has one slot per group: "yes" writes slot 0, "no" writes slot 1.
     ///  2. A single-group toolbar accepts any free cell.
-    ///  3. The same action on the same target block may appear only once per <i>page</i>.
-    ///     That is not our rule: the vanilla toolbar-config screen deletes every other slot
-    ///     of the current page holding an equal item before it drops a new one
+    ///  3. The same action on the same target may appear only once per <i>page</i>. That is
+    ///     not our rule: the vanilla toolbar-config screen deletes every other slot of the
+    ///     current page holding an equal item before it drops a new one
     ///     (<c>MyGuiScreenToolbarConfigBase.DropGridItemToToolbar</c>), so a duplicate we
     ///     wrote on one page would be silently removed the first time the player edited that
     ///     page. The editor therefore spreads repeats across pages, and reports a failure
-    ///     when every page already holds that action.
+    ///     when every page already holds that action. "Same target" means the same block or
+    ///     the same group name, so a block and a group that contains it are different targets.
     ///
     /// Everything here is a boundary: it is called from a click handler and must never throw
     /// into the game loop.
@@ -60,7 +72,7 @@ namespace Vgs.Game
             /// <summary>The block has no toolbar the game fires by itself.</summary>
             NotDrivable = 1,
 
-            /// <summary>Every page has a free cell of the right slot, but all are reserved for other actions.</summary>
+            /// <summary>No page has a free cell of the required slot: every one holds something else.</summary>
             NoFreeCell = 2,
 
             /// <summary>Every page already holds this very action on this target: the game refuses it.</summary>
@@ -73,19 +85,142 @@ namespace Vgs.Game
             Rejected = 5
         }
 
+        // Cell contents live in Vgs.Model (CellContents / CellKind): the placement rule is a
+        // pure decision on that value, so it has to be compiled by tools/offline-check.ps1
+        // together with the planner. This class only *reads* the game's item into it — see
+        // ReadCell, the one place where MyToolbarItemKind meets CellKind.
+
         /// <summary>
-        /// Places the connection into a free cell of the source's toolbar and reports which
-        /// cell it took. Returns <see cref="WriteResult.Ok"/> only after reading the cell back
-        /// and finding the expected item there — the game can refuse an item, and reporting a
-        /// connection that does not exist would be worse than reporting the failure.
+        /// Places "block → target block, action" into a free cell of the source's toolbar and
+        /// reports which cell it took. Returns <see cref="WriteResult.Ok"/> only after reading
+        /// the cell back and finding the expected item there — the game can refuse an item, and
+        /// reporting a connection that does not exist would be worse than reporting the failure.
         /// </summary>
         public static WriteResult TryWrite(IMyTerminalBlock source, Node sourceNode, Port eventPort,
                                            IMyTerminalBlock target, string actionId, out ToolbarCell cell)
         {
             cell = ToolbarCell.None;
+            if (target == null) return WriteResult.ActionUnavailable;
 
-            if (source == null || sourceNode == null || eventPort == null || target == null) return WriteResult.NotDrivable;
-            if (string.IsNullOrEmpty(actionId)) return WriteResult.ActionUnavailable;
+            // The action must still be on the target: a block rebuilt between the refresh and
+            // the click can have lost it, and an item naming a missing action is dead.
+            try
+            {
+                if (target.GetActionWithName(actionId) == null) return WriteResult.ActionUnavailable;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("toolbar-target", "could not read target actions", e, 120);
+                return WriteResult.ActionUnavailable;
+            }
+
+            long targetId = target.EntityId;
+
+            return WriteItem(
+                source, sourceNode, eventPort,
+                MyToolbarItemInfo.BlockAction(targetId, actionId),
+                (toolbar, index) => ReadCell(toolbar, index).HoldsBlockAction(targetId, actionId),
+                contents => contents.HoldsBlockAction(targetId, actionId),
+                out cell);
+        }
+
+        /// <summary>
+        /// Places "block → group, action" into a free cell of the source's toolbar.
+        ///
+        /// The group is identified by name, exactly as the game's own item identifies it
+        /// (ADR-0015). The source block is stored in the item as its context block: the game
+        /// resolves the grid — and through it the group — from that block, and the source is
+        /// both on the right grid and guaranteed to exist for as long as the item does.
+        ///
+        /// <b>The group is resolved before writing, not assumed.</b> A group is a name, so it
+        /// can be renamed or dissolved between the refresh and the click; an item naming a group
+        /// the terminal system no longer has is a cell the game can never fire, and reading the
+        /// cell back would still "succeed" because the item is stored verbatim. So the group is
+        /// looked up, and the action is confirmed against its members, before anything is
+        /// written — and <see cref="WriteResult.ActionUnavailable"/> then means exactly what the
+        /// user is told: the group is gone, or it no longer offers that action.
+        /// </summary>
+        public static WriteResult TryWriteGroup(IMyTerminalBlock source, Node sourceNode, Port eventPort,
+                                                string groupName, string actionId, out ToolbarCell cell)
+        {
+            cell = ToolbarCell.None;
+            if (string.IsNullOrEmpty(groupName) || string.IsNullOrEmpty(actionId))
+            {
+                return WriteResult.ActionUnavailable;
+            }
+
+            if (!GroupStillOffers(source, groupName, actionId)) return WriteResult.ActionUnavailable;
+
+            long contextId = source != null ? source.EntityId : 0;
+
+            return WriteItem(
+                source, sourceNode, eventPort,
+                MyToolbarItemInfo.GroupAction(contextId, groupName, actionId),
+                (toolbar, index) => ReadCell(toolbar, index).HoldsGroupAction(groupName, actionId),
+                contents => contents.HoldsGroupAction(groupName, actionId),
+                out cell);
+        }
+
+        /// <summary>
+        /// True when the grid's terminal system still has this group and at least one of its
+        /// members still reports the action.
+        ///
+        /// It is the cheap half of the check the block path gets for free from
+        /// `GetActionWithName` on a single block: a group has no single block to ask, so the
+        /// members are asked instead and the first one that knows the action is enough — the
+        /// game itself applies the action per member and skips the ones that do not have it.
+        /// </summary>
+        private static bool GroupStillOffers(IMyTerminalBlock source, string groupName, string actionId)
+        {
+            try
+            {
+                if (source == null || MyAPIGateway.TerminalActionsHelper == null) return true;
+
+                IMyCubeGrid grid = source.CubeGrid;
+                if (grid == null) return true;
+
+                IMyGridTerminalSystem system = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+                if (system == null) return true;
+
+                IMyBlockGroup group = system.GetBlockGroupWithName(groupName);
+                if (group == null) return false;
+
+                var blocks = new List<IMyTerminalBlock>();
+                group.GetBlocks(blocks, null);
+
+                for (int i = 0; i < blocks.Count; i++)
+                {
+                    IMyTerminalBlock block = blocks[i];
+                    if (block == null) continue;
+                    if (block.GetActionWithName(actionId) != null) return true;
+                }
+
+                return false;
+            }
+            catch (Exception e)
+            {
+                // A read that failed is not a refusal: writing an item the game may still
+                // accept is better than blocking a legitimate connection, and the read-back
+                // below catches the case where it was not accepted after all.
+                VgsLog.Throttled("group-check", "could not verify block group", e, 300);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// The shared write: plan a cell, set one item, apply, read the cell back. Both target
+        /// kinds go through here so the placement rules and the read-back check cannot drift
+        /// apart between a block connection and a group connection.
+        /// </summary>
+        private static WriteResult WriteItem(IMyTerminalBlock source, Node sourceNode, Port eventPort,
+                                             MyToolbarItemInfo item,
+                                             Func<IMyToolbar, int, bool> pageHoldsSameAction,
+                                             Func<CellContents, bool> matches,
+                                             out ToolbarCell cell)
+        {
+            cell = ToolbarCell.None;
+
+            if (source == null || sourceNode == null || eventPort == null) return WriteResult.NotDrivable;
 
             ToolbarLayout layout = sourceNode.Toolbar;
             if (layout == null || !layout.CanDrive) return WriteResult.NotDrivable;
@@ -95,18 +230,17 @@ namespace Vgs.Game
                 IMyToolbar toolbar = ToolbarProbe.GetToolbar(source, layout.ToolbarIndex);
                 if (toolbar == null) return WriteResult.NotDrivable;
 
-                // The action must still be on the target: a block rebuilt between the refresh
-                // and the click can have lost it, and an item naming a missing action is dead.
-                if (target.GetActionWithName(actionId) == null) return WriteResult.ActionUnavailable;
-
                 // Which cell to take is a pure decision (ToolbarPlanner); reading the current
-                // contents of the toolbar is the only part that needs the live object.
+                // contents of the toolbar is the only part that needs the live object. The
+                // planner is handed the contents themselves, never a pre-computed "is it free"
+                // bool: that argument was once passed inverted and turned every empty toolbar
+                // into "no free cell" (R-009).
                 int index;
                 ToolbarPlacement placement = ToolbarPlanner.Plan(
                     layout,
                     eventPort.Group,
-                    cellIndex => !ReadCell(toolbar, cellIndex, out _, out _),
-                    page => PageHoldsAction(toolbar, layout, page, target.EntityId, actionId),
+                    cellIndex => ReadCell(toolbar, cellIndex),
+                    page => PageHolds(toolbar, layout, page, pageHoldsSameAction),
                     out index);
 
                 switch (placement)
@@ -127,7 +261,7 @@ namespace Vgs.Game
                 IMyToolbarChangeBuilder change = toolbar.BeginChanges();
                 if (change == null) return WriteResult.Rejected;
 
-                change.Set(index, MyToolbarItemInfo.BlockAction(target.EntityId, actionId));
+                change.Set(index, item);
 
                 if (!change.Apply())
                 {
@@ -140,11 +274,7 @@ namespace Vgs.Game
                 // Read back rather than trust: the batch reports success even when it only
                 // queued the change, and a cell that still holds something else means the
                 // connection is not there.
-                long writtenBlock;
-                string writtenAction;
-                if (!ReadCell(toolbar, index, out writtenBlock, out writtenAction)
-                    || writtenBlock != target.EntityId
-                    || !string.Equals(writtenAction, actionId, StringComparison.Ordinal))
+                if (!matches(ReadCell(toolbar, index)))
                 {
                     ClearCell(toolbar, index);
                     return WriteResult.Rejected;
@@ -177,9 +307,7 @@ namespace Vgs.Game
 
                 if (!ClearCell(toolbar, cell.Index)) return false;
 
-                long blockId;
-                string action;
-                return !ReadCell(toolbar, cell.Index, out blockId, out action);
+                return ReadCell(toolbar, cell.Index).IsEmpty;
             }
             catch (Exception e)
             {
@@ -189,54 +317,72 @@ namespace Vgs.Game
         }
 
         /// <summary>
-        /// Reads what a cell holds. False for an empty cell, a non-block item (a group item or
-        /// a block definition), or a cell outside the toolbar.
+        /// Reads what a cell holds. A cell outside the toolbar and an empty cell both report
+        /// <see cref="CellContents.IsEmpty"/>; an item the editor cannot draw does not — see
+        /// <see cref="CellContents"/> for why the cases are kept apart.
         /// </summary>
-        public static bool TryDescribe(IMyToolbar toolbar, int index, out long blockEntityId, out string actionId)
+        public static CellContents TryDescribe(IMyToolbar toolbar, int index)
         {
-            return ReadCell(toolbar, index, out blockEntityId, out actionId);
+            return ReadCell(toolbar, index);
         }
 
         /// <summary>
-        /// True when any cell of this page already holds the same action on the same target.
-        /// This is the vanilla duplicate rule; see the type comment for where it comes from.
+        /// True when any cell of this page already holds the same item. This is the vanilla
+        /// duplicate rule; see the type comment for where it comes from.
         /// </summary>
-        private static bool PageHoldsAction(IMyToolbar toolbar, ToolbarLayout layout, int page,
-                                            long targetEntityId, string actionId)
+        private static bool PageHolds(IMyToolbar toolbar, ToolbarLayout layout, int page,
+                                      Func<IMyToolbar, int, bool> holds)
         {
             for (int s = 0; s < layout.SlotCount; s++)
             {
-                int index = layout.CellIndex(page, s);
-
-                long blockId;
-                string action;
-                if (!ReadCell(toolbar, index, out blockId, out action)) continue;
-                if (blockId != targetEntityId) continue;
-                if (string.Equals(action, actionId, StringComparison.Ordinal)) return true;
+                if (holds(toolbar, layout.CellIndex(page, s))) return true;
             }
             return false;
         }
 
         /// <summary>
-        /// Reads one cell through the ModAPI mirror of the toolbar. Only
-        /// <see cref="MyToolbarItemKind.BlockAction"/> cells describe a block-plus-action
-        /// connection; a group action or a block definition is a different kind of toolbar
-        /// entry and is not something this editor can represent, so it reads as empty.
+        /// Reads one cell through the ModAPI mirror of the toolbar.
+        ///
+        /// <b>This is the only place where the game's item vocabulary meets the model's.</b>
+        /// Both item kinds the editor can draw are reported with their identity: a
+        /// <see cref="MyToolbarItemKind.BlockAction"/> with its block and action, a
+        /// <see cref="MyToolbarItemKind.GroupAction"/> with its group name and action. Anything
+        /// else (a block definition, an inventory item) becomes <see cref="CellKind.Other"/>,
+        /// carrying the game's kind name for the log only.
+        ///
+        /// An item that claims to be a block or group action but carries no identity — no
+        /// block, no action, no group name — is also reported as
+        /// <see cref="CellKind.Other"/> rather than as empty. It is not ours and the editor
+        /// cannot draw it, but it is also not a free cell: reporting it as empty would let the
+        /// planner overwrite somebody's item, which is exactly what
+        /// <see cref="CellKind.Other"/> exists to prevent.
         /// </summary>
-        private static bool ReadCell(IMyToolbar toolbar, int index, out long blockEntityId, out string actionId)
+        private static CellContents ReadCell(IMyToolbar toolbar, int index)
         {
-            blockEntityId = 0;
-            actionId = null;
-
-            if (toolbar == null || index < 0 || index >= toolbar.ItemCount) return false;
+            if (toolbar == null || index < 0 || index >= toolbar.ItemCount) return CellContents.Empty;
 
             MyToolbarItemInfo info;
-            if (!toolbar.TryGetItem(index, out info)) return false;
-            if (info.Kind != MyToolbarItemKind.BlockAction) return false;
+            if (!toolbar.TryGetItem(index, out info)) return CellContents.Empty;
 
-            blockEntityId = info.BlockEntityId;
-            actionId = info.ActionId;
-            return blockEntityId != 0 && !string.IsNullOrEmpty(actionId);
+            if (info.Kind == MyToolbarItemKind.BlockAction)
+            {
+                if (info.BlockEntityId == 0 || string.IsNullOrEmpty(info.ActionId))
+                {
+                    return CellContents.Other(info.Kind.ToString());
+                }
+                return CellContents.BlockAction(info.BlockEntityId, info.ActionId);
+            }
+
+            if (info.Kind == MyToolbarItemKind.GroupAction)
+            {
+                if (string.IsNullOrEmpty(info.GroupName) || string.IsNullOrEmpty(info.ActionId))
+                {
+                    return CellContents.Other(info.Kind.ToString());
+                }
+                return CellContents.GroupAction(info.GroupName, info.ActionId);
+            }
+
+            return CellContents.Other(info.Kind.ToString());
         }
 
         /// <summary>

@@ -51,19 +51,29 @@ namespace Vgs.Model
         /// <summary>
         /// Picks a cell for a connection of <paramref name="group"/>.
         ///
-        /// <paramref name="isCellEmpty"/> and <paramref name="pageHoldsSameAction"/> are
-        /// supplied by the caller because only it can read the live toolbar; the decision
-        /// itself needs nothing else. Neither callback may throw — the caller wraps them.
+        /// <paramref name="cellAt"/> and <paramref name="pageHoldsSameAction"/> are supplied by
+        /// the caller because only it can read the live toolbar; the decision itself needs
+        /// nothing else. Neither callback may throw — the caller wraps them.
+        ///
+        /// <b>The caller reports contents, not a verdict.</b> <paramref name="cellAt"/> returns
+        /// what is in the cell, and this method decides whether that counts as free. That is
+        /// deliberate: an earlier version took a <c>Func&lt;int, bool&gt; isCellEmpty</c>, the
+        /// game layer passed it <c>!contents.IsEmpty</c> — a leftover from when the reader
+        /// returned a bool meaning "occupied" — and every empty toolbar was reported as full.
+        /// Nothing in the type system could catch that: the two ends agreed on the parameter
+        /// name and disagreed on the meaning (see <c>docs/review/regressions.md</c> R-009).
+        /// With the value passed across, "is this cell free" has exactly one definition, in
+        /// this file, and it is the one the offline checks exercise.
         /// </summary>
         public static ToolbarPlacement Plan(ToolbarLayout layout, PortGroup group,
-                                            Func<int, bool> isCellEmpty,
+                                            Func<int, CellContents> cellAt,
                                             Func<int, bool> pageHoldsSameAction,
                                             out int index)
         {
             index = -1;
 
             if (layout == null || !layout.CanDrive) return ToolbarPlacement.NotDrivable;
-            if (isCellEmpty == null || pageHoldsSameAction == null) return ToolbarPlacement.NotDrivable;
+            if (cellAt == null || pageHoldsSameAction == null) return ToolbarPlacement.NotDrivable;
 
             int slot = layout.SlotFor(group);
             if (slot >= layout.SlotCount) return ToolbarPlacement.NotDrivable;
@@ -77,14 +87,14 @@ namespace Vgs.Model
                 if (slot >= 0)
                 {
                     int direct = layout.CellIndex(page, slot);
-                    if (isCellEmpty(direct)) candidate = direct;
+                    if (cellAt(direct).IsEmpty) candidate = direct;
                 }
                 else
                 {
                     for (int s = 0; s < layout.SlotCount; s++)
                     {
                         int probe = layout.CellIndex(page, s);
-                        if (isCellEmpty(probe)) { candidate = probe; break; }
+                        if (cellAt(probe).IsEmpty) { candidate = probe; break; }
                     }
                 }
 

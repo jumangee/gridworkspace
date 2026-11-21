@@ -9,7 +9,7 @@
 | [02-feasibility.md](02-feasibility.md) | Что возможно, что нет, чем именно делается. Все утверждения с уровнем доверия | Первым. Отвечает на «а это вообще реально» |
 | [ROADMAP.md](ROADMAP.md) | Три этапа: цели, критерии приёмки, что не входит, риски | Перед любой работой |
 | [03-architecture.md](03-architecture.md) | Диаграмма классов, правила зависимостей, потоки данных, точки расширения | Перед изменением кода |
-| [06-terminology.md](06-terminology.md) | Словарь: блок, узел, карточка, порт (входящий/исходящий), связь, тулбар, ячейка, группа «да»/«нет», режимы указателя | Первым делом, если непонятно слово |
+| [06-terminology.md](06-terminology.md) | Словарь: блок, группа блоков, узел, карточка, рамка группы, порт (входящий/исходящий), связь, тулбар, ячейка, группа «да»/«нет», режимы указателя | Первым делом, если непонятно слово |
 | [adr/](adr/) | Принятые решения: контекст, альтернативы, последствия, проверка | Перед изменением кода; код, противоречащий ADR, — дефект |
 | [review/joint-review.md](review/joint-review.md) | Протокол разрешения противоречий между кодом и решением | Когда код расходится с ADR |
 | [review/regressions.md](review/regressions.md) | Регрессии и известные нарушения качества | Перед закрытием этапа |
@@ -29,6 +29,9 @@
 - **«Почему связь — это тулбар блока, и откуда взялись кнопки T/F?»** →
   [ADR-0011](adr/0011-toolbar-is-the-connection.md) и
   [01-research/api-toolbar.md](01-research/api-toolbar.md).
+- **«Почему группа на схеме — рамка, и какие действия у неё есть?»** →
+  [ADR-0015](adr/0015-block-groups.md) и
+  [01-research/api-block-groups.md](01-research/api-block-groups.md).
 - **«Может ли вот этот блок управлять другими?»** → [06-terminology.md](06-terminology.md) §5.
 
 ## Справочники (сырые данные)
@@ -39,6 +42,7 @@
 | [01-research/api-modscreen.md](01-research/api-modscreen.md) | Mod Screen API (`MyModScreen`, `MyScreenSpace*`) — новый UI-API 1.211 |
 | [01-research/api-screen-space.md](01-research/api-screen-space.md) | Проверенная семантика экранных координат: safe-GUI 4:3, единицы `Measure`, порядок слоёв |
 | [01-research/api-toolbar.md](01-research/api-toolbar.md) | Тулбар блока: кто может управлять другими, форма тулбара, «да»/«нет», правило «одно действие на страницу», запись через `BeginChanges().Apply()`; какой API разрешён моду и почему |
+| [01-research/api-block-groups.md](01-research/api-block-groups.md) | Группы блоков: где живут, как игра считает их действия (пересечение по id, а не «общий предок»), элемент тулбара `GroupAction` и что происходит при срабатывании |
 | [01-research/api-persistence.md](01-research/api-persistence.md) | Хранение данных на блоке (`MyModStorageComponent`, регистрация GUID в SBC), стабильность `EntityId` при save/load, копировании и резке грида, чекбокс на всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [01-research/block-catalog-notes.md](01-research/block-catalog-notes.md) | Как собран каталог 1559 подтипов блоков, 50 кокпитов, пробелы |
 | [01-research/web-research.md](01-research/web-research.md) | Веб-ресёрч: SDK, UI-подходы, готовый код, ограничения. 79 КБ со ссылками |

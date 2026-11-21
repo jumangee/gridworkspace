@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Sandbox.ModAPI;
+using VRage.Game;
 using VRage.Game.ModAPI;
 using VRageMath;
 using Vgs.Core;
@@ -33,6 +34,12 @@ namespace Vgs.Game
     ///     block's own mod storage, so they follow the block through save/load, blueprints and
     ///     grid splitting (ADR-0012, ADR-0013). A block whose flag is off is not added to the
     ///     graph at all.
+    ///
+    ///  5. <b>A group is a second pass over the same grid.</b> Block groups are read from the
+    ///     grid's terminal system after the blocks, and a group becomes a node only when at
+    ///     least one of its members is drawn (ADR-0015). Its action list, in contrast, is
+    ///     computed from <em>all</em> members, including hidden ones and ones on a subgrid,
+    ///     because that is what the game applies a group action to.
     /// </summary>
     public static class GridGraphBuilder
     {
@@ -58,15 +65,16 @@ namespace Vgs.Game
 
         /// <summary>
         /// Re-synchronises an existing graph with the grid: adds new blocks, drops destroyed
-        /// ones, refreshes names, and reconciles the edges with the blocks' toolbars.
-        /// Positions and edges of surviving nodes are preserved, which is what makes the
-        /// editor feel stable while the ship is being edited.
+        /// ones, refreshes names, rebuilds the group nodes and reconciles the edges with the
+        /// blocks' toolbars. Positions and edges of surviving nodes are preserved, which is
+        /// what makes the editor feel stable while the ship is being edited.
         /// </summary>
         public static void Refresh(GridGraph graph, IMyCubeGrid grid)
         {
             if (graph == null || grid == null) return;
 
             var live = new HashSet<long>();
+            List<IMyBlockGroup> groups = null;
 
             try
             {
@@ -107,6 +115,8 @@ namespace Vgs.Game
                         UpdateNode(node, terminal);
                     }
                 }
+
+                groups = ReadGroups(grid);
             }
             catch (Exception e)
             {
@@ -125,13 +135,18 @@ namespace Vgs.Game
 
             graph.LayoutUnplaced();
 
+            // Groups after the cards: a group's frame is derived from where its members ended
+            // up, and a member that was just laid out must already be at its final position.
+            SyncGroups(graph, groups);
+
             ReconcileToolbarEdges(graph);
 
             // Port bars are a derived view of the edges: a node that just disappeared took
             // its edges with it, so the remaining nodes' stacks have to close up.
             graph.LayoutPorts();
 
-            VgsLog.Debug("graph refresh: " + graph.NodeCount + " nodes, " + graph.EdgeCount + " edges");
+            VgsLog.Debug("graph refresh: " + graph.NodeCount + " nodes, " + graph.GroupCount
+                         + " groups, " + graph.EdgeCount + " edges");
         }
 
         private static Node CreateNode(IMyTerminalBlock block)
@@ -188,6 +203,339 @@ namespace Vgs.Game
             return true;
         }
 
+        // ------------------------------------------------------------------ groups
+
+        /// <summary>
+        /// Reads the block groups of the grid's terminal system, or null when they cannot be
+        /// read.
+        ///
+        /// The system is the one of the grid's <em>logical group</em> — the construct, i.e. the
+        /// grid plus its subgrids — not of this grid alone (verified in
+        /// <c>docs/01-research/api-block-groups.md</c> §1). That is deliberate and matches the
+        /// game: a group may contain blocks from a subgrid, and the game applies a group action
+        /// to all of them, so the editor must show the group and offer the actions it really
+        /// has.
+        /// </summary>
+        private static List<IMyBlockGroup> ReadGroups(IMyCubeGrid grid)
+        {
+            try
+            {
+                if (MyAPIGateway.TerminalActionsHelper == null) return null;
+
+                IMyGridTerminalSystem system = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+                if (system == null) return null;
+
+                var groups = new List<IMyBlockGroup>();
+                system.GetBlockGroups(groups);
+                return groups;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("read-groups", "could not read block groups", e, 600);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Rebuilds the group nodes of the graph from the groups read off the grid.
+        ///
+        /// Two lists per group, and they are different on purpose:
+        ///
+        ///  * <b>drawn members</b> — members that have a node in the graph. The group exists
+        ///    only while there is at least one, which is exactly how "Show in VGS" aggregates
+        ///    for a group: all members hidden means the group is hidden, one member shown means
+        ///    the group is shown (ADR-0015). The frame is drawn around these cards.
+        ///  * <b>all members</b> — the whole group, hidden members and subgrid members
+        ///    included. The action list is computed from these, because the game applies the
+        ///    action to all of them; computing it from the drawn ones would offer fewer actions
+        ///    than the connection really performs.
+        ///
+        /// A group that has vanished from the terminal system is dropped, together with its
+        /// incoming edges. Nothing is written to any toolbar for that: the item stays where it
+        /// is, and the connection comes back if the group is restored under the same name.
+        /// </summary>
+        /// <summary>
+        /// Rebuilds the group nodes of the graph from the groups read off the grid.
+        ///
+        /// Two lists per group, and they are different on purpose:
+        ///
+        ///  * <b>drawn members</b> — members that have a node in the graph. The group exists
+        ///    only while there is at least one, which is exactly how "Show in VGS" aggregates
+        ///    for a group: all members hidden means the group is hidden, one member shown means
+        ///    the group is shown (ADR-0015). The frame is drawn around these cards.
+        ///  * <b>all members</b> — the whole group, hidden members and subgrid members
+        ///    included. The action list is computed from these, because the game applies the
+        ///    action to all of them; computing it from the drawn ones would offer fewer actions
+        ///    than the connection really performs.
+        ///
+        /// <b>"Could not read" is never "does not exist".</b> A group is dropped only when it
+        /// was actually read and has no drawn member. Three cases keep the node as it is: the
+        /// member budget ran out before the action list was complete, the group is past
+        /// <see cref="VgsConstants.MaxGroupsScanned"/>, and the group's own read threw. The
+        /// distinction matters more than it looks — a dropped group takes its edges with it, and
+        /// the reconcile pass cannot rebuild them because the node is gone, so a false negative
+        /// would erase the picture for good while the toolbar still holds the wiring.
+        /// </summary>
+        private static void SyncGroups(GridGraph graph, List<IMyBlockGroup> groups)
+        {
+            // A failed read is not "there are no groups": dropping every group node here would
+            // delete the picture (and its lines) for one bad frame, and the next reconcile pass
+            // would rebuild it from the toolbars — a flash the player would see as a bug. The
+            // groups simply stay as they were and are retried on the next refresh.
+            if (groups == null) return;
+
+            var alive = new HashSet<string>(StringComparer.Ordinal);
+            var undetermined = new HashSet<string>(StringComparer.Ordinal);
+            var members = new List<long>();
+            var memberActions = new List<GroupMemberActions>();
+            var blocks = new List<IMyTerminalBlock>();
+            var actionIds = new List<string>();
+            var enabledIds = new List<string>();
+
+            int budget = VgsConstants.MaxGroupMembersScanned;
+            int count = groups.Count < VgsConstants.MaxGroupsScanned
+                ? groups.Count
+                : VgsConstants.MaxGroupsScanned;
+
+            for (int g = 0; g < count; g++)
+            {
+                IMyBlockGroup group = groups[g];
+                if (group == null) continue;
+
+                string name;
+                try { name = group.Name; }
+                catch (Exception e)
+                {
+                    VgsLog.Throttled("read-group", "could not read a block group name", e, 600);
+                    continue;
+                }
+                if (string.IsNullOrEmpty(name)) continue;
+
+                GroupOutcome outcome = SyncOneGroup(graph, group, name, members, memberActions,
+                                                   blocks, actionIds, enabledIds, ref budget);
+
+                if (outcome == GroupOutcome.Alive) alive.Add(name);
+                else if (outcome == GroupOutcome.Undetermined) undetermined.Add(name);
+            }
+
+            // Groups past the scan limit were never looked at, so their fate is unknown. Mark
+            // them so they survive the drop below — a ship with more groups than the budget
+            // keeps every group it already showed.
+            for (int g = count; g < groups.Count; g++)
+            {
+                IMyBlockGroup group = groups[g];
+                if (group == null) continue;
+                try { undetermined.Add(group.Name); }
+                catch (Exception e) { VgsLog.Throttled("read-group", "could not read a block group name", e, 600); }
+            }
+
+            if (groups.Count > count)
+            {
+                VgsLog.Throttled("group-limit",
+                    "group scan limit reached: " + (groups.Count - count) + " group(s) kept as they were", 1800);
+            }
+
+            // Drop groups that are gone: not in the terminal system any more, or read
+            // successfully and no longer holding a single drawn member. Collect first,
+            // RemoveGroup mutates the list.
+            var stale = new List<string>();
+            IList<Node> existing = graph.Groups;
+            for (int i = 0; i < existing.Count; i++)
+            {
+                string name = existing[i].GroupName;
+                if (alive.Contains(name)) continue;
+                if (undetermined.Contains(name)) continue;
+                stale.Add(name);
+            }
+            for (int i = 0; i < stale.Count; i++) graph.RemoveGroup(stale[i]);
+        }
+
+        /// <summary>What one group's read established.</summary>
+        private enum GroupOutcome
+        {
+            /// <summary>Read, has a drawn member, node updated (or kept as it was).</summary>
+            Alive = 0,
+
+            /// <summary>Read, no drawn member: the group is not part of the schema.</summary>
+            Dead = 1,
+
+            /// <summary>Not read far enough to decide. The node is kept untouched.</summary>
+            Undetermined = 2
+        }
+
+        /// <summary>
+        /// Reads one group and updates its node.
+        ///
+        /// <b>Two passes over the members, and the order is the point.</b> The first pass only
+        /// asks the graph whether each member is drawn — a dictionary probe, no world access —
+        /// and decides whether the group is alive at all. Only the second pass spends the
+        /// member budget, and that budget is spent on reading action lists. Doing it the other
+        /// way round was a real defect: the loop stopped at the budget, a drawn member that
+        /// happened to come later in the set was never seen, and a live group was declared dead
+        /// and removed together with its edges. `GetBlocks` returns a `HashSet`, so "later" is
+        /// arbitrary — the group would have vanished on some refreshes and not others.
+        ///
+        /// The buffers belong to the caller and are reused across groups.
+        /// </summary>
+        private static GroupOutcome SyncOneGroup(GridGraph graph, IMyBlockGroup group, string name,
+                                                 List<long> members, List<GroupMemberActions> memberActions,
+                                                 List<IMyTerminalBlock> blocks, List<string> actionIds,
+                                                 List<string> enabledIds, ref int budget)
+        {
+            blocks.Clear();
+            try
+            {
+                group.GetBlocks(blocks, null);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("read-group", "could not read a block group", e, 600);
+                return GroupOutcome.Undetermined;
+            }
+
+            // Pass 1: which members are drawn. Cheap and complete — no budget applies, because
+            // this is what decides whether the group exists at all.
+            members.Clear();
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                IMyTerminalBlock block = blocks[b];
+                if (block == null) continue;
+
+                try
+                {
+                    if (graph.GetNode(block.EntityId) != null) members.Add(block.EntityId);
+                }
+                catch (Exception e)
+                {
+                    VgsLog.Throttled("group-member", "member id failed", e, 600);
+                }
+            }
+
+            if (members.Count == 0) return GroupOutcome.Dead;
+
+            // Pass 2: the action list, from every member — drawn or not, because the game
+            // applies a group action to all of them.
+            memberActions.Clear();
+            bool truncated = false;
+
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                IMyTerminalBlock block = blocks[b];
+                if (block == null) continue;
+
+                if (budget <= 0)
+                {
+                    // An action list computed from a partial group is worse than a stale one:
+                    // it would offer an action the game will not fire for a member nobody
+                    // looked at. The group keeps last refresh's ports and is retried next time.
+                    truncated = true;
+                    break;
+                }
+                budget--;
+
+                actionIds.Clear();
+                enabledIds.Clear();
+                ReadMemberActions(block, actionIds, enabledIds);
+
+                memberActions.Add(new GroupMemberActions(
+                    SafeTypeKey(block), IsFunctional(block),
+                    new List<string>(actionIds), new List<string>(enabledIds)));
+            }
+
+            if (truncated)
+            {
+                VgsLog.Throttled("group-budget",
+                    "group action list left stale: member budget spent", 1800);
+                return GroupOutcome.Alive;
+            }
+
+            graph.SyncGroup(name, members, memberActions);
+            return GroupOutcome.Alive;
+        }
+
+        /// <summary>
+        /// Reads one member's action ids and which of them are enabled on it.
+        ///
+        /// The enabled subset is not decoration: the game's own group rule filters actions by
+        /// `ITerminalAction.IsEnabled(block)` — "any member" when the group has one type,
+        /// "every member" when it has several. Without it the editor would offer an action that
+        /// no member will execute, which is the one failure mode this feature exists to avoid.
+        /// `IsEnabled` is on the ModAPI mirror, so this costs a whitelist-safe call per action.
+        /// </summary>
+        private static void ReadMemberActions(IMyTerminalBlock block, List<string> ids, List<string> enabled)
+        {
+            try
+            {
+                var actions = new List<Sandbox.ModAPI.Interfaces.ITerminalAction>();
+                block.GetActions(actions);
+                if (actions == null) return;
+
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    var action = actions[i];
+                    if (action == null) continue;
+
+                    string id = action.Id;
+                    if (string.IsNullOrEmpty(id)) continue;
+
+                    ids.Add(id);
+
+                    bool isEnabled;
+                    try { isEnabled = action.IsEnabled(block); }
+                    catch (Exception e)
+                    {
+                        // An action that cannot answer is treated as available: hiding it would
+                        // make the group's list shrink for a reason the player cannot see.
+                        VgsLog.Throttled("group-enabled", "could not read action state", e, 600);
+                        isEnabled = true;
+                    }
+                    if (isEnabled) enabled.Add(id);
+                }
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("getactions", "GetActions failed for a group member", e, 300);
+            }
+        }
+
+        /// <summary>
+        /// Identity of a block's runtime type, used only to compare two members for equality.
+        ///
+        /// A group's action list is the intersection of its members' action ids when the types
+        /// differ (ADR-0015), so the comparison is between type identities. The type name is
+        /// enough and keeps this layer from passing a <see cref="System.Type"/> into the model.
+        /// </summary>
+        private static string SafeTypeKey(IMyTerminalBlock block)
+        {
+            try
+            {
+                Type type = block.GetType();
+                return type != null ? type.FullName : string.Empty;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("group-type", "could not read block type", e, 600);
+                return string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// True when the block is a functional block — the game's own test for a group member,
+        /// `block as MyFunctionalBlock != null`. A mixed group with one non-functional member
+        /// has no actions at all, so this flag is part of the rule, not a detail.
+        /// </summary>
+        private static bool IsFunctional(IMyTerminalBlock block)
+        {
+            try { return block is IMyFunctionalBlock; }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("group-functional", "could not read block kind", e, 600);
+                return false;
+            }
+        }
+
+        // ------------------------------------------------------------------ edges
+
         /// <summary>
         /// Rebuilds the edges of every toolbar-driven node from the items actually present in
         /// its toolbar.
@@ -197,9 +545,10 @@ namespace Vgs.Game
         /// cell that holds a known item without an edge gets one (the player wired it in the
         /// terminal, or the graph was just opened on a saved ship).
         ///
-        /// Items that point at a block outside the graph — another grid, a block group — are
-        /// left alone: the editor cannot draw them, and deleting them would destroy wiring the
-        /// player made by hand.
+        /// Items that point at a block outside the graph — another grid, a block definition —
+        /// are left alone: the editor cannot draw them, and deleting them would destroy wiring
+        /// the player made by hand. A group item is drawn only while the group node exists,
+        /// which is the same "aggregate visibility" rule the group itself follows.
         /// </summary>
         private static void ReconcileToolbarEdges(GridGraph graph)
         {
@@ -228,15 +577,13 @@ namespace Vgs.Game
                 Edge edge = edges[i];
                 if (edge.SourceEntityId != node.EntityId) continue;
 
-                long blockId;
-                string action;
-                bool present = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index, out blockId, out action);
+                CellContents contents = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index);
 
-                if (!present || blockId != edge.TargetEntityId
-                    || !string.Equals(action, edge.TargetPortKey, StringComparison.Ordinal))
-                {
-                    graph.RemoveEdge(edge);
-                }
+                bool present = edge.TargetsGroup
+                    ? contents.HoldsGroupAction(edge.TargetGroupName, edge.TargetPortKey)
+                    : contents.HoldsBlockAction(edge.TargetEntityId, edge.TargetPortKey);
+
+                if (!present) graph.RemoveEdge(edge);
             }
 
             // 2. Add an edge for every known item that has none.
@@ -244,9 +591,8 @@ namespace Vgs.Game
             {
                 budget--;
 
-                long blockId;
-                string action;
-                if (!ToolbarWriter.TryDescribe(toolbar, index, out blockId, out action)) continue;
+                CellContents contents = ToolbarWriter.TryDescribe(toolbar, index);
+                if (contents.IsEmpty) continue;
 
                 var cell = new ToolbarCell(layout.ToolbarIndex, index);
                 if (graph.FindEdgeInCell(node.EntityId, cell) != null) continue;
@@ -257,7 +603,16 @@ namespace Vgs.Game
 
                 // TryConnect re-checks that the target node and its action port exist, so an
                 // item pointing outside the graph is skipped without a special case here.
-                graph.TryConnect(node.EntityId, port.Key, blockId, action, cell);
+                if (contents.IsGroupAction)
+                {
+                    graph.TryConnectToGroup(node.EntityId, port.Key, contents.GroupName,
+                                            contents.ActionId, cell);
+                }
+                else if (contents.IsBlockAction)
+                {
+                    graph.TryConnect(node.EntityId, port.Key, contents.BlockEntityId,
+                                     contents.ActionId, cell);
+                }
             }
         }
 

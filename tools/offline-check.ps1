@@ -49,6 +49,7 @@ $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
     (Join-Path $sourceRoot 'Model\Node.cs'),
     (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),
+    (Join-Path $sourceRoot 'Model\CellContents.cs'),
     (Join-Path $sourceRoot 'Model\GridGraph.cs'),
     (Join-Path $sourceRoot 'Model\BlockPortCatalog.cs'),
     (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),

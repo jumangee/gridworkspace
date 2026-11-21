@@ -164,6 +164,12 @@ design anything that creates or removes a connection, start from these rules:
   returns false when the machine does not own the block's toolbar (`MyToolbar.SendChanges` →
   `IsOwnedHere` → `Sync.IsServer`), so a remote multiplayer client cannot write. Report that;
   never pretend the connection exists. Reading works everywhere.
+- **A group is a second item kind, not a second mechanism** (ADR-0015). A connection may end on
+  a named block group via `MyToolbarItemInfo.GroupAction`, which applies one action to every
+  functional member. A group has no entity id (name only), no toolbar, and therefore no outputs;
+  its action list is the game's rule — one type → its actions, mixed types and all functional →
+  intersection of ids, mixed types with a non-functional member → nothing. There is no
+  "most common ancestor" search, and a union would offer connections the game never fires.
 
 Terminology lives in [`docs/06-terminology.md`](../../docs/06-terminology.md); keep it current
 when you add a concept.

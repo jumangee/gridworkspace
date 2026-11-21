@@ -31,6 +31,7 @@
 | Выходы (события) блоков | API перечисления **нет** → тулбар блока как источник истины + курируемая таблица имён | [ПРОВЕРЕНО] отсутствие API; см. [api-toolbar.md](01-research/api-toolbar.md) |
 | «Может ли блок управлять другими» | компонент `IMyToolbarProvider` + `IMyToolbar.Type == ButtonPanel` | [ПРОВЕРЕНО] `dump-se-api.ps1` + `dump-se-il.ps1` |
 | Запись связи в мир | `IMyToolbarSlots.BeginChanges()` → `Set` → `Apply` | [ПРОВЕРЕНО] сигнатуры, вайтлист, IL `SendChanges` |
+| Группы блоков: перечисление, действия, запись связи на группу | `IMyGridTerminalSystem.GetBlockGroups` → `IMyBlockGroup`; действия — по правилу `MyToolbarItemTerminalGroup.GetActions`; запись — `MyToolbarItemInfo.GroupAction` | [ПРОВЕРЕНО] сигнатуры и IL; см. [api-block-groups.md](01-research/api-block-groups.md) |
 | Логика взаимодействий | исполняет сама игра из тулбара; для условий и значений — `ITerminalAction.Apply` + `MySessionComponentBase` | [ПРОВЕРЕНО] сигнатуры |
 
 Главный риск — не «можно ли», а **как именно рисовать** и **чем связь работает в игре**.

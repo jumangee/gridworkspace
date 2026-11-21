@@ -31,6 +31,7 @@
 | [0012](0012-layout-lives-on-the-block.md) | Раскладка схемы хранится на блоке (`MyModStorageComponent` + зарегистрированный GUID), а не в таблице «`EntityId` → позиция» | accepted |
 | [0013](0013-show-in-vgs-flag.md) | Флаг видимости узла на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` | accepted |
 | [0014](0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет его связи; точка — её зеркало; подпись по центру и пропорционально зуму; рамка порта цветом карточки | accepted |
+| [0015](0015-block-groups.md) | Группы блоков на схеме: рамка позади карточек, «Show in VGS» агрегируется по участникам, входы по правилу игры (пересечение действий, не «общий предок»), связи — элемент `GroupAction` | accepted |
 
 ## Как добавить
 

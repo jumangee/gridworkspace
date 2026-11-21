@@ -72,6 +72,21 @@ namespace Vgs.Ui
         private static readonly Color ColLine = new Color(120, 220, 160, 190);
         private static readonly Color ColLinePending = new Color(255, 170, 60, 235);
 
+        // A group is a light frame *behind* its members' cards (ADR-0015). Light, because it
+        // has to be readable on the dark canvas without competing with the cards it contains:
+        // a card is what the player acts on, the frame only says "these belong together".
+        //
+        // The fill is semi-transparent, so what the player sees is the fill composited over
+        // the canvas: (150,158,170) at alpha 110 over (18,22,29) lands near (75,80,88), which
+        // is clearly lighter than a card (38,45,58) — the first value tried here, (96,104,118)
+        // at alpha 70, composited to (39,45,53) and was indistinguishable from the card.
+        // The title strip is deliberately *darker* than the fill: it carries the group's name
+        // in the editor's light text colour, and light text on the light fill would not read.
+        private static readonly Color ColGroupFill = new Color(150, 158, 170, 110);
+        private static readonly Color ColGroupBorder = new Color(196, 206, 220, 220);
+        private static readonly Color ColGroupTitle = new Color(90, 98, 112, 240);
+        private static readonly Color ColGroupSelected = new Color(255, 170, 60, 255);
+
         // The "+" button is drawn inverted: a near-white disc with the plus cut out in the
         // card's own colour (ColNode). White because a control that starts a modal gesture has
         // to be the brightest thing on the canvas; inverted because a light glyph on a dark
@@ -215,6 +230,7 @@ namespace Vgs.Ui
         // Cached draw strings. Rebuilt only when the value they describe changes.
         private string _statusText;
         private int _statusKeyNodes = -1;
+        private int _statusKeyGroups = -1;
         private int _statusKeyEdges = -1;
         private int _statusKeyZoom = -1;
 
@@ -300,6 +316,12 @@ namespace Vgs.Ui
             }
 
             GridGraph graph = GridGraphBuilder.Build(grid);
+
+            // Group frames are derived from the cards of their members, so they are laid out
+            // once the graph is complete — before the first frame is drawn, and outside any
+            // draw path (ADR-0015).
+            PortGeometry.LayoutGroupFrames(graph);
+
             var screen = new VgsEditorScreen(graph, grid);
 
             VgsScreenDraw.EnsureResources();
@@ -577,6 +599,11 @@ namespace Vgs.Ui
                 }
 
                 GridGraphBuilder.Refresh(_graph, _grid);
+
+                // The refresh moves cards (LayoutUnplaced) and rebuilds the groups, so the
+                // frames have to be recomputed before the next draw reads them.
+                PortGeometry.LayoutGroupFrames(_graph);
+
                 ValidateInteractionState();
             }
             catch (Exception e)
@@ -589,15 +616,17 @@ namespace Vgs.Ui
         /// Drops references to nodes the refresh has removed.
         ///
         /// A refresh can delete the block the user is currently dragging, binding from, or
-        /// picking an action for. Those fields are plain references, so they stay valid as
-        /// objects after the node leaves the graph — which means the draw path would happily
-        /// keep painting a card that no longer exists. The check is by entity id because that
-        /// is the graph's own identity for a node.
+        /// picking an action for — and it can delete a *group* the user is aiming at, because a
+        /// group disappears as soon as its last drawn member is hidden or destroyed. Those
+        /// fields are plain references, so they stay valid as objects after the node leaves the
+        /// graph — which means the draw path would happily keep painting a card that no longer
+        /// exists. The check is by node identity, not by entity id: a group has no id to ask
+        /// about.
         /// </summary>
         private void ValidateInteractionState()
         {
-            if (_selected != null && !_graph.Contains(_selected.EntityId)) _selected = null;
-            if (_draggedNode != null && !_graph.Contains(_draggedNode.EntityId)) _draggedNode = null;
+            if (_selected != null && !_graph.ContainsNode(_selected)) _selected = null;
+            if (_draggedNode != null && !_graph.ContainsNode(_draggedNode)) _draggedNode = null;
 
             if (_hoverRemoveNode != null)
             {
@@ -605,7 +634,7 @@ namespace Vgs.Ui
                 // set replaces every Port object). Re-resolve by key instead of comparing
                 // references: the gesture is still meaningful as long as the port survives, and
                 // a stale object would leave the highlight on a bar that no longer exists.
-                if (!_graph.Contains(_hoverRemoveNode.EntityId))
+                if (!_graph.ContainsNode(_hoverRemoveNode))
                 {
                     _hoverRemoveNode = null;
                     _hoverRemovePort = null;
@@ -620,7 +649,7 @@ namespace Vgs.Ui
                 }
             }
 
-            if (_bindSource != null && !_graph.Contains(_bindSource.EntityId)) CancelBind();
+            if (_bindSource != null && !_graph.ContainsNode(_bindSource)) CancelBind();
 
             // A bind holds a specific port object, chosen when it started. A refresh that
             // rebuilt the source's event list (its action set changed, or the block was
@@ -636,7 +665,7 @@ namespace Vgs.Ui
 
             if (_menuTarget != null)
             {
-                if (!_graph.Contains(_menuTarget.EntityId) || !SamePorts(_menuRows, _menuTarget.Actions))
+                if (!_graph.ContainsNode(_menuTarget) || !SamePorts(_menuRows, _menuTarget.Actions))
                 {
                     // The menu is bound to specific port objects; if the target's action list
                     // was rebuilt they are stale, and a click would connect the wrong action.
@@ -794,7 +823,10 @@ namespace Vgs.Ui
                 Node hit = HitTest(graphPos);
                 _selected = hit;
 
-                if (hit != null)
+                // A group is selected but never dragged: its frame is derived from the cards
+                // of its members, so moving it would either move nothing or silently detach it
+                // from the blocks it names. Dragging a member moves the frame instead.
+                if (hit != null && !hit.IsGroup)
                 {
                     _draggedNode = hit;
                     _dragGrabOffset = graphPos - hit.Position;
@@ -812,7 +844,17 @@ namespace Vgs.Ui
                     if ((target - _draggedNode.Position).Length() > VgsConstants.DragThreshold) _dragging = true;
                 }
 
-                if (_dragging) _draggedNode.Position = target;
+                if (_dragging)
+                {
+                    _draggedNode.Position = target;
+
+                    // The frames of the groups this card belongs to follow it. Recomputed here,
+                    // on the pointer move that changed the position, and not in the draw path:
+                    // the same reason the graph itself is never read while drawing. Only the
+                    // groups containing this card can have changed, so a drag costs a scan of
+                    // the group list and one frame per group the card is in.
+                    if (_graph.GroupCount > 0) PortGeometry.LayoutFramesContaining(_graph, _draggedNode);
+                }
             }
 
             if (leftReleased)
@@ -1035,7 +1077,7 @@ namespace Vgs.Ui
                 // valid choice — the row says how many lines are already there instead of
                 // being disabled. A disabled row would also make the menu jump as soon as the
                 // user connected something.
-                int fanIn = _graph.CountEdgesToInput(target.EntityId, action.Key);
+                int fanIn = _graph.CountEdgesToInput(target, action.Key);
                 _menuLabels.Add(fanIn > 0
                     ? action.DisplayName + string.Format(VgsText.ActionMenuFanInFormat, fanIn)
                     : action.DisplayName);
@@ -1099,6 +1141,12 @@ namespace Vgs.Ui
         /// the game refuses the placement — every page already holds that action, or the page
         /// list is full — the user is told why and nothing is changed.
         ///
+        /// A group target is written as a group item, not as one item per member: that is the
+        /// whole point of a group in this editor (ADR-0015). One cell, one item, and the game
+        /// applies the action to every functional member when it fires. The two kinds share
+        /// every step except the item itself, so they are branches of one method rather than
+        /// two methods that would drift apart.
+        ///
         /// Returns true only when the block really holds the connection afterwards. A click
         /// that could not be satisfied returns false, so the menu stays open and the user can
         /// pick another action instead of wondering whether the click registered.
@@ -1111,16 +1159,32 @@ namespace Vgs.Ui
             if (source == null || target == null || action == null || port == null) return false;
 
             IMyTerminalBlock sourceBlock = ResolveBlock(source.EntityId);
-            IMyTerminalBlock targetBlock = ResolveBlock(target.EntityId);
-            if (sourceBlock == null || targetBlock == null)
+            if (sourceBlock == null)
             {
                 Warn(VgsText.WarnBlockGone);
                 return false;
             }
 
             ToolbarCell cell;
-            ToolbarWriter.WriteResult result =
-                ToolbarWriter.TryWrite(sourceBlock, source, port, targetBlock, action.Key, out cell);
+            ToolbarWriter.WriteResult result;
+            bool toGroup = target.IsGroup;
+
+            if (toGroup)
+            {
+                result = ToolbarWriter.TryWriteGroup(sourceBlock, source, port, target.GroupName,
+                                                     action.Key, out cell);
+            }
+            else
+            {
+                IMyTerminalBlock targetBlock = ResolveBlock(target.EntityId);
+                if (targetBlock == null)
+                {
+                    Warn(VgsText.WarnBlockGone);
+                    return false;
+                }
+
+                result = ToolbarWriter.TryWrite(sourceBlock, source, port, targetBlock, action.Key, out cell);
+            }
 
             if (result != ToolbarWriter.WriteResult.Ok)
             {
@@ -1128,7 +1192,11 @@ namespace Vgs.Ui
                 return false;
             }
 
-            if (!_graph.TryConnect(source.EntityId, port.Key, target.EntityId, action.Key, cell))
+            bool connected = toGroup
+                ? _graph.TryConnectToGroup(source.EntityId, port.Key, target.GroupName, action.Key, cell)
+                : _graph.TryConnect(source.EntityId, port.Key, target.EntityId, action.Key, cell);
+
+            if (!connected)
             {
                 // The graph refused an item the block now holds: put the cell back the way it
                 // was rather than leaving wiring the editor does not show.
@@ -1139,10 +1207,13 @@ namespace Vgs.Ui
             }
 
             // The new connection changes which port bars exist, so the stacks are recomputed.
+            // A group's frame has to grow with its bars, so the frames follow.
             _graph.LayoutPorts();
+            if (_graph.GroupCount > 0) PortGeometry.LayoutGroupFrames(_graph);
 
             VgsLog.Info("connected " + source.EntityId + " (" + port.Key + ") -> "
-                        + target.EntityId + " (" + action.Key + ") @ " + cell);
+                        + (toGroup ? "group:" + target.GroupName : target.EntityId.ToString())
+                        + " (" + action.Key + ") @ " + cell);
             return true;
         }
 
@@ -1163,7 +1234,9 @@ namespace Vgs.Ui
                 case ToolbarWriter.WriteResult.NoFreeCell:
                     return string.Format(VgsText.WarnNoFreeCellFormat, source.DisplayName);
                 case ToolbarWriter.WriteResult.ActionUnavailable:
-                    return string.Format(VgsText.WarnActionGoneFormat, target.DisplayName, action.DisplayName);
+                    return target.IsGroup
+                        ? string.Format(VgsText.WarnGroupGoneFormat, target.GroupName)
+                        : string.Format(VgsText.WarnActionGoneFormat, target.DisplayName, action.DisplayName);
                 default:
                     return VgsText.WarnRejected;
             }
@@ -1199,7 +1272,7 @@ namespace Vgs.Ui
             if (node == null || port == null) return;
 
             _removeBuffer.Clear();
-            _graph.CollectEdgesForPort(node.EntityId, port.Key, port.Direction, _removeBuffer);
+            _graph.CollectEdgesForPort(node, port.Key, port.Direction, _removeBuffer);
             if (_removeBuffer.Count == 0) return;
 
             int removed = 0;
@@ -1254,6 +1327,7 @@ namespace Vgs.Ui
             // The stacks are a derived view of the edges: the port that just lost its last
             // connection must lose its bar, and the stack under it must close up.
             _graph.LayoutPorts();
+            if (_graph.GroupCount > 0) PortGeometry.LayoutGroupFrames(_graph);
 
             if (changedUnderEditor > 0)
             {
@@ -1308,17 +1382,14 @@ namespace Vgs.Ui
                 IMyToolbar toolbar = ToolbarProbe.GetToolbar(sourceBlock, edge.Cell.ToolbarIndex);
                 if (toolbar == null) return CellState.Unreadable;
 
-                long blockId;
-                string action;
-                if (!ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index, out blockId, out action))
-                {
-                    return CellState.HoldsOther;
-                }
+                CellContents contents = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index);
+                if (contents.IsEmpty) return CellState.HoldsOther;
 
-                return blockId == edge.TargetEntityId
-                       && string.Equals(action, edge.TargetPortKey, StringComparison.Ordinal)
-                    ? CellState.HoldsThis
-                    : CellState.HoldsOther;
+                bool holdsThis = edge.TargetsGroup
+                    ? contents.HoldsGroupAction(edge.TargetGroupName, edge.TargetPortKey)
+                    : contents.HoldsBlockAction(edge.TargetEntityId, edge.TargetPortKey);
+
+                return holdsThis ? CellState.HoldsThis : CellState.HoldsOther;
             }
             catch (Exception e)
             {
@@ -1385,7 +1456,14 @@ namespace Vgs.Ui
             return (graphPoint - _camera) * _zoom + canvasTopLeft;
         }
 
-        /// <summary>Topmost node under a graph-space point, or null. Ports count as the node.</summary>
+        /// <summary>
+        /// Topmost node under a graph-space point, or null. Ports count as the node.
+        ///
+        /// Blocks are tested before groups: the frame of a group surrounds its members, so a
+        /// click on a card must select the card and not the group that contains it. Groups are
+        /// only hit through their title strip and their port bars
+        /// (<see cref="PortGeometry.HitNode"/>), which is what makes that ordering sufficient.
+        /// </summary>
         private Node HitTest(Vector2 graphPoint)
         {
             IList<Node> nodes = _graph.Nodes;
@@ -1393,6 +1471,12 @@ namespace Vgs.Ui
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
                 if (PortGeometry.HitNode(nodes[i], graphPoint)) return nodes[i];
+            }
+
+            IList<Node> groups = _graph.Groups;
+            for (int i = groups.Count - 1; i >= 0; i--)
+            {
+                if (PortGeometry.HitNode(groups[i], graphPoint)) return groups[i];
             }
             return null;
         }
@@ -1420,6 +1504,9 @@ namespace Vgs.Ui
         {
             port = null;
             float aspect = VgsScreenDraw.ClientAspect;
+
+            // Blocks first, for the same reason as in HitTest: a group's frame contains its
+            // members, and a member's own remove button is the more specific target.
             IList<Node> nodes = _graph.Nodes;
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
@@ -1427,6 +1514,15 @@ namespace Vgs.Ui
                 if (hit == null) continue;
                 port = hit;
                 return nodes[i];
+            }
+
+            IList<Node> groups = _graph.Groups;
+            for (int i = groups.Count - 1; i >= 0; i--)
+            {
+                Port hit = PortGeometry.HitPortRemoveButton(groups[i], graphPoint, aspect);
+                if (hit == null) continue;
+                port = hit;
+                return groups[i];
             }
             return null;
         }
@@ -1494,11 +1590,15 @@ namespace Vgs.Ui
                 DrawBackdrop(canvasTopLeft, canvasSize);
                 DrawGrid(canvasTopLeft, canvasSize);
 
-                // Order matters: lines go under the cards so a connection never crosses a
-                // block's text; cards go under their own port bars.
+                // Order matters: group frames are backdrops for their members' cards, so they
+                // go first of all; then lines, so a connection never crosses a block's text;
+                // then cards, then the port bars of both kinds of node, so a bar is never
+                // hidden under a line that ends on its dot.
+                DrawGroupFrames(canvasTopLeft, canvasSize);
                 DrawEdges(canvasTopLeft, canvasSize);
                 DrawPendingLine(canvasTopLeft, canvasSize);
                 DrawNodes(canvasTopLeft, canvasSize);
+                DrawGroupPorts(canvasTopLeft, canvasSize);
 
                 DrawBottomBar();
                 DrawHeader();
@@ -1592,7 +1692,7 @@ namespace Vgs.Ui
                 Edge edge = lines[i];
 
                 Node source = _graph.GetNode(edge.SourceEntityId);
-                Node target = _graph.GetNode(edge.TargetEntityId);
+                Node target = _graph.GetTargetNode(edge);
                 if (source == null || target == null) continue;
 
                 Port outPort = source.FindEvent(edge.SourcePortKey);
@@ -1658,8 +1758,14 @@ namespace Vgs.Ui
             IList<Node> nodes = _graph.Nodes;
             if (nodes.Count == 0)
             {
-                VgsScreenDraw.TextCentered(VgsText.EmptyGrid, topLeft + size * 0.5f, 0.8f, ColTextDim);
-                return;
+                // A grid with no visible block is only "empty" when it has no visible group
+                // either: a group whose members are all hidden is not in the graph at all, so
+                // the two counts are both zero exactly when there is nothing to draw.
+                if (_graph.GroupCount == 0)
+                {
+                    VgsScreenDraw.TextCentered(VgsText.EmptyGrid, topLeft + size * 0.5f, 0.8f, ColTextDim);
+                    return;
+                }
             }
 
             // Cheap frustum culling: only draw what is on screen. On a large ship this is
@@ -1760,6 +1866,89 @@ namespace Vgs.Ui
         private static PortGroup FirstGroupOf(Node node)
         {
             return PortGeometry.HasGroupButtons(node) ? PortGroup.Yes : PortGroup.Single;
+        }
+
+        /// <summary>
+        /// Draws the frame of every group: a light-grey fill, a border, and a title strip with
+        /// the group's name (ADR-0015).
+        ///
+        /// The frame is drawn <em>before</em> the cards, so it reads as a backdrop: the members
+        /// are still the thing the player acts on, and the frame only says which blocks belong
+        /// together. A group is not a card and deliberately does not look like one — it has no
+        /// "+", no subtype line and no shadow, because it has no toolbar and nothing to fire.
+        ///
+        /// The frame has no card of its own to be selected by, so its title strip carries the
+        /// selection and hover highlight. That is also its only click target: the interior
+        /// belongs to the members.
+        /// </summary>
+        private void DrawGroupFrames(Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            IList<Node> groups = _graph.Groups;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                Node group = groups[i];
+
+                Vector2 topLeft, size;
+                if (!PortGeometry.TryBodyRect(group, out topLeft, out size)) continue;
+
+                Vector2 screen = GraphToScreen(topLeft, clipTopLeft);
+                Vector2 screenSize = size * _zoom;
+
+                // Cull against the canvas the same way cards are culled, so a group scrolled
+                // off-screen costs two comparisons instead of a rectangle and a border.
+                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
+                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+
+                bool selected = ReferenceEquals(group, _selected);
+                bool hovered = ReferenceEquals(group, _hoverNode);
+
+                VgsScreenDraw.RectClipped(screen, screenSize, clipTopLeft, clipSize, ColGroupFill);
+
+                Vector2 titleTopLeft, titleSize;
+                if (PortGeometry.TryGroupTitleRect(group, out titleTopLeft, out titleSize))
+                {
+                    VgsScreenDraw.RectClipped(GraphToScreen(titleTopLeft, clipTopLeft),
+                                              titleSize * _zoom, clipTopLeft, clipSize, ColGroupTitle);
+                }
+
+                Color border = selected ? ColGroupSelected : (hovered ? ColNodeHover : ColGroupBorder);
+                VgsScreenDraw.BorderClipped(screen, screenSize, clipTopLeft, clipSize, border,
+                                            selected ? Hairline * 2f : Hairline);
+
+                if (titleSize.Y > 0f)
+                {
+                    VgsScreenDraw.Text(group.DisplayName,
+                                       GraphToScreen(titleTopLeft, clipTopLeft)
+                                           + new Vector2(screenSize.X * 0.012f, titleSize.Y * _zoom * 0.18f),
+                                       VgsConstants.GroupTitleScale * CardTextScale,
+                                       ColText, screenSize.X * 0.976f);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Draws the port bars of every group.
+        ///
+        /// A group has incoming ports only — what may be done to its members — so this is a
+        /// short pass and it never has an output stack to skip past. It runs after the cards
+        /// because a group's bars hang under its frame, which is under its members, so nothing
+        /// is covered; and after the lines, because a line ends on the bar's dot and has to be
+        /// under it.
+        /// </summary>
+        private void DrawGroupPorts(Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            IList<Node> groups = _graph.Groups;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                Node group = groups[i];
+                bool selected = ReferenceEquals(group, _selected);
+                Color border = selected ? ColGroupSelected : ColGroupBorder;
+
+                for (int p = 0; p < group.Actions.Count; p++)
+                {
+                    DrawPortBar(group, group.Actions[p], border, clipTopLeft, clipSize);
+                }
+            }
         }
 
         /// <summary>
@@ -2181,10 +2370,12 @@ namespace Vgs.Ui
         {
             int zoomPercent = (int)(_zoom * 100);
             int nodeCount = _graph.NodeCount;
+            int groupCount = _graph.GroupCount;
             int edgeCount = _graph.EdgeCount;
 
             if (_statusText != null
                 && _statusKeyNodes == nodeCount
+                && _statusKeyGroups == groupCount
                 && _statusKeyEdges == edgeCount
                 && _statusKeyZoom == zoomPercent)
             {
@@ -2192,9 +2383,10 @@ namespace Vgs.Ui
             }
 
             _statusKeyNodes = nodeCount;
+            _statusKeyGroups = groupCount;
             _statusKeyEdges = edgeCount;
             _statusKeyZoom = zoomPercent;
-            _statusText = string.Format(VgsText.StatusFormat, nodeCount, edgeCount, zoomPercent);
+            _statusText = string.Format(VgsText.StatusFormat, nodeCount, groupCount, edgeCount, zoomPercent);
             return _statusText;
         }
 

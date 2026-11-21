@@ -217,6 +217,121 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// The actions a block group accepts, computed the way the game computes them for a
+        /// group toolbar item (ADR-0015, verified in
+        /// <c>docs/01-research/api-block-groups.md</c> §3).
+        ///
+        /// The rule, in the game's own order:
+        ///
+        ///  1. all members share one runtime type → that type's actions, keeping those enabled
+        ///     on <b>at least one</b> member;
+        ///  2. different types, all members functional → the actions enabled on <b>every</b>
+        ///     member, in the first member's order;
+        ///  3. different types and at least one member is not a functional block → no actions
+        ///     at all.
+        ///
+        /// Point 3 is not a simplification: the game's own <c>GetActions</c> returns an empty
+        /// list in exactly that case, so a group with one conveyor tube in it really does
+        /// offer nothing in the vanilla toolbar.
+        ///
+        /// Point 2 is where a plausible guess is wrong. There is no "most common ancestor"
+        /// search: the game intersects action *ids*. A shared base class matters only when the
+        /// item fires, where an action is applied to a block whose type derives from the type
+        /// the action was registered for.
+        ///
+        /// The asymmetry between "any" in branch 1 and "every" in branch 2 is also the game's:
+        /// with one type it asks each action whether <em>some</em> member has it enabled, and
+        /// with several it builds one list per member and intersects them. Treating branch 1 as
+        /// "every" would hide actions from a group that contains a switched-off block.
+        ///
+        /// The result is a list of ids rather than ports so that the rule is a pure function
+        /// of the members and can be asserted in <c>tests/OfflineChecks.cs</c>. The caller
+        /// turns it into ports with <see cref="FillActions"/> only when it actually changed,
+        /// which keeps existing <see cref="Port"/> objects — and therefore the user's
+        /// selection and open menu — alive across refreshes.
+        /// </summary>
+        public static void ComputeGroupActionIds(IList<GroupMemberActions> members, List<string> into)
+        {
+            if (into == null) return;
+            into.Clear();
+            if (members == null || members.Count == 0) return;
+
+            // The first readable member defines the base: its type and its action order. A
+            // null entry is a member nobody could read, and skipping it is safer than letting
+            // one unreadable member empty the group.
+            GroupMemberActions first = null;
+            for (int i = 0; i < members.Count && first == null; i++) first = members[i];
+            if (first == null) return;
+
+            string firstType = first.TypeKey;
+            bool sameType = true;
+            bool allFunctional = first.IsFunctional;
+
+            for (int i = 0; i < members.Count; i++)
+            {
+                GroupMemberActions member = members[i];
+                if (member == null || ReferenceEquals(member, first)) continue;
+
+                if (!string.Equals(member.TypeKey, firstType, StringComparison.Ordinal)) sameType = false;
+                if (!member.IsFunctional) allFunctional = false;
+            }
+
+            if (sameType)
+            {
+                // "Enabled on any member", in the type's own order.
+                for (int i = 0; i < first.ActionIds.Count; i++)
+                {
+                    string id = first.ActionIds[i];
+                    if (string.IsNullOrEmpty(id)) continue;
+                    if (ContainsId(into, id)) continue;
+                    if (EnabledAnywhere(members, id)) into.Add(id);
+                }
+                return;
+            }
+
+            // Mixed types with a non-functional member: the game offers nothing, and a port
+            // that cannot be executed would be a promise the mod cannot keep.
+            if (!allFunctional) return;
+
+            IList<string> enabledFirst = first.EnabledActionIds;
+            for (int i = 0; i < enabledFirst.Count; i++)
+            {
+                string id = enabledFirst[i];
+                if (string.IsNullOrEmpty(id)) continue;
+                if (ContainsId(into, id)) continue;
+
+                bool everywhere = true;
+                for (int m = 0; m < members.Count && everywhere; m++)
+                {
+                    GroupMemberActions member = members[m];
+                    if (member == null || ReferenceEquals(member, first)) continue;
+                    if (!ContainsId(member.EnabledActionIds, id)) everywhere = false;
+                }
+                if (everywhere) into.Add(id);
+            }
+        }
+
+        private static bool EnabledAnywhere(IList<GroupMemberActions> members, string id)
+        {
+            for (int i = 0; i < members.Count; i++)
+            {
+                GroupMemberActions member = members[i];
+                if (member != null && ContainsId(member.EnabledActionIds, id)) return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsId(IList<string> ids, string id)
+        {
+            if (ids == null) return false;
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (string.Equals(ids[i], id, StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Turns "TriggerNow" into "Trigger Now" for display, leaving already-spaced text alone.
         /// </summary>
         public static string Humanize(string key)
