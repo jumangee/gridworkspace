@@ -1,4 +1,8 @@
-"""Renders what the editor's controls should look like, 1:1, at the real zoom levels.
+"""Renders what the editor's port controls should look like, 1:1, at the real zoom levels.
+
+Scope: the three port controls of ADR-0019 (dot, bind button, remove cross). The card's button
+row (ADR-0020) — lightbulbs, bell and square-plus on the card — is covered by the catalogue
+previews in `docs/icons/`.
 
 This is the reference picture: every number comes from the same constants the mod compiles, the
 textures are the ones the mod ships, and the compositing order matches `VgsEditorScreen`. Its only

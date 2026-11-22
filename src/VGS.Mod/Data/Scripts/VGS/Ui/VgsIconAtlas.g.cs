@@ -15,10 +15,16 @@ namespace Vgs.Ui
     {
         /// <summary>circle-dot (Solid): the port's connection dot</summary>
         CircleDot = 0,
-        /// <summary>square-plus (Regular): the bind ("+") button</summary>
+        /// <summary>square-plus (Regular): the bind button of a one-group toolbar</summary>
         SquarePlus = 1,
         /// <summary>xmark (Solid): the remove-connection glyph</summary>
         Xmark = 2,
+        /// <summary>bell (Regular): the watch-list button of an event controller</summary>
+        Bell = 3,
+        /// <summary>lightbulb (Solid): the bind button of the "true" group</summary>
+        LightbulbSolid = 4,
+        /// <summary>lightbulb (Regular): the bind button of the "false" group</summary>
+        LightbulbRegular = 5,
     }
 
     /// <summary>
@@ -43,7 +49,7 @@ namespace Vgs.Ui
         public const int TextureSize = 256;
 
         /// <summary>Number of icons the build produced.</summary>
-        public const int Count = 3;
+        public const int Count = 6;
 
         /// <summary>
         /// SubtypeName of <paramref name="icon"/> in Data\GuiTextures.sbc, and therefore the
@@ -57,6 +63,9 @@ namespace Vgs.Ui
                 case VgsIcon.CircleDot: return "VGS_CircleDot";
                 case VgsIcon.SquarePlus: return "VGS_SquarePlus";
                 case VgsIcon.Xmark: return "VGS_Xmark";
+                case VgsIcon.Bell: return "VGS_Bell";
+                case VgsIcon.LightbulbSolid: return "VGS_LightbulbSolid";
+                case VgsIcon.LightbulbRegular: return "VGS_LightbulbRegular";
                 default: return "";
             }
         }
@@ -91,6 +100,9 @@ namespace Vgs.Ui
                 case VgsIcon.CircleDot: return 1.066667f;
                 case VgsIcon.SquarePlus: return 1.066667f;
                 case VgsIcon.Xmark: return 1.066667f;
+                case VgsIcon.Bell: return 1.066667f;
+                case VgsIcon.LightbulbSolid: return 1.066667f;
+                case VgsIcon.LightbulbRegular: return 1.066667f;
                 default: return 1f;
             }
         }

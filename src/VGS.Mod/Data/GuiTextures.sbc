@@ -20,6 +20,18 @@
         <SubtypeName>VGS_Xmark</SubtypeName>
         <Path>Textures\VGS\Icons\Xmark.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_Bell</SubtypeName>
+        <Path>Textures\VGS\Icons\Bell.png</Path>
+      </Texture>
+      <Texture>
+        <SubtypeName>VGS_LightbulbSolid</SubtypeName>
+        <Path>Textures\VGS\Icons\LightbulbSolid.png</Path>
+      </Texture>
+      <Texture>
+        <SubtypeName>VGS_LightbulbRegular</SubtypeName>
+        <Path>Textures\VGS\Icons\LightbulbRegular.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>

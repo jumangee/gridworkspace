@@ -1,4 +1,9 @@
-"""Renders the editor's three controls from the textures the mod actually ships.
+"""Renders the editor's port controls from the textures the mod actually ships.
+
+Scope: the three controls of ADR-0019 — the port dot, the bind button and the remove cross.
+The card's button row (ADR-0020) is a different composition and is covered by the catalogue
+previews in `docs/icons/`, which the icon build generates. This script is kept because it shows
+the controls *at every zoom level*, which the catalogue does not.
 
 This is not the design mock-up: it reads `src/VGS.Mod/Textures/VGS/Icons/*.png`, reduces each
 icon to the pixel size the editor computes for a given zoom and screen height, and composites

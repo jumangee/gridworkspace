@@ -3,10 +3,10 @@
     Builds the icon textures, their SBC registration and the generated C# table.
 
 .DESCRIPTION
-    The editor draws three Font Awesome icons (ADR-0019). A Space Engineers mod cannot ship a
-    library and the game compiles only .cs files, so the icons are baked into textures at build
-    time: SVG -> flattened contours -> anti-aliased 256 px mask -> DXT5 with a full mip chain.
-    The mod then knows nothing but a material name and a texture size.
+    The editor draws six Font Awesome icons (ADR-0019, ADR-0020). A Space Engineers mod cannot
+    ship a library and the game compiles only .cs files, so the icons are baked into textures at
+    build time: SVG -> flattened contours -> anti-aliased 256 px mask -> lossless PNG with a
+    straight alpha channel. The mod then knows nothing but a material name and a texture size.
 
     One texture per icon, not one shared atlas. A shared atlas mixes neighbouring icons together
     as soon as the GPU samples a mip level — at the sizes this editor draws, the transparent
@@ -18,16 +18,19 @@
     This script is the whole build. It compiles `tools/icon-atlas/*.cs` with the same Roslyn the
     mod is type-checked with, runs it, and lets it write the artefacts into the mod:
 
-      src/VGS.Mod/Textures/VGS/Icons/<Id>.dds     one texture per icon
+      src/VGS.Mod/Textures/VGS/Icons/<Id>.png     one texture per icon
       src/VGS.Mod/Data/GuiTextures.sbc            the SubtypeName -> texture registration
       src/VGS.Mod/Data/Scripts/VGS/Ui/VgsIconAtlas.g.cs
                                                   the VgsIcon enum, material names, sizes
+      docs/icons/<Id>.png                         the catalogue preview (dark background, so the
+                                                  light ink is visible in a Markdown viewer)
 
     All of them are checked in, so a clean checkout builds the mod without running this. Run it
     only when `tools/icon-atlas/icons.txt` or one of the SVGs next to it changed.
 
     Adding an icon: drop the .svg into `tools/icon-atlas/icons/`, add one line to `icons.txt`,
-    run this script. No mod code changes.
+    add a row to `docs/07-icon-catalog.md`, run this script. No mod code changes beyond the one
+    place that draws it.
 
 .PARAMETER Verify
     Rebuild into a scratch folder and compare with what is checked in, without touching the
@@ -183,6 +186,9 @@ foreach ($line in (Get-Content $manifestPath)) {
     if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
     $id = ($trimmed -split '\s+')[0]
     $artefacts += "src\VGS.Mod\Textures\VGS\Icons\$id.png"
+    # The catalogue previews are generated too, so they are compared like every other artefact:
+    # a preview that drifted from its icon would show the reader a shape the mod no longer ships.
+    $artefacts += "docs\icons\$id.png"
 }
 
 $drift = @()
@@ -191,20 +197,53 @@ foreach ($relative in $artefacts) {
     $checkedIn = Join-Path $repo $relative
     if (-not (Test-Path $fresh)) { $drift += "$relative — the build produced no such file"; continue }
     if (-not (Test-Path $checkedIn)) { $drift += "$relative — not checked in"; continue }
-    $a = (Get-FileHash $fresh -Algorithm SHA256).Hash
-    $b = (Get-FileHash $checkedIn -Algorithm SHA256).Hash
-    if ($a -ne $b) { $drift += "$relative — differs from a fresh build" }
+
+    # Text artefacts are compared with line endings normalised, binary ones byte for byte.
+    #
+    # The builder writes "\r\n" (the SBC and C# files it generates are Windows text), while the
+    # repository stores every file with "\n". Comparing raw hashes would then make this gate
+    # depend on the machine's `core.autocrlf` rather than on whether the artefacts match their
+    # sources: the same checkout would pass on one machine and fail on another, and the honest
+    # fix — "commit what the build produces" — is invisible in a diff for a binary and noisy for
+    # a text file. Normalising here keeps the gate about content, which is what it is for.
+    $binary = $relative.EndsWith('.png')
+    if ($binary) {
+        $a = (Get-FileHash $fresh -Algorithm SHA256).Hash
+        $b = (Get-FileHash $checkedIn -Algorithm SHA256).Hash
+        if ($a -ne $b) { $drift += "$relative — differs from a fresh build" }
+        continue
+    }
+
+    $freshText = ((Get-Content $fresh -Raw) -replace "`r`n", "`n")
+    $checkedText = ((Get-Content $checkedIn -Raw) -replace "`r`n", "`n")
+    if ($freshText -ne $checkedText) { $drift += "$relative — differs from a fresh build" }
 }
 
 # An icon removed from the manifest leaves its texture behind, and the mod would keep shipping
 # a file nothing references.
 $textureDir = Join-Path $repo 'src\VGS.Mod\Textures\VGS\Icons'
+$previewDir = Join-Path $repo 'docs\icons'
+$expected = @{}
+foreach ($line in (Get-Content $manifestPath)) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+    $expected[(($trimmed -split '\s+')[0]) + '.png'] = $true
+}
+
 if (Test-Path $textureDir) {
-    $expected = @{}
-    foreach ($relative in $artefacts) { $expected[(Split-Path $relative -Leaf)] = $true }
     foreach ($file in (Get-ChildItem $textureDir -Filter *.png -File)) {
         if (-not $expected.ContainsKey($file.Name)) {
             $drift += "src\VGS.Mod\Textures\VGS\Icons\$($file.Name) — no longer listed in icons.txt"
+        }
+    }
+}
+
+# The catalogue previews are checked the same way: a preview of an icon nobody lists would show
+# up in docs/07-icon-catalog.md as a picture of something the mod does not draw.
+if (Test-Path $previewDir) {
+    foreach ($file in (Get-ChildItem $previewDir -Filter *.png -File)) {
+        if (-not $expected.ContainsKey($file.Name)) {
+            $drift += "docs\icons\$($file.Name) — no longer listed in icons.txt"
         }
     }
 }

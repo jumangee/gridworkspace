@@ -329,7 +329,11 @@ pwsh -File tools/deploy-mod.ps1         # выложить мод в папку 
 pwsh -File tools/tail-mod-log.ps1       # строки [VGS] из последнего лога
 pwsh -File tools/build-icon-atlas.ps1   # пересобрать иконки контролов (только при смене набора)
 pwsh -File tools/build-icon-atlas.ps1 -Verify  # проверить, что иконки не отстали от исходников
+pwsh -File tools/check-icon-catalog.ps1 # сверить каталог иконок с набором и с кодом
 ```
+
+Иконки контролов и их каталог: [`docs/07-icon-catalog.md`](docs/07-icon-catalog.md) — что за
+иконка, в каком стиле, где используется и как добавить новую.
 
 Мод не поставляет DLL: игра сама компилирует `.cs` из `Data/Scripts/`, поэтому стек ограничен
 C# 7.3 и .NET Framework 4.x, а допустимость типов проверяется по вайтлисту игры, а не по

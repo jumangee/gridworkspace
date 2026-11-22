@@ -46,12 +46,37 @@ namespace Vgs.IconAtlasBuilder
             if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException("width");
             if (alpha.Length != width * height) throw new ArgumentException("alpha length mismatch");
 
+            // The texture itself is white ink plus straight alpha; the sprite shader tints it.
+            var rgba = new byte[alpha.Length * 4];
+            for (int i = 0; i < alpha.Length; i++)
+            {
+                rgba[i * 4] = 255;
+                rgba[i * 4 + 1] = 255;
+                rgba[i * 4 + 2] = 255;
+                rgba[i * 4 + 3] = alpha[i];
+            }
+
+            return WriteRgba(path, rgba, width, height);
+        }
+
+        /// <summary>
+        /// Writes a straight (not premultiplied) RGBA buffer. Used for the catalogue previews,
+        /// which are already composited over a background and therefore fully opaque: a preview
+        /// of white ink on transparency would be invisible in every Markdown viewer that paints
+        /// on white.
+        /// </summary>
+        public static Report WriteRgba(string path, byte[] rgba, int width, int height)
+        {
+            if (rgba == null) throw new ArgumentNullException("rgba");
+            if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException("width");
+            if (rgba.Length != width * height * 4) throw new ArgumentException("rgba length mismatch");
+
             using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write))
             {
                 stream.Write(Signature, 0, Signature.Length);
 
                 WriteChunk(stream, "IHDR", BuildHeader(width, height));
-                WriteChunk(stream, "IDAT", BuildImageData(alpha, width, height));
+                WriteChunk(stream, "IDAT", BuildImageData(rgba, width, height));
                 WriteChunk(stream, "IEND", new byte[0]);
 
                 stream.Flush();
@@ -75,10 +100,10 @@ namespace Vgs.IconAtlasBuilder
         /// <summary>
         /// Scanlines, each prefixed with filter type 0, deflated into a zlib stream.
         ///
-        /// White RGB with straight alpha is what the sprite shader wants: it multiplies the sample
-        /// by its own alpha, so premultiplied bytes would darken every edge twice.
+        /// Straight alpha is what the sprite shader wants: it multiplies the sample by its own
+        /// alpha, so premultiplied bytes would darken every edge twice.
         /// </summary>
-        private static byte[] BuildImageData(byte[] alpha, int width, int height)
+        private static byte[] BuildImageData(byte[] rgba, int width, int height)
         {
             int stride = width * 4;
             var raw = new byte[height * (stride + 1)];
@@ -87,15 +112,8 @@ namespace Vgs.IconAtlasBuilder
             for (int y = 0; y < height; y++)
             {
                 raw[at++] = 0; // filter: none
-
-                int row = y * width;
-                for (int x = 0; x < width; x++)
-                {
-                    raw[at++] = 255;
-                    raw[at++] = 255;
-                    raw[at++] = 255;
-                    raw[at++] = alpha[row + x];
-                }
+                Buffer.BlockCopy(rgba, y * stride, raw, at, stride);
+                at += stride;
             }
 
             byte[] deflated;

@@ -183,32 +183,10 @@ namespace Vgs.Core
         /// <summary>Vertical distance between an input stack and an output stack on one card.</summary>
         public const float PortStackSpacing = 0f;
 
-        // ---- Event controller: watch anchor and watch ports (ADR-0017) ----
+        // ---- Event controller: watch ports (ADR-0017) ----
         //
-        // The anchor is a *square*, unlike every other control on a card, because it does not
-        // start a connection between two blocks: it attaches a block to a list the controller
-        // owns. Square versus round is the one difference that survives a glance at a dense
-        // canvas, and it is the whole reason the shape was chosen.
-
-        /// <summary>Side of the square "#" anchor, as a fraction of the card's height.</summary>
-        public const float WatchButtonHeightRatio = 0.75f;
-
-        /// <summary>
-        /// Gap between the card's left border and the "#" anchor, in pixels at
-        /// <see cref="ReferenceHeightPixels"/>. A vertical length like
-        /// <see cref="PortControlMarginPixels"/>, multiplied by the client aspect where a
-        /// horizontal gap is needed.
-        /// </summary>
-        public const float WatchButtonMarginPixels = 4f;
-
-        /// <summary><see cref="WatchButtonMarginPixels"/> in the layout's vertical units.</summary>
-        public const float WatchButtonMargin = WatchButtonMarginPixels / ReferenceHeightPixels;
-
-        /// <summary>Gap between the "#" anchor and the card's text.</summary>
-        public const float WatchButtonTextGap = 0.004f;
-
-        /// <summary>Font scale of the "#" glyph inside the anchor.</summary>
-        public const float WatchButtonGlyphScale = 0.52f;
+        // The button that starts a watch lives in the card's button row like every other card
+        // control (ADR-0020); only its icon differs, so nothing about it is sized here.
 
         /// <summary>
         /// Height of the extra card line that carries an event controller's mode description.
@@ -295,10 +273,11 @@ namespace Vgs.Core
         /// </summary>
         public const float PortRemoveGlyphScale = 0.40f;
 
-        // ---- icon atlas (ADR-0019) ----
+        // ---- icon atlas (ADR-0019, ADR-0020) ----
         //
-        // The editor draws its three controls as Font Awesome icons whenever the atlas is loaded,
-        // at every zoom. There is deliberately no per-icon size floor here: one was implemented
+        // The editor draws its controls as Font Awesome icons whenever the atlas is loaded, at
+        // every zoom: the port dot, the port's "x", and the four card buttons (bind, "yes",
+        // "no", watch). There is deliberately no per-icon size floor here: one was implemented
         // and removed after acceptance in the game.
         //
         // The floor existed so that a control would fall back to its old geometry once the icon
@@ -321,31 +300,31 @@ namespace Vgs.Core
         public const float PortRemoveIconRatio = 0.66f;
 
         /// <summary>
-        /// Height of the bind ("+") icon, as a fraction of the button's diameter. Unlike the "x"
-        /// it has no disc behind it: <c>square-plus</c> Regular is a self-contained outline, and
-        /// knocking an outline out of a filled disc leaves nothing to see.
-        /// </summary>
-        public const float PlusIconRatio = 0.92f;
-
-        /// <summary>
-        /// Hit tolerance of the single bind button, as a multiple of its drawn radius.
+        /// Height of a card button's icon ink, as a fraction of the button's diameter.
         ///
-        /// It is larger than the tolerance of the yes/no pair on purpose. The pair is two discs,
-        /// whose edge is at the radius, so 1.2 is already generous. The single button is a
-        /// square outline: its sides sit at <see cref="PlusIconRatio"/> · r from the centre but
-        /// its corners reach <see cref="PlusIconRatio"/> · √2 · r ≈ 1.30 · r. With the pair's
-        /// tolerance those corners would be drawn but not clickable — a control that looks
-        /// pressable and is not. 1.35 covers the corners with a margin and cannot collide with
-        /// anything: the single button has no neighbour to confuse it with.
+        /// Every card button is a bare icon — there is no disc behind it (ADR-0020) — so this is
+        /// the whole control, not a mark on one. 0.92 is as large as the icon can be without the
+        /// buttons of one row touching: the pitch is diameter + gap, and the gap is a fifth of a
+        /// diameter. It is also still inside the hit target: a square outline's corners reach
+        /// 0.92·√2 ≈ 1.30 radii from the centre, and the tolerance is 1.35.
+        ///
+        /// Large on purpose. Two of the four icons (`bell` and the outlined `lightbulb`) are thin
+        /// Regular outlines, and at the minimum zoom a button is about 10 px across — an outline
+        /// that did not fill its button would blur into a smudge before it became unreadable.
         /// </summary>
-        public const float BindHitToleranceSingle = 1.35f;
+        public const float CardButtonIconRatio = 0.92f;
 
         /// <summary>
-        /// Hit tolerance of each disc of the yes/no bind pair, as a multiple of its drawn radius.
-        /// Kept tight because the two discs are close together and a wider circle would make
-        /// their targets overlap.
+        /// Hit tolerance of a card button, as a multiple of its radius.
+        ///
+        /// One value for all four kinds, because they are one kind of control now: same size,
+        /// same row, same shape of target. 1.35 covers the corners of the square bind icon
+        /// (1.22 radii) with a margin. Buttons of one row overlap at this tolerance, which is
+        /// harmless by construction: <c>PortGeometry.HitCardButton</c> resolves the overlap by
+        /// nearest centre, so a click in the gap between two buttons lands on the closer one
+        /// rather than on whichever happens to be tested first.
         /// </summary>
-        public const float BindHitTolerancePair = 1.2f;
+        public const float CardButtonHitTolerance = 1.35f;
 
         /// <summary>
         /// Fallback line height as a fraction of the bar's height, used only when the font
@@ -363,54 +342,95 @@ namespace Vgs.Core
         /// </summary>
         public const float PortControlHitTolerance = 1.25f;
 
-        // ---- "+" button (bind mode) ----
+        // ---- Card button row (ADR-0020) ----
         //
-        // Drawn inverted: a solid white disc with the plus knocked out in the card's own
-        // colour. Inverted because it must not read as part of the card, and because a dark
-        // glyph on white stays legible at every zoom while a light glyph on dark does not.
+        // Every control that belongs to the *card* — the bind button, the yes/no pair and the
+        // controller's watch button — sits in one horizontal row along the card's right edge,
+        // vertically centred. The row is right-anchored: buttons are packed from the card's
+        // right border leftwards, so a card with one button keeps that button exactly where the
+        // "+" has always been, and a card with three grows leftwards.
+        //
+        // Why a row and not a column: a card is much wider than it is tall, so its right edge
+        // has room in only one direction. The old yes/no pair stacked two small discs 44% of the
+        // card's height apart, which forced them to be half the size of the "+" beside them and
+        // made the card's control area read as two different things.
 
-        /// <summary>Button diameter as a fraction of the card height.</summary>
-        public const float PlusButtonHeightRatio = 0.75f;
-
-        /// <summary>Radius of the round "+" button, derived from the card height.</summary>
-        public const float PlusButtonRadius = NodeHeight * PlusButtonHeightRatio * 0.5f;
+        /// <summary>Diameter of a card button, as a fraction of the standard card height.</summary>
+        public const float CardButtonHeightRatio = 0.75f;
 
         /// <summary>
-        /// Distance from the card's right edge to the button's right edge, so the circle sits
-        /// inside the card instead of straddling its border.
+        /// Diameter of every card button, in the layout's vertical units.
+        ///
+        /// One value for all four kinds and for every block type. The button belongs to the
+        /// *card*, not to a particular toolbar shape, so two cards side by side must not show
+        /// two different button sizes — including a controller, whose card is one line taller
+        /// because it carries a description, not because its buttons are more important.
         /// </summary>
-        public const float PlusButtonRightMargin = 0.006f;
+        public const float CardButtonDiameter = NodeHeight * CardButtonHeightRatio;
 
-        /// <summary>Gap between the "+" button and the card's text.</summary>
-        public const float PlusButtonTextGap = 0.004f;
+        /// <summary>
+        /// Radius of a card button. The horizontal half-extent is this times the client aspect,
+        /// exactly like every other round control: the layout's X and Y units are different
+        /// lengths, so a button with equal extents in both axes draws as an ellipse.
+        /// </summary>
+        public const float CardButtonRadius = CardButtonDiameter * 0.5f;
 
-        /// <summary>Arm length of the plus, as a fraction of the button diameter.</summary>
-        public const float PlusArmRatio = 0.75f;
+        /// <summary>
+        /// Gap from the card's right border to the rightmost button's right edge, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>. A vertical length like
+        /// <see cref="PortControlMarginPixels"/>, multiplied by the client aspect where a
+        /// horizontal gap is needed — otherwise the same constant would be four pixels on one
+        /// monitor and seven on another.
+        /// </summary>
+        public const float CardButtonMarginPixels = 4f;
 
-        /// <summary>Stroke thickness of the plus, as a fraction of the button diameter.</summary>
-        public const float PlusStrokeRatio = 0.14f;
+        /// <summary><see cref="CardButtonMarginPixels"/> in the layout's vertical units.</summary>
+        public const float CardButtonMargin = CardButtonMarginPixels / ReferenceHeightPixels;
 
-        // ---- "true" / "false" buttons (yes/no toolbars) ----
-        //
-        // A block whose toolbar has two fire groups cannot offer one "+": the user has to say
-        // which list the connection goes into. Two smaller discs stack vertically on the
-        // card's right edge — vertically, because the card's width belongs to the text, while
-        // its height is otherwise empty. Radius 22% of the card height leaves a hairline gap
-        // between them, which is what makes them read as two controls rather than one blob.
+        /// <summary>
+        /// Gap between two neighbouring buttons of one row, in pixels at the reference height.
+        ///
+        /// Tighter than <see cref="CardButtonMarginPixels"/>: the margin separates a button from
+        /// the card's border, while this gap separates two buttons that do different things. It is
+        /// small on purpose — an icon already carries a transparent margin inside its own texture,
+        /// so the clear space a player sees is this gap plus the two icons' margins, not this gap
+        /// alone.
+        ///
+        /// The budget is what set the number. A row of four buttons — one more than the editor
+        /// draws today, and the reason the row was tightened from six pixels — takes about 41% of
+        /// the card's width at 16:9 and 55% at 4:3, leaving the name 51% and 36%. At six pixels it
+        /// took 44% and 58%, and the row visibly drifted towards the card's left edge.
+        ///
+        /// Going below three pixels buys almost nothing: the row shrinks by about one percent of
+        /// the card's width, while the gap stops reading as a gap. What is left of the airiness in
+        /// a row of <c>bell</c> and <c>lightbulb</c> is not this constant — those icons are tall,
+        /// and normalising by ink height makes them narrow (their ink is 73–88% of the button's
+        /// width), so two of them side by side show a wider clearance than two square icons would.
+        /// Spacing such a row optically means a per-icon pitch, which would make geometry depend on
+        /// which icon a button draws; that trade is recorded in ADR-0020 and not taken here.
+        /// </summary>
+        public const float CardButtonGapPixels = 3f;
 
-        /// <summary>Radius of one group button, as a fraction of the card height.</summary>
-        public const float GroupButtonHeightRatio = 0.22f;
+        /// <summary><see cref="CardButtonGapPixels"/> in the layout's vertical units.</summary>
+        public const float CardButtonGap = CardButtonGapPixels / ReferenceHeightPixels;
 
-        public const float GroupButtonRadius = NodeHeight * GroupButtonHeightRatio;
+        /// <summary>
+        /// Gap between the row's leftmost button and the card's text, in pixels at the reference
+        /// height. The text is clipped to the span left of it, so a long block name can neither
+        /// run under a button nor spill over the card.
+        /// </summary>
+        public const float CardButtonTextGapPixels = 6f;
 
-        /// <summary>Vertical centre of the "true" button, as a fraction of the card height.</summary>
-        public const float GroupButtonTrueY = 0.27f;
+        /// <summary><see cref="CardButtonTextGapPixels"/> in the layout's vertical units.</summary>
+        public const float CardButtonTextGap = CardButtonTextGapPixels / ReferenceHeightPixels;
 
-        /// <summary>Vertical centre of the "false" button, as a fraction of the card height.</summary>
-        public const float GroupButtonFalseY = 0.73f;
-
-        /// <summary>Text scale of the T/F glyph inside a group button.</summary>
-        public const float GroupButtonGlyphScale = 0.46f;
+        /// <summary>
+        /// Font scale of the glyph a card button falls back to when its texture is missing
+        /// (ADR-0019). The glyph is the mark the button had before it became an icon — "+",
+        /// "T", "F" or "#" — drawn in the button's own colour and without a disc, so the
+        /// fallback is the same bare control rather than a different one.
+        /// </summary>
+        public const float CardButtonGlyphScale = 0.44f;
 
         // ---- Connection lines ----
 
@@ -487,23 +507,31 @@ namespace Vgs.Core
         public const string EditorTitle = "Grid setup";
         public const string CloseButton = "Закрыть";
         public const string Hint =
-            "ЛКМ — выбрать · перетащить · «+» или «T»/«F» — режим привязки · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
+            "ЛКМ — выбрать · перетащить · иконка лампы — режим привязки · колокольчик — отслеживание · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
         public const string GridFallbackName = "Grid";
 
-        // Bind mode: the round "+" turns the pointer into a live line from a source port
+        // Bind mode: the bind button turns the pointer into a live line from a source port
         // until the user picks a target or cancels with the right mouse button.
         public const string BindHint = "Режим привязки: нажмите блок-получатель · ПКМ — отмена";
 
         /// <summary>
-        /// The two buttons of a yes/no toolbar. A block like a sensor or an event controller
-        /// keeps two independent lists of actions — what happens on "yes" and what happens on
-        /// "no" — so the user has to choose one before the target.
+        /// Fallback glyph of the single-group bind button (ADR-0019, ADR-0020). The button is
+        /// drawn as the <c>square-plus</c> icon; this string is what it falls back to when the
+        /// icon textures are unavailable, and it is the same bare mark in the same colour.
+        /// </summary>
+        public const string SingleButtonGlyph = "+";
+
+        /// <summary>
+        /// Fallback glyph of the "true" button of a yes/no toolbar. The button is drawn as a
+        /// filled <c>lightbulb</c> icon; "T" is what it falls back to — and what the button said
+        /// before it became an icon, so a reader of the old screenshots still recognises it.
         /// </summary>
         public const string TrueButtonGlyph = "T";
 
+        /// <summary>Fallback glyph of the "false" button; see <see cref="TrueButtonGlyph"/>.</summary>
         public const string FalseButtonGlyph = "F";
 
         /// <summary>
@@ -520,13 +548,18 @@ namespace Vgs.Core
         public const string BindHintFalse =
             "Привязка к «нет»: нажмите блок-получатель · ПКМ — отмена";
 
-        // ---- Event controller watch mode (ADR-0017) ----
+        // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
         //
-        // The "#" anchor attaches a block to the controller's watch list. It is a third kind
+        // The watch button attaches a block to the controller's watch list. It is a third kind
         // of gesture: not a connection (nothing is written into a toolbar) and not a selection
-        // (the block stays where it is), so it gets its own glyph and its own hint.
+        // (the block stays where it is), so it gets its own icon — a bell — in the card's button
+        // row, and its own hint.
 
-        /// <summary>Glyph on the square watch anchor.</summary>
+        /// <summary>
+        /// Fallback glyph of the watch button, used only when the icon atlas is unavailable
+        /// (ADR-0019). The button is drawn as a <c>bell</c> icon; "#" is the mark it carried
+        /// before it became an icon.
+        /// </summary>
         public const string WatchGlyph = "#";
 
         public const string WatchHint =
@@ -543,8 +576,8 @@ namespace Vgs.Core
 
         /// <summary>
         /// Mode description of a controller with no event selected. Written on the card rather
-        /// than left blank: the "#" anchor is still there, and a player who presses it deserves
-        /// to know why nothing can be attached.
+        /// than left blank: the watch button is still there, and a player who presses it
+        /// deserves to know why nothing can be attached.
         /// </summary>
         public const string WatchStatusNoEvent = "Событие не выбрано";
 

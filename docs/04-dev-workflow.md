@@ -213,6 +213,8 @@ agents/                          пресеты агентов для DSH
 - [ ] `tools/review-check.ps1` → `REVIEW OK`;
 - [ ] `tools/offline-check.ps1` → `OFFLINE OK`; новое правило графа или геометрии покрыто
       утверждением в `tests/OfflineChecks.cs`;
+- [ ] `tools/check-icon-catalog.ps1` → `ICON CATALOG OK` (входит в `offline-check.ps1`): набор
+      иконок и `docs/07-icon-catalog.md` описывают одно и то же;
 - [ ] в `Vgs.Model` нет `using Sandbox.*` / `VRage.Game.ModAPI`;
 - [ ] в `Vgs.Ui` нет чтения живых блоков в путях рисования;
 - [ ] нигде нет `Sandbox.Graphics.*` (вайтлист запрещает всю сборку);

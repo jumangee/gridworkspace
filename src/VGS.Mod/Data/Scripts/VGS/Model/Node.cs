@@ -572,8 +572,8 @@ namespace Vgs.Model
         /// when the node is built, never from the subtype name: a modded block that implements
         /// the interface is a controller too, and a block that merely *looks* like one is not.
         ///
-        /// It gates the square "#" anchor and the watch mode, nothing else: a controller is
-        /// still an ordinary source of connections and keeps its "+"/"T"/"F" buttons.
+        /// It gates the watch button and the watch mode, nothing else: a controller is still an
+        /// ordinary source of connections and keeps its bind buttons (ADR-0020).
         /// </summary>
         public readonly bool IsEventController;
 

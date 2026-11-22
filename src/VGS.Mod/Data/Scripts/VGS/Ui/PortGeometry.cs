@@ -7,6 +7,33 @@ using Vgs.Model;
 namespace Vgs.Ui
 {
     /// <summary>
+    /// One control of a card's button row (ADR-0020).
+    ///
+    /// The row is the card's whole vocabulary of actions: a button belongs to the *card*, not to
+    /// a port, and what it starts depends on the block's shape. Naming the buttons by the gesture
+    /// they start — rather than by the glyph they carry — is what lets the icon change (a letter
+    /// became a lightbulb) without every call site following it.
+    /// </summary>
+    public enum CardButtonKind
+    {
+        /// <summary>Starts a bind into the single fire group of a one-group toolbar.</summary>
+        BindSingle = 0,
+
+        /// <summary>Starts a bind into the "yes" group of a two-group toolbar.</summary>
+        BindYes = 1,
+
+        /// <summary>Starts a bind into the "no" group of a two-group toolbar.</summary>
+        BindNo = 2,
+
+        /// <summary>
+        /// Starts a watch: the controller will observe the block picked next (ADR-0017). Not a
+        /// connection — nothing is written into a toolbar — which is why it is the one button of
+        /// the row that is not about firing something.
+        /// </summary>
+        Watch = 3,
+    }
+
+    /// <summary>
     /// Where everything on a block card lives, in graph units.
     ///
     /// This is the single source of truth for the card's geometry, and it exists because two
@@ -15,14 +42,15 @@ namespace Vgs.Ui
     /// arithmetic in both places is how a port ends up drawn in one spot and clickable in
     /// another — a defect that is invisible in the code and obvious in the game.
     ///
-    /// <b>The shape.</b> A card is a label (name + subtype) with a round "+" on its right.
-    /// Ports are rectangles as wide as the card, hanging underneath it, flush against each
-    /// other. Each bar carries two round controls of the same size, one at each end:
+    /// <b>The shape.</b> A card is a label (name + subtype) with its buttons in a horizontal row
+    /// along the right edge, vertically centred. Ports are rectangles as wide as the card,
+    /// hanging underneath it, flush against each other. Each bar carries two round controls of
+    /// the same size, one at each end:
     ///
     /// <code>
     ///   +--------------------------+
-    ///   | Reactor              (o) |   card: name, subtype, "+"
-    ///   | LargeBlockReactor        |
+    ///   | Reactor            (T) (F) |  card: name, subtype, and a right-hand button row
+    ///   | LargeBlockReactor          |
     ///   +--------------------------+
     ///   | (x) Fuel Changed     (o) |   output bar: dot at the right (lines leave), "x" at the left
     ///   | (x) Out Of Fuel      (o) |
@@ -30,6 +58,12 @@ namespace Vgs.Ui
     ///   | (o) On Off           (x) |   input bar: dot at the left (lines arrive), "x" at the right
     ///   +--------------------------+
     /// </code>
+    ///
+    /// <b>All card buttons live in that row and nowhere else</b> (ADR-0020). Which buttons a card
+    /// has follows from what the block is: a timer gets one bind button, a sensor two (one per
+    /// fire group), an event controller three (the bell, then the two bind buttons). They share
+    /// one size and one vertical centre, so two cards side by side look like two instances of the
+    /// same control vocabulary instead of two different designs.
     ///
     /// Outputs sit immediately under the card, inputs under them, because the outgoing side
     /// belongs to the block itself while the incoming side is what other blocks do to it.
@@ -69,9 +103,10 @@ namespace Vgs.Ui
         ///
         /// The height is derived rather than stored because it follows from what the card has
         /// to show, and a stored height would need its own refresh path to stay in step with
-        /// the text. Everything positioned from the card — port stacks, the "#" anchor, the
-        /// "+"/"T"/"F" buttons, a group's frame, culling — already goes through
-        /// <see cref="CardRect"/>, so growing the card here moves them all at once.
+        /// the text. Everything positioned from the card — port stacks, the button row, a
+        /// group's frame, culling — already goes through <see cref="CardRect"/>, so growing the
+        /// card here moves them all at once. The buttons themselves do **not** grow with it:
+        /// their diameter comes from the standard card height (ADR-0020).
         /// </summary>
         public static float CardHeight(Node node)
         {
@@ -276,7 +311,7 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// True when the node shows the "true"/"false" pair instead of a single "+": its
+        /// True when the node shows the "yes"/"no" pair instead of a single bind button: its
         /// toolbar has two fire groups, so a connection has to say which list it joins.
         /// </summary>
         public static bool HasGroupButtons(Node node)
@@ -284,184 +319,298 @@ namespace Vgs.Ui
             return node != null && node.CanDriveBlocks && node.Toolbar != null && node.Toolbar.YesNo;
         }
 
-        /// <summary>
-        /// Radius of a bind button on this node, in the layout's vertical units.
-        ///
-        /// Derived from the node's own card height rather than from the constant alone, because
-        /// a controller's card is one line taller (ADR-0017): a disc sized for a short card and
-        /// centred on a tall one reads as a small dot floating on a big label. Scaling the radius
-        /// by the same factor keeps the disc the same fraction of the card it sits on, and leaves
-        /// every ordinary card exactly as it was.
-        /// </summary>
-        public static float BindButtonRadius(Node node, PortGroup group)
+        // ------------------------------------------------------------------ card button row
+
+        /// <summary>How many buttons this node's card row shows.</summary>
+        public static int CardButtonCount(Node node)
         {
-            float baseRadius = HasGroupButtons(node)
-                ? VgsConstants.GroupButtonRadius
-                : VgsConstants.PlusButtonRadius;
+            if (node == null) return 0;
 
-            if (node == null) return baseRadius;
+            int count = node.IsEventController ? 1 : 0;
+            if (!node.CanDriveBlocks) return count;
 
-            return baseRadius * (CardHeight(node) / VgsConstants.NodeHeight);
+            return count + (HasGroupButtons(node) ? 2 : 1);
         }
 
         /// <summary>
-        /// True when the node shows a bind button for this group, and where its centre is.
-        /// The button is the entry point of bind mode: it exists only for blocks that can
-        /// drive other blocks, so a conveyor tube has no button at all.
-        ///
-        /// A single-group toolbar gets one round "+" centred on the card. A yes/no toolbar
-        /// gets two smaller discs stacked on the right edge — "T" above, "F" below — because
-        /// the two lists are independent and the user must pick one before the target.
-        ///
-        /// <paramref name="aspectX"/> is needed because the buttons are round on screen: their
-        /// horizontal half-extent is <c>radius * aspectX</c>, and that — not the vertical
-        /// radius — is what has to be subtracted from the card's right border. Using the
-        /// vertical radius here would make the button's distance from the border depend on the
-        /// window's shape, so it would look inset on a wide monitor and flush on a 4:3 one.
+        /// True when this node's card carries <paramref name="kind"/>. A button exists only where
+        /// the gesture it starts can actually happen: the watch button only on a controller, the
+        /// bind buttons only on a block that drives others, and the yes/no pair only where the
+        /// toolbar has two lists.
         /// </summary>
-        public static bool TryBindButton(Node node, PortGroup group, float aspectX, out Vector2 center)
+        public static bool HasCardButton(Node node, CardButtonKind kind)
         {
-            center = Vector2.Zero;
-            if (node == null || !node.CanDriveBlocks) return false;
+            if (node == null) return false;
 
-            if (aspectX <= 0f) aspectX = 1f;
-
-            float rightEdge = node.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin;
-
-            if (!HasGroupButtons(node))
+            switch (kind)
             {
-                if (group != PortGroup.Single) return false;
+                case CardButtonKind.Watch:
+                    return node.IsEventController;
 
-                float halfWidth = BindButtonRadius(node, group) * aspectX;
-                center = new Vector2(rightEdge - halfWidth,
-                                     node.Position.Y + CardHeight(node) * 0.5f);
+                case CardButtonKind.BindYes:
+                case CardButtonKind.BindNo:
+                    return node.CanDriveBlocks && HasGroupButtons(node);
+
+                case CardButtonKind.BindSingle:
+                    return node.CanDriveBlocks && !HasGroupButtons(node);
+
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Left-to-right position of a button in its node's row, or -1 when the node does not show
+        /// it. The order is fixed — watch, "yes", "no", single bind — so a given button keeps its
+        /// side of the row no matter which other buttons the card happens to carry.
+        /// </summary>
+        public static int CardButtonIndex(Node node, CardButtonKind kind)
+        {
+            if (!HasCardButton(node, kind)) return -1;
+
+            if (kind == CardButtonKind.Watch) return 0;
+
+            int at = node.IsEventController ? 1 : 0;
+            if (kind == CardButtonKind.BindYes) return at;
+            if (kind == CardButtonKind.BindNo) return at + 1;
+            return at;   // BindSingle: the only bind button of a one-group toolbar
+        }
+
+        /// <summary>The kind of the button at <paramref name="index"/>, counting from the left.</summary>
+        public static bool TryCardButtonAt(Node node, int index, out CardButtonKind kind)
+        {
+            kind = CardButtonKind.BindSingle;
+            if (node == null || index < 0 || index >= CardButtonCount(node)) return false;
+
+            if (node.IsEventController && index == 0)
+            {
+                kind = CardButtonKind.Watch;
                 return true;
             }
 
-            if (group == PortGroup.Single) return false;
+            if (!HasGroupButtons(node))
+            {
+                kind = CardButtonKind.BindSingle;
+                return true;
+            }
 
-            float halfGroupWidth = BindButtonRadius(node, group) * aspectX;
-            float centreY = group == PortGroup.Yes
-                ? VgsConstants.GroupButtonTrueY
-                : VgsConstants.GroupButtonFalseY;
-
-            center = new Vector2(rightEdge - halfGroupWidth,
-                                 node.Position.Y + CardHeight(node) * centreY);
+            kind = index == (node.IsEventController ? 1 : 0)
+                ? CardButtonKind.BindYes
+                : CardButtonKind.BindNo;
             return true;
         }
 
-        /// <summary>
-        /// Which bind button of this node is under a graph-space point, if any. The tolerance
-        /// is slightly larger than the drawn radius: a small circle is a hard target with a
-        /// mouse, and a near-miss that starts bind mode is much cheaper than a click that does
-        /// nothing.
-        ///
-        /// The test is done in a space where the button is actually round. In layout units it
-        /// is an ellipse (X and Y units are different lengths), so comparing a plain Euclidean
-        /// distance would make the button easy to hit from above and hard from the side.
-        /// </summary>
-        public static bool HitBindButton(Node node, Vector2 graphPoint, float aspectX, out PortGroup group)
+        /// <summary>The bind group a card button starts, if it starts one at all.</summary>
+        public static bool TryGroupOf(CardButtonKind kind, out PortGroup group)
         {
-            group = PortGroup.Single;
-            if (node == null || !node.CanDriveBlocks) return false;
-
-            if (aspectX <= 0f) aspectX = 1f;
-
-            if (!HasGroupButtons(node))
+            switch (kind)
             {
-                // The single button is drawn as a square icon whose corners reach further from
-                // the centre than its sides do, so it gets a wider tolerance than the two discs.
-                // Otherwise the visible corners would be unclickable — see BindHitTolerance.
-                return Hits(node, PortGroup.Single, graphPoint, aspectX,
-                            VgsConstants.BindHitToleranceSingle);
+                case CardButtonKind.BindYes:
+                    group = PortGroup.Yes;
+                    return true;
+                case CardButtonKind.BindNo:
+                    group = PortGroup.No;
+                    return true;
+                case CardButtonKind.BindSingle:
+                    group = PortGroup.Single;
+                    return true;
+                default:
+                    group = PortGroup.Single;
+                    return false;
             }
-
-            // The two discs do not overlap, but the hit tolerance could make them touch, so
-            // "true" is tested first and wins a tie — it is the common case.
-            if (Hits(node, PortGroup.Yes, graphPoint, aspectX, VgsConstants.BindHitTolerancePair))
-            {
-                group = PortGroup.Yes;
-                return true;
-            }
-            if (Hits(node, PortGroup.No, graphPoint, aspectX, VgsConstants.BindHitTolerancePair))
-            {
-                group = PortGroup.No;
-                return true;
-            }
-            return false;
-        }
-
-        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX,
-                                 float tolerance)
-        {
-            Vector2 center;
-            if (!TryBindButton(node, group, aspectX, out center)) return false;
-
-            float r = BindButtonRadius(node, group) * tolerance;
-            float dx = (graphPoint.X - center.X) / aspectX;
-            float dy = graphPoint.Y - center.Y;
-            return dx * dx + dy * dy <= r * r;
         }
 
         /// <summary>
-        /// Rectangle of the square "#" anchor on an event controller's card (ADR-0017), in
-        /// graph units. False for every other node: the anchor exists only where a watch list
-        /// can exist.
+        /// Rectangle of one button of a node's card row, in graph units, or false when the node
+        /// does not show that button.
         ///
-        /// The shape is a square on <em>screen</em>: the side is 75% of the card's height, and
-        /// its horizontal extent goes through the aspect correction, exactly like a disc's
-        /// horizontal half-width. The left gap is four screen pixels
-        /// (<see cref="VgsConstants.WatchButtonMarginPixels"/>), converted to X units the same
-        /// way — a gap written as an X length would be four pixels on one monitor and seven on
-        /// another.
+        /// <b>The row.</b> Every card control — the bind button, the yes/no pair and the
+        /// controller's watch button — sits in one horizontal row along the card's right edge,
+        /// vertically centred on the card (ADR-0020). The row is right-anchored: buttons are
+        /// packed from the card's right border leftwards, so a card with one button keeps it
+        /// exactly where the "+" has always been, and a card with three grows leftwards.
+        ///
+        /// <b>One size for all of them.</b> The diameter comes from
+        /// <see cref="VgsConstants.CardButtonDiameter"/> — a fraction of the *standard* card
+        /// height, not of this card's own height. A controller's card is one line taller because
+        /// it carries a description, and its buttons must not grow with it: two cards side by
+        /// side showing two button sizes is the state this row replaced.
+        ///
+        /// <paramref name="aspectX"/> is the client height ÷ width. A button is round on screen,
+        /// so its horizontal half-extent is <c>radius * aspectX</c>; the gaps and the margin from
+        /// the card's border go through the same correction, which is what makes them the same
+        /// number of screen pixels on a 16:9 and on a 4:3 window.
         /// </summary>
-        public static bool TryWatchButtonRect(Node node, float aspectX, out Vector2 topLeft,
-                                              out Vector2 size)
+        public static bool TryCardButtonRect(Node node, CardButtonKind kind, float aspectX,
+                                             out Vector2 topLeft, out Vector2 size)
         {
             topLeft = Vector2.Zero;
             size = Vector2.Zero;
-            if (node == null || !node.IsEventController) return false;
+
+            int index = CardButtonIndex(node, kind);
+            if (index < 0) return false;
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            float cardHeight = CardHeight(node);
-            float side = cardHeight * VgsConstants.WatchButtonHeightRatio;
+            float diameter = VgsConstants.CardButtonDiameter;
+            float halfWidth = VgsConstants.CardButtonRadius * aspectX;
+            float stride = halfWidth * 2f + VgsConstants.CardButtonGap * aspectX;
 
-            topLeft = new Vector2(node.Position.X + VgsConstants.WatchButtonMargin * aspectX,
-                                  node.Position.Y + (cardHeight - side) * 0.5f);
-            size = new Vector2(side * aspectX, side);
+            float right = node.Position.X + VgsConstants.NodeWidth
+                          - VgsConstants.CardButtonMargin * aspectX;
+            int fromRight = CardButtonCount(node) - 1 - index;
+
+            float centreX = right - halfWidth - fromRight * stride;
+            float centreY = node.Position.Y + CardHeight(node) * 0.5f;
+
+            size = new Vector2(diameter * aspectX, diameter);
+            topLeft = new Vector2(centreX - size.X * 0.5f, centreY - size.Y * 0.5f);
             return true;
         }
 
-        /// <summary>
-        /// Centre of the "#" anchor: the point a watch line starts from while the user is
-        /// choosing a block. Once the block is attached the line leaves the watch port's dot
-        /// instead, because the port is then what the connection belongs to (ADR-0017).
-        /// </summary>
-        public static bool TryWatchButton(Node node, float aspectX, out Vector2 center)
+        /// <summary>Centre of one button of a node's card row, in graph units.</summary>
+        public static bool TryCardButton(Node node, CardButtonKind kind, float aspectX,
+                                         out Vector2 center)
         {
             center = Vector2.Zero;
 
             Vector2 topLeft, size;
-            if (!TryWatchButtonRect(node, aspectX, out topLeft, out size)) return false;
+            if (!TryCardButtonRect(node, kind, aspectX, out topLeft, out size)) return false;
 
             center = topLeft + size * 0.5f;
             return true;
         }
 
         /// <summary>
-        /// True when a graph-space point is on the "#" anchor. The rectangle itself is the
-        /// target — it is already the square the player sees, so no tolerance correction is
-        /// needed here.
+        /// Rectangle covering the whole button row of a node, in graph units. False when the card
+        /// carries no buttons.
+        ///
+        /// It exists for the one consumer that has to know where the row *ends* rather than where
+        /// a button is: the card's text is clipped to the span left of it, so a long block name
+        /// can neither run under a button nor spill over the card.
         /// </summary>
-        public static bool HitWatchButton(Node node, Vector2 graphPoint, float aspectX)
+        public static bool TryCardButtonRow(Node node, float aspectX,
+                                            out Vector2 topLeft, out Vector2 size)
         {
-            if (node == null || !node.IsEventController) return false;
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
 
-            Vector2 topLeft, size;
-            if (!TryWatchButtonRect(node, aspectX, out topLeft, out size)) return false;
-            return Contains(topLeft, size, graphPoint);
+            int count = CardButtonCount(node);
+            if (count == 0) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float diameter = VgsConstants.CardButtonDiameter;
+            float width = count * diameter * aspectX
+                          + (count - 1) * VgsConstants.CardButtonGap * aspectX;
+
+            float right = node.Position.X + VgsConstants.NodeWidth
+                          - VgsConstants.CardButtonMargin * aspectX;
+
+            size = new Vector2(width, diameter);
+            topLeft = new Vector2(right - width,
+                                  node.Position.Y + CardHeight(node) * 0.5f - diameter * 0.5f);
+            return true;
         }
+
+        /// <summary>
+        /// Which button of this node's row is under a graph-space point, if any.
+        ///
+        /// The tolerance is larger than the drawn button: a small target is hard with a mouse, and
+        /// a near-miss that starts the gesture is much cheaper than a click that does nothing. At
+        /// that tolerance the targets of one row overlap, so the *nearest* centre wins rather than
+        /// the first one tested: a click in the gap between "yes" and "no" then lands on the
+        /// closer of the two instead of on whichever the loop reached first.
+        ///
+        /// The test is done in a space where the button is actually round. In layout units it is
+        /// an ellipse — X and Y units are different lengths — so a plain Euclidean distance would
+        /// make the button easy to hit from above and hard from the side.
+        /// </summary>
+        public static bool HitCardButton(Node node, Vector2 graphPoint, float aspectX,
+                                        out CardButtonKind kind)
+        {
+            kind = CardButtonKind.BindSingle;
+
+            int count = CardButtonCount(node);
+            if (count == 0) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float limit = VgsConstants.CardButtonRadius * VgsConstants.CardButtonHitTolerance;
+            float best = limit * limit;
+            bool found = false;
+
+            for (int i = 0; i < count; i++)
+            {
+                CardButtonKind candidate;
+                if (!TryCardButtonAt(node, i, out candidate)) continue;
+
+                Vector2 center;
+                if (!TryCardButton(node, candidate, aspectX, out center)) continue;
+
+                float dx = (graphPoint.X - center.X) / aspectX;
+                float dy = graphPoint.Y - center.Y;
+                float distance = dx * dx + dy * dy;
+
+                // "Not farther" rather than "nearer": an exact tie goes to the button tested
+                // last, which is the one further right. The rule only has to be *fixed* — a
+                // click in the gap must not depend on the order the row happens to be walked.
+                if (distance > best) continue;
+
+                best = distance;
+                kind = candidate;
+                found = true;
+            }
+
+            return found;
+        }
+
+        /// <summary>
+        /// Centre of the watch button, or false when the node is not a controller. The watch line
+        /// starts here while the player is choosing a block (ADR-0017): the port does not exist
+        /// yet, so the point the line leaves from is the button the player pressed.
+        /// </summary>
+        public static bool TryWatchButton(Node node, float aspectX, out Vector2 center)
+        {
+            return TryCardButton(node, CardButtonKind.Watch, aspectX, out center);
+        }
+
+        /// <summary>
+        /// Horizontal span of a card's text, in graph units: from the card's inner padding to the
+        /// left edge of the button row, less one gap.
+        ///
+        /// It exists so the two consumers cannot disagree about it: the draw pass clips the name,
+        /// the subtype and the status line to this span, and the offline gate asserts that the
+        /// span is wide enough to be a label rather than a stub. Deriving it in the draw pass
+        /// from the row rectangle is exactly how the gap ends up written in the wrong axis — the
+        /// gap is a vertical length and has to go through the aspect correction like every other
+        /// horizontal gap in this type.
+        ///
+        /// Returns false when the card has no buttons (the whole card is text, so there is no
+        /// span to compute) or when the row leaves no room at all.
+        /// </summary>
+        public static bool TryCardTextSpan(Node node, float aspectX, out float left, out float right)
+        {
+            left = 0f;
+            right = 0f;
+
+            Vector2 rowTopLeft, rowSize;
+            if (!TryCardButtonRow(node, aspectX, out rowTopLeft, out rowSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            left = node.Position.X + VgsConstants.NodeWidth * CardTextPaddingRatio;
+            right = rowTopLeft.X - VgsConstants.CardButtonTextGap * aspectX;
+            return right > left;
+        }
+
+        /// <summary>
+        /// Left padding of a card's text, as a fraction of the card's width. A fraction rather than
+        /// a constant because it has to scale with the card: the card is drawn wider than it is
+        /// tall, and a padding written in the layout's vertical units would look inset on a narrow
+        /// window and flush on a wide one.
+        /// </summary>
+        public const float CardTextPaddingRatio = 0.05f;
 
         /// <summary>
         /// Rectangle of the bar for one watch target, in graph units (ADR-0017). False when the

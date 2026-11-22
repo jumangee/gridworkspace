@@ -5,6 +5,14 @@
 Исходники иконок: `data/fontawesome-free-7.3.1-desktop` (Font Awesome Free 7.3.1, в git не
 хранится).
 
+> **Область действия.** Это запись исследования, а не текущее решение. Исследование
+> проводилось для трёх иконок (`circle-dot`, `square-plus`, `xmark`); сейчас мод поставляет
+> **шесть**, и контролы карточки перерисованы иначе — см. [ADR-0020](../adr/0020-card-button-row.md)
+> и каталог [`07-icon-catalog.md`](../07-icon-catalog.md). Упоминания `PlusButtonRadius`,
+> `GroupButtonRadius`, `TryBindButton`, `DrawPlusButton` ниже описывают состояние на момент
+> проверки; действующие константы и методы — `CardButtonDiameter`, `CardButtonRadius`,
+> `PortGeometry.TryCardButton`, `VgsEditorScreen.DrawCardButton`.
+
 Вопрос: можно ли поставить в редактор настоящие иконки Font Awesome —
 `circle-dot` (Solid) вместо круга-«точки порта», `square-plus` (Regular) вместо «+» создания
 исходящего порта и `xmark` (Solid) вместо «x» удаления связи — так, чтобы они подчинялись

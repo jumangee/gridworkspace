@@ -47,6 +47,22 @@ namespace Vgs.IconAtlasBuilder
 
         private const int SubSamples = 8;
 
+        /// <summary>
+        /// Side of one catalogue preview tile, in pixels. The preview exists because the texture
+        /// itself is white ink on transparency: every Markdown viewer paints on white, so a table
+        /// of the shipped PNGs would be a table of blank cells.
+        /// </summary>
+        private const int PreviewSize = 96;
+
+        /// <summary>Margin of a preview tile, so the icon's ink is 64 of the 96 pixels.</summary>
+        private const int PreviewInset = 16;
+
+        /// <summary>Preview background: the editor canvas colour (VgsEditorScreen.ColCanvas).</summary>
+        private static readonly byte[] PreviewBackground = { 18, 22, 29 };
+
+        /// <summary>Preview ink: the card button's resting colour (ColPlusFill).</summary>
+        private static readonly byte[] PreviewInk = { 244, 247, 252 };
+
         /// <summary>One line of <c>icons.txt</c>: the C# name, the SVG file, and what it means.</summary>
         private sealed class Entry
         {
@@ -72,6 +88,7 @@ namespace Vgs.IconAtlasBuilder
             string textureDir = Path.Combine(outRoot, @"src\VGS.Mod\Textures\VGS\Icons");
             string sbcPath = Path.Combine(outRoot, @"src\VGS.Mod\Data\GuiTextures.sbc");
             string codePath = Path.Combine(outRoot, @"src\VGS.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs");
+            string previewDir = Path.Combine(outRoot, @"docs\icons");
 
             if (!File.Exists(manifest))
             {
@@ -84,6 +101,7 @@ namespace Vgs.IconAtlasBuilder
             Directory.CreateDirectory(textureDir);
             Directory.CreateDirectory(Path.GetDirectoryName(sbcPath));
             Directory.CreateDirectory(Path.GetDirectoryName(codePath));
+            Directory.CreateDirectory(previewDir);
 
             Console.WriteLine("icon textures: " + entries.Count + " icon(s), " +
                               TextureSize + "x" + TextureSize + " each, inset " + Inset + " px");
@@ -112,6 +130,11 @@ namespace Vgs.IconAtlasBuilder
                 string path = Path.Combine(textureDir, entry.Id + ".png");
                 PngWriter.Report report = PngWriter.Write(path, cell.Alpha, TextureSize, TextureSize);
 
+                // The catalogue preview is a second, independent rasterisation at the size a
+                // reader sees it — not a downscale of the texture. A preview that merely shrank
+                // the 256 px texture would hide a rasteriser defect behind the resampler.
+                WritePreview(Path.Combine(previewDir, entry.Id + ".png"), shape);
+
                 Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
                     "  {0,-12} {1,-26} contours {2,2}  points {3,4}  ink {4:0.0}x{5:0.0} " +
                     "texture x{6:0.000}  {7:0.0} KB",
@@ -125,8 +148,41 @@ namespace Vgs.IconAtlasBuilder
             File.WriteAllText(codePath, BuildCode(entries), new UTF8Encoding(false));
             Console.WriteLine("  wrote " + Path.GetFileName(codePath));
 
+            Console.WriteLine("  wrote " + entries.Count + " catalogue preview(s) in docs\\icons");
+
             Console.WriteLine("ICONS OK");
             return 0;
+        }
+
+        /// <summary>
+        /// Writes the catalogue preview of one icon: the same contours, rasterised at the size a
+        /// reader sees, composited over the canvas colour so the light ink is visible on any
+        /// background a Markdown viewer paints.
+        /// </summary>
+        private static void WritePreview(string path, IconShape shape)
+        {
+            IconRaster.Cell cell = IconRaster.Render(shape, PreviewSize, PreviewInset, SubSamples);
+
+            var rgba = new byte[PreviewSize * PreviewSize * 4];
+            for (int i = 0; i < cell.Alpha.Length; i++)
+            {
+                float alpha = cell.Alpha[i] / 255f;
+
+                rgba[i * 4] = Composite(PreviewBackground[0], PreviewInk[0], alpha);
+                rgba[i * 4 + 1] = Composite(PreviewBackground[1], PreviewInk[1], alpha);
+                rgba[i * 4 + 2] = Composite(PreviewBackground[2], PreviewInk[2], alpha);
+                rgba[i * 4 + 3] = 255;
+            }
+
+            PngWriter.WriteRgba(path, rgba, PreviewSize, PreviewSize);
+        }
+
+        private static byte Composite(byte background, byte ink, float alpha)
+        {
+            float value = background + (ink - background) * alpha;
+            if (value < 0f) value = 0f;
+            if (value > 255f) value = 255f;
+            return (byte)(value + 0.5f);
         }
 
         private static List<Entry> ReadManifest(string path)

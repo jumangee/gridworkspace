@@ -403,4 +403,26 @@ if ($textureProblems.Count -gt 0) {
 
 Write-Host "  $($declaredNames.Count) texture(s): 8-bit RGBA PNG, ${declaredSize}px, CRCs verified, registered and referenced"
 
+# ---- and the catalogue must describe exactly the icons that are shipped (ADR-0020) ----
+#
+# `-Verify` proves the artefacts match their sources and the block above proves each PNG is
+# loadable. Neither says anything about docs/07-icon-catalog.md, which is what a reader uses to
+# find out which control draws which icon: an icon added to the manifest without a catalogue row,
+# or a catalogue row left behind by a removed icon, is a document that lies about the mod. The
+# check is a set comparison in both directions plus "every icon is drawn somewhere", and it runs
+# here rather than by memory so that forgetting it is not an option.
+Write-Host ''
+Write-Host '=== icon catalogue matches the shipped icons (ADR-0020) ==='
+$catalogGate = Join-Path $PSScriptRoot 'check-icon-catalog.ps1'
+if (-not (Test-Path $catalogGate)) {
+    Write-Host 'OFFLINE CHECK INCONCLUSIVE — check-icon-catalog.ps1 is missing' -ForegroundColor Red
+    exit 1
+}
+
+& $catalogGate
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'OFFLINE FAILED — docs/07-icon-catalog.md does not match tools/icon-atlas/icons.txt' -ForegroundColor Red
+    exit 1
+}
+
 exit 0

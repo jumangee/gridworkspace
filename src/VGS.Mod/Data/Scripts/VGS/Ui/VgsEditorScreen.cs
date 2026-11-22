@@ -21,24 +21,26 @@ namespace Vgs.Ui
     /// "The type or member 'MyGuiScreenBase' is prohibited". <see cref="MyModScreen"/> lives
     /// in <c>Sandbox.ModAPI</c>, which is whitelisted wholesale.
     ///
-    /// <b>Interaction model</b> (three modes, one pointer):
+    /// <b>Interaction model</b> (four modes, one pointer):
     ///
     ///  * <i>idle</i> — left button selects and drags cards, right/middle button pans, wheel
-    ///    zooms. Clicking the round "+" on a card switches to bind mode; clicking the "x" on a
-    ///    port deletes that port's connections. A group's title strip is a drag handle: grabbing
-    ///    it moves every member card by the same offset, keeping the cluster's internal layout
-    ///    (ADR-0016).
+    ///    zooms. Clicking one of the card's right-hand buttons switches to bind or watch mode
+    ///    (ADR-0020); clicking the "x" on a port deletes that port's connections. A group's
+    ///    title strip is a drag handle: grabbing it moves every member card by the same offset,
+    ///    keeping the cluster's internal layout (ADR-0016).
     ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
     ///    The button does not have to be held. Left click on another card opens the action
     ///    menu for it; right click cancels; left click elsewhere cancels.
+    ///  * <i>watch</i> — the same gesture for observation (ADR-0017): a dashed line follows the
+    ///    pointer from the controller's bell, and the block clicked joins its watch list.
     ///  * <i>menu</i> — a list of the target's terminal actions. Left click on a row creates
     ///    the connection and leaves bind mode; right click cancels bind mode; wheel scrolls
     ///    long lists; left click anywhere else closes the menu but keeps bind mode.
     ///
-    /// The mode is explicit state (<see cref="_bindSource"/>, <see cref="_menuTarget"/>)
-    /// rather than a boolean per button, because the three modes are mutually exclusive: a
-    /// drag started while binding would fight the line for the pointer, and a pan started
-    /// while the menu is open would move the world out from under it.
+    /// The mode is explicit state (<see cref="_bindSource"/>, <see cref="_watchSource"/>,
+    /// <see cref="_menuTarget"/>) rather than a boolean per button, because the modes are
+    /// mutually exclusive: a drag started while binding would fight the line for the pointer,
+    /// and a pan started while the menu is open would move the world out from under it.
     ///
     /// <b>Client-area coordinates.</b> Every rectangle in this file is 0..1 of the window,
     /// which is what the player thinks of as the screen and what keeps the layout resolution
@@ -104,10 +106,11 @@ namespace Vgs.Ui
         private static readonly Color ColGroupTitle = new Color(90, 98, 112, 240);
         private static readonly Color ColGroupSelected = new Color(255, 170, 60, 255);
 
-        // The "+" button is drawn inverted: a near-white disc with the plus cut out in the
-        // card's own colour (ColNode). White because a control that starts a modal gesture has
-        // to be the brightest thing on the canvas; inverted because a light glyph on a dark
-        // disc disappears at low zoom, while a dark glyph on white stays legible.
+        // A card's buttons are bare icons in the light "control" colour, warming to ColPlusFillHot
+        // under the pointer. Light, because a control that starts a modal gesture has to be the
+        // brightest thing on the canvas; bare, because an icon carries its own shape and a disc
+        // behind it would be a second, louder shape (ADR-0020, and ADR-0019 §5 for the same
+        // reversal on the port's "x").
         private static readonly Color ColPlusFill = new Color(244, 247, 252, 255);
         private static readonly Color ColPlusFillHot = new Color(255, 214, 140, 255);
         private static readonly Color ColMenu = new Color(26, 32, 42, 250);
@@ -211,12 +214,9 @@ namespace Vgs.Ui
         ///
         /// The line is the only feedback under the cursor at the moment of a refused attach, so
         /// it turns red instead of the mode ending: the next click can still land on a block
-        /// that fits, and the player does not have to press "#" again.
+        /// that fits, and the player does not have to press the bell again.
         /// </summary>
         private int _watchErrorUntilFrame;
-
-        /// <summary>Controller whose "#" anchor is under the pointer, or null.</summary>
-        private Node _hoverWatch;
 
         /// <summary>Card whose action menu is open. Non-null implies bind mode.</summary>
         private Node _menuTarget;
@@ -242,10 +242,18 @@ namespace Vgs.Ui
 
         private bool _mouseValid;
         private Node _hoverNode;
-        private Node _hoverPlus;
 
-        /// <summary>Which of the hovered node's bind buttons is under the pointer.</summary>
-        private PortGroup _hoverGroup;
+        /// <summary>
+        /// Node whose card button row is under the pointer, or null, and which button of it.
+        ///
+        /// One pair of fields for the whole row rather than one per gesture: the row is a single
+        /// control group (ADR-0020), and a highlight that could name two buttons at once — one
+        /// "bind" field and one "watch" field disagreeing about the same pointer — is exactly the
+        /// defect the pair replaces.
+        /// </summary>
+        private Node _hoverButton;
+
+        private CardButtonKind _hoverButtonKind;
 
         /// <summary>
         /// Node whose port carries the remove button under the pointer, or null. Tracked
@@ -541,10 +549,9 @@ namespace Vgs.Ui
                 _cullText = null;
                 _gridNameCache = null;
                 _hoverNode = null;
-                _hoverPlus = null;
+                _hoverButton = null;
                 _hoverRemoveNode = null;
                 _hoverRemovePort = null;
-                _hoverWatch = null;
                 _hoverWatchRemoveNode = null;
                 _hoverWatchRemoveTarget = null;
                 _warningText = null;
@@ -751,7 +758,7 @@ namespace Vgs.Ui
             // write into no longer exists.
             if (_watchSource != null && !_graph.ContainsNode(_watchSource)) CancelWatch();
 
-            if (_hoverWatch != null && !_graph.ContainsNode(_hoverWatch)) _hoverWatch = null;
+            if (_hoverButton != null && !_graph.ContainsNode(_hoverButton)) _hoverButton = null;
             if (_hoverWatchRemoveNode != null && !_graph.ContainsNode(_hoverWatchRemoveNode))
             {
                 _hoverWatchRemoveNode = null;
@@ -910,7 +917,7 @@ namespace Vgs.Ui
 
             if (_panning && !rightDown && !middleDown) _panning = false;
 
-            // ---- hover: the remove button, the bind button and the card ----
+            // ---- hover: the remove button, the card's button row and the card ----
             UpdateHover(mouse, canvasTopLeft, canvasSize);
 
             if (leftNew && insideCanvas)
@@ -938,23 +945,23 @@ namespace Vgs.Ui
                     return;
                 }
 
-                // The "#" anchor sits on the card's left edge, where the text starts, so it is
-                // resolved before the card: starting a watch instead of a drag is the whole
-                // point of the button (ADR-0017).
-                Node watchButton = HitTestWatchButton(graphPos);
-                if (watchButton != null)
+                // The card's button row is resolved before the card itself: every button sits on
+                // the card, and starting a gesture instead of a drag is the whole point of it
+                // (ADR-0020). Which button it was decides which gesture starts — a bell starts a
+                // watch, a lightbulb or a plus starts a bind.
+                CardButtonKind button;
+                Node buttonNode = HitTestCardButton(graphPos, out button);
+                if (buttonNode != null)
                 {
-                    BeginWatch(watchButton);
-                    return;
-                }
-
-                // The bind button wins over the card underneath: it sits on the card's right
-                // edge and starting a drag instead of a bind would be maddening.
-                PortGroup group;
-                Node plus = HitTestBindButton(graphPos, out group);
-                if (plus != null)
-                {
-                    BeginBind(plus, group);
+                    PortGroup group;
+                    if (PortGeometry.TryGroupOf(button, out group))
+                    {
+                        BeginBind(buttonNode, group);
+                    }
+                    else
+                    {
+                        BeginWatch(buttonNode);
+                    }
                     return;
                 }
 
@@ -1133,8 +1140,7 @@ namespace Vgs.Ui
             // happens to be scrolled underneath: the bars are chrome, and the click there is
             // a click on chrome.
             _hoverNode = insideCanvas ? HitTest(graphPos) : null;
-            _hoverPlus = null;
-            _hoverWatch = null;
+            _hoverButton = null;
 
             // The remove button is a click target of the idle mode only: while binding, every
             // click picks the target, and a bar (with its button) counts as its block. Clearing
@@ -1171,10 +1177,10 @@ namespace Vgs.Ui
         /// Input while a watch is being attached to a controller (ADR-0017).
         ///
         /// The gesture is the bind's twin and deliberately so: a line follows the pointer from
-        /// the "#" anchor, the left button picks the block, the right button and Esc cancel, the
-        /// middle button still pans so a target off-screen can be reached without losing the
-        /// gesture. What differs is what a click *means*: no action menu opens, because there is
-        /// no action to choose — the controller only observes.
+        /// the controller's bell, the left button picks the block, the right button and Esc
+        /// cancel, the middle button still pans so a target off-screen can be reached without
+        /// losing the gesture. What differs is what a click *means*: no action menu opens,
+        /// because there is no action to choose — the controller only observes.
         /// </summary>
         private void HandleWatchInput(Vector2 mouse)
         {
@@ -1208,8 +1214,7 @@ namespace Vgs.Ui
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
 
             _hoverNode = insideCanvas ? HitTest(graphPos) : null;
-            _hoverPlus = null;
-            _hoverWatch = null;
+            _hoverButton = null;
 
             // The port controls are idle-mode targets only: while a watch is being attached,
             // every click picks a block, and a bar counts as its block.
@@ -1232,7 +1237,7 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Starts watch mode from a controller's "#" anchor. Refuses on a node that is not a
+        /// Starts watch mode from a controller's watch button. Refuses on a node that is not a
         /// controller, and on one whose list cannot be written from this machine — telling the
         /// player before they aim at a block rather than after.
         /// </summary>
@@ -1261,7 +1266,7 @@ namespace Vgs.Ui
             if (_watchSource != null) VgsLog.Debug("watch mode cancelled");
 
             _watchSource = null;
-            _hoverWatch = null;
+            _hoverButton = null;
             _hoverNode = null;
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
@@ -1547,7 +1552,7 @@ namespace Vgs.Ui
             _bindSource = null;
             _bindPort = null;
             _hoverNode = null;
-            _hoverWatch = null;
+            _hoverButton = null;
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
             _panning = false;
@@ -1566,7 +1571,7 @@ namespace Vgs.Ui
             // The target card keeps the hover outline while its menu is open, so it is obvious
             // which of several similar blocks the list belongs to.
             _hoverNode = target;
-            _hoverPlus = null;
+            _hoverButton = null;
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
 
@@ -2008,32 +2013,27 @@ namespace Vgs.Ui
             return null;
         }
 
-        /// <summary>Topmost node whose bind button is under the pointer, and which one.</summary>
-        private Node HitTestBindButton(Vector2 graphPoint, out PortGroup group)
+        /// <summary>
+        /// Topmost node whose card button row is under the pointer, and which of its buttons.
+        ///
+        /// One test for the whole row, because the row is one control group (ADR-0020): the
+        /// watch button, the yes/no pair and the single bind button differ only in the gesture
+        /// they start, so resolving them separately would mean three loops over the same nodes
+        /// and an ordering question between them.
+        /// </summary>
+        private Node HitTestCardButton(Vector2 graphPoint, out CardButtonKind kind)
         {
-            group = PortGroup.Single;
+            kind = CardButtonKind.BindSingle;
             float aspect = VgsScreenDraw.ClientAspect;
             IList<Node> nodes = _graph.Nodes;
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
-                PortGroup hit;
-                if (PortGeometry.HitBindButton(nodes[i], graphPoint, aspect, out hit))
+                CardButtonKind hit;
+                if (PortGeometry.HitCardButton(nodes[i], graphPoint, aspect, out hit))
                 {
-                    group = hit;
+                    kind = hit;
                     return nodes[i];
                 }
-            }
-            return null;
-        }
-
-        /// <summary>Topmost node whose "#" watch anchor is under the pointer, or null.</summary>
-        private Node HitTestWatchButton(Vector2 graphPoint)
-        {
-            float aspect = VgsScreenDraw.ClientAspect;
-            IList<Node> nodes = _graph.Nodes;
-            for (int i = nodes.Count - 1; i >= 0; i--)
-            {
-                if (PortGeometry.HitWatchButton(nodes[i], graphPoint, aspect)) return nodes[i];
             }
             return null;
         }
@@ -2084,7 +2084,7 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Refreshes the hover targets used for the highlight of a card, of its bind button and
+        /// Refreshes the hover targets used for the highlight of a card, of the buttons on it and
         /// of the remove button on one of its ports.
         ///
         /// Hover is recomputed from the pointer every input pass rather than cached until a
@@ -2101,8 +2101,7 @@ namespace Vgs.Ui
             if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse))
             {
                 _hoverNode = null;
-                _hoverPlus = null;
-                _hoverWatch = null;
+                _hoverButton = null;
                 return;
             }
 
@@ -2118,8 +2117,7 @@ namespace Vgs.Ui
                 _hoverRemoveNode = removeNode;
                 _hoverRemovePort = removePort;
                 _hoverNode = null;
-                _hoverPlus = null;
-                _hoverWatch = null;
+                _hoverButton = null;
                 return;
             }
 
@@ -2131,22 +2129,19 @@ namespace Vgs.Ui
                 _hoverWatchRemoveNode = watchRemoveNode;
                 _hoverWatchRemoveTarget = watchRemove;
                 _hoverNode = null;
-                _hoverPlus = null;
-                _hoverWatch = null;
+                _hoverButton = null;
                 return;
             }
 
-            // The "#" anchor before the card and before the bind buttons: it sits on the left
-            // edge, where a card click would otherwise start a drag.
-            _hoverWatch = HitTestWatchButton(graphPos);
-
-            PortGroup group;
-            _hoverPlus = HitTestBindButton(graphPos, out group);
-            _hoverGroup = group;
+            // The card's button row before the card: a button sits on the card, and a card
+            // highlight under a button would suggest a drag where a click starts a gesture.
+            CardButtonKind kind;
+            _hoverButton = HitTestCardButton(graphPos, out kind);
+            _hoverButtonKind = kind;
 
             // A card under a control is not "hovered": the control is the thing about to be
             // clicked, and highlighting the card as well would suggest a drag.
-            _hoverNode = (_hoverPlus == null && _hoverWatch == null) ? HitTest(graphPos) : null;
+            _hoverNode = _hoverButton == null ? HitTest(graphPos) : null;
         }
 
         // ------------------------------------------------------------------ drawing
@@ -2371,12 +2366,12 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws the watch line from the "#" anchor to the pointer while a watch is being
+        /// Draws the watch line from the controller's bell to the pointer while a watch is being
         /// attached, and the red refusal flash (ADR-0017 §5).
         ///
-        /// The line starts at the anchor's centre because the port does not exist yet: the
-        /// point the line leaves from is the point the player pressed, and the moment the port
-        /// appears the line moves to its dot.
+        /// The line starts at the button's centre because the port does not exist yet: the point
+        /// the line leaves from is the point the player pressed, and the moment the port appears
+        /// the line moves to its dot.
         /// </summary>
         private void DrawPendingWatchLine(Vector2 topLeft, Vector2 size)
         {
@@ -2479,7 +2474,8 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws one card: name, subtype, the optional "+", and its port bars.
+        /// Draws one card: name, subtype, the optional status line, its button row and its port
+        /// bars.
         ///
         /// The card is deliberately just a label. Ports are drawn *outside* it, as bars
         /// hanging underneath, and only the ones the user has actually connected — which is
@@ -2503,42 +2499,24 @@ namespace Vgs.Ui
                                         selected ? Hairline * 2f : Hairline);
 
             float zoomText = CardTextScale;
-            float pad = cardSize.X * 0.05f;
+            float pad = cardSize.X * PortGeometry.CardTextPaddingRatio;
             float textRight = cardSize.X - pad;
             float textLeft = pad;
 
-            // The "#" anchor occupies the left end of the card, so the labels start to its
-            // right instead of running underneath a square drawn on top of them (ADR-0017).
-            if (node.IsEventController)
-            {
-                Vector2 watchTopLeft, watchSize;
-                if (PortGeometry.TryWatchButtonRect(node, VgsScreenDraw.ClientAspect,
-                                                    out watchTopLeft, out watchSize))
-                {
-                    float rightInCard = watchTopLeft.X + watchSize.X - node.Position.X;
-                    textLeft = (rightInCard + VgsConstants.WatchButtonTextGap) * _zoom;
-                }
-            }
-
-            // The bind button occupies the right end of the card, so the labels must stop
-            // before it instead of running underneath a circle that is drawn on top of them.
+            // The card's buttons occupy the right end of the card — all of them, in one row
+            // (ADR-0020) — so the labels stop before the row instead of running underneath
+            // icons that are drawn on top of them.
             //
-            // The button is round on *screen*, which makes it an ellipse in layout units: its
-            // horizontal half-extent is radius × aspect, not radius. Reserving the vertical
-            // radius would leave the text running under the circle on any window that is not
-            // square — which is every window.
-            if (node.CanDriveBlocks)
+            // The span comes from `PortGeometry`, in graph units, and it is already
+            // aspect-corrected there: a button is round on *screen*, so its horizontal extent is
+            // radius × aspect, and the gap before the text is corrected the same way. Reserving
+            // the vertical radius would leave the text running under the icons on every window
+            // that is not square.
+            float spanLeft, spanRight;
+            if (PortGeometry.TryCardTextSpan(node, VgsScreenDraw.ClientAspect, out spanLeft, out spanRight))
             {
-                float radius = PortGeometry.BindButtonRadius(node, FirstGroupOf(node));
-
-                Vector2 buttonCenter;
-                if (PortGeometry.TryBindButton(node, FirstGroupOf(node), VgsScreenDraw.ClientAspect,
-                                               out buttonCenter))
-                {
-                    float halfWidth = VgsScreenDraw.AspectX(radius);
-                    float leftInCard = buttonCenter.X - node.Position.X - halfWidth;
-                    textRight = (leftInCard - VgsConstants.PlusButtonTextGap) * _zoom;
-                }
+                textLeft = (spanLeft - node.Position.X) * _zoom;
+                textRight = (spanRight - node.Position.X) * _zoom;
             }
 
             float textWidth = textRight - textLeft;
@@ -2570,43 +2548,9 @@ namespace Vgs.Ui
 
             DrawPortBars(node, border, clipTopLeft, clipSize);
 
-            // The bind buttons are drawn last so they are never covered by a port bar of a
+            // The card's buttons are drawn last so they are never covered by a port bar of a
             // neighbouring card that happens to be drawn later.
-            if (node.CanDriveBlocks) DrawBindButtons(node, clipTopLeft, clipSize);
-            if (node.IsEventController) DrawWatchButton(node, clipTopLeft, clipSize);
-        }
-
-        /// <summary>
-        /// Draws the square "#" anchor of an event controller (ADR-0017).
-        ///
-        /// <b>Square, unlike every other control on a card.</b> The round controls start
-        /// connections between blocks; this one attaches a block to a list the controller owns.
-        /// A third round disc on the same card would be indistinguishable from the other two at a
-        /// glance, and the shape is the cheapest difference that survives a dense canvas.
-        ///
-        /// Drawn inverted like the "+" and the "x" — a near-white square with the glyph in the
-        /// card's colour — for the same reason: a dark glyph on light stays legible at every
-        /// zoom, a light one on dark does not. The glyph is text, not geometry: a "#" is four
-        /// strokes, and the font draws it for free (the same call the "T"/"F" letters make).
-        /// </summary>
-        private void DrawWatchButton(Node node, Vector2 clipTopLeft, Vector2 clipSize)
-        {
-            Vector2 topLeft, size;
-            if (!PortGeometry.TryWatchButtonRect(node, VgsScreenDraw.ClientAspect, out topLeft, out size))
-            {
-                return;
-            }
-
-            Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
-            Vector2 screenSize = size * _zoom;
-
-            bool hot = ReferenceEquals(node, _hoverWatch);
-            VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize,
-                                      hot ? ColPlusFillHot : ColPlusFill);
-
-            Vector2 centre = screenTopLeft + screenSize * 0.5f;
-            VgsScreenDraw.TextCentered(VgsText.WatchGlyph, centre,
-                                       VgsConstants.WatchButtonGlyphScale * CardTextScale, ColNode);
+            DrawCardButtons(node, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -2672,12 +2616,6 @@ namespace Vgs.Ui
                                          clipTopLeft, clipSize);
                 }
             }
-        }
-
-        /// <summary>The group whose button sits highest on the card; used to reserve text width.</summary>
-        private static PortGroup FirstGroupOf(Node node)
-        {
-            return PortGeometry.HasGroupButtons(node) ? PortGroup.Yes : PortGroup.Single;
         }
 
         /// <summary>
@@ -2764,111 +2702,99 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws the control that starts bind mode.
+        /// Draws the card's button row: one icon per button, in the order the row is defined in
+        /// <see cref="PortGeometry"/> (ADR-0020).
         ///
-        /// Two shapes, and the difference is not decoration:
+        /// <b>One shape for every button.</b> All of them are bare icons of one size — no disc,
+        /// no square, no letter. Which icon it is says which gesture the button starts: a bell
+        /// starts a watch, a filled lightbulb binds the "yes" list, an outlined one the "no"
+        /// list, and a square-plus the single list of a block with one toolbar.
         ///
-        ///  * a single-group toolbar (a timer) gets one bind button centred on the card;
-        ///  * a yes/no toolbar (a sensor, an event controller) gets a "T" and an "F" stacked
-        ///    on the card's right edge, because the game keeps two independent lists of
-        ///    actions and a connection has to say which one it joins.
+        /// <b>One colour too.</b> Every button of the row is near-white at rest and warms to
+        /// <see cref="ColPlusFillHot"/> under the pointer — the same two states the "+" has
+        /// always had. The watch button used to be drawn in the watch yellow, on the theory that
+        /// colour should separate observation from action; in the game that made it the one
+        /// permanently yellow control on the canvas and it read as a state ("watching") rather
+        /// than as a button, at every zoom and whether or not the controller was watching
+        /// anything. Colour now marks what *happened* — the watch bars and the dashed line are
+        /// yellow — while a control's colour marks what the pointer is doing to it.
         ///
-        /// The single-group button is the Font Awesome <c>square-plus</c> icon (ADR-0019). It
-        /// carries no disc behind it: the icon is an outline, and knocking an outline out of a
-        /// filled disc leaves nothing to see. The T/F pair keeps its discs and its letters,
-        /// because a letter is the one thing a player already reads on the vanilla
-        /// toolbar-config screen, and because two small icons on one card edge would be
-        /// indistinguishable at the sizes they are drawn.
-        ///
-        /// When the atlas is missing, the previous geometry is drawn: a white disc with a plus cut
-        /// out of it. That is the only case — there is no size condition, so the button keeps the
-        /// same shape at every zoom (ADR-0019 §6).
+        /// When a texture is missing the button falls back to its old glyph — "+", "T", "F" or
+        /// "#" — in the same colour, so a missing atlas costs the shape of the mark and never
+        /// the control (ADR-0019 §6).
         /// </summary>
-        private void DrawBindButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawCardButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
         {
-            if (!PortGeometry.HasGroupButtons(node))
+            int count = PortGeometry.CardButtonCount(node);
+            for (int i = 0; i < count; i++)
             {
-                DrawPlusButton(node, PortGroup.Single, clipTopLeft, clipSize);
+                CardButtonKind kind;
+                if (!PortGeometry.TryCardButtonAt(node, i, out kind)) continue;
+                DrawCardButton(node, kind, clipTopLeft, clipSize);
+            }
+        }
+
+        /// <summary>Draws one button of a card's row: its icon, or its glyph when the icon is unavailable.</summary>
+        private void DrawCardButton(Node node, CardButtonKind kind, Vector2 clipTopLeft,
+                                    Vector2 clipSize)
+        {
+            Vector2 center;
+            if (!PortGeometry.TryCardButton(node, kind, VgsScreenDraw.ClientAspect, out center)) return;
+
+            Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
+
+            bool hot = ReferenceEquals(node, _hoverButton) && _hoverButtonKind == kind;
+            Color color = hot ? ColPlusFillHot : ColPlusFill;
+
+            float diameter = VgsConstants.CardButtonDiameter * _zoom;
+            if (VgsScreenDraw.Icon(IconOf(kind), screenCenter,
+                                   diameter * VgsConstants.CardButtonIconRatio, color,
+                                   clipTopLeft, clipSize))
+            {
                 return;
             }
 
-            DrawGroupButton(node, PortGroup.Yes, VgsText.TrueButtonGlyph, clipTopLeft, clipSize);
-            DrawGroupButton(node, PortGroup.No, VgsText.FalseButtonGlyph, clipTopLeft, clipSize);
-        }
-
-        private void DrawPlusButton(Node node, PortGroup group, Vector2 clipTopLeft, Vector2 clipSize)
-        {
-            Vector2 center;
-            if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
-
-            Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
-            float radius = PortGeometry.BindButtonRadius(node, group) * _zoom;
-            float diameter = radius * 2f;
-
-            bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
-
-            // The icon is the whole button, so it is allowed to be almost as tall as the disc
-            // the hit-test is computed from.
-            if (VgsScreenDraw.Icon(VgsIcon.SquarePlus, screenCenter,
-                                   diameter * VgsConstants.PlusIconRatio,
-                                   hot ? ColPlusFillHot : ColPlusFill, clipTopLeft, clipSize))
-            {
-                return;
-            }
-
-            VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
-                               hot ? ColPlusFillHot : ColPlusFill);
-
-            // The plus is cut out of the disc in the card's colour, so it reads as a hole in a
-            // white button rather than as a second element on top of one.
-            Color glyph = ColNode;
-
-            float arm = diameter * VgsConstants.PlusArmRatio;
-            float stroke = diameter * VgsConstants.PlusStrokeRatio;
-
-            // Horizontal arm. Its length is a Y measurement, so its X width goes through the
-            // aspect correction; without it the plus would be stretched across the card.
-            float armWidth = VgsScreenDraw.AspectX(arm);
-            float strokeWidth = VgsScreenDraw.AspectX(stroke);
-
-            VgsScreenDraw.RectClipped(
-                new Vector2(screenCenter.X - armWidth * 0.5f, screenCenter.Y - stroke * 0.5f),
-                new Vector2(armWidth, stroke),
-                clipTopLeft, clipSize, glyph);
-
-            VgsScreenDraw.RectClipped(
-                new Vector2(screenCenter.X - strokeWidth * 0.5f, screenCenter.Y - arm * 0.5f),
-                new Vector2(strokeWidth, arm),
-                clipTopLeft, clipSize, glyph);
+            // No texture: the glyph the button carried before it became an icon, drawn in the
+            // same colour so the control is still there and still says the same thing.
+            VgsScreenDraw.TextCentered(GlyphOf(kind), screenCenter,
+                                       VgsConstants.CardButtonGlyphScale * CardTextScale, color);
         }
 
         /// <summary>
-        /// One of the two discs of a yes/no toolbar: the same inverted disc as the "+", with
-        /// "T" or "F" in the card's colour.
-        ///
-        /// The letter is drawn by the text primitive rather than as geometry. That is the one
-        /// place in this file where a glyph is preferred: a plus is two rectangles, but a
-        /// letter is not, and the two groups need a label a player recognises.
+        /// The icon each button draws. The mapping lives here rather than in
+        /// <see cref="PortGeometry"/> because it is a presentation decision: geometry says where
+        /// a button is, this says what it looks like. Which icon is which is recorded in
+        /// `docs/07-icon-catalog.md`, and `tools/check-icon-catalog.ps1` fails when this table
+        /// and the catalogue disagree.
         /// </summary>
-        private void DrawGroupButton(Node node, PortGroup group, string glyph, Vector2 clipTopLeft,
-                                     Vector2 clipSize)
+        private static VgsIcon IconOf(CardButtonKind kind)
         {
-            Vector2 center;
-            if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
-
-            Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
-            float radius = PortGeometry.BindButtonRadius(node, group) * _zoom;
-
-            bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
-            VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
-                               hot ? ColPlusFillHot : ColPlusFill);
-
-            VgsScreenDraw.TextCentered(glyph, screenCenter,
-                                       VgsConstants.GroupButtonGlyphScale * CardTextScale, ColNode);
+            switch (kind)
+            {
+                case CardButtonKind.Watch: return VgsIcon.Bell;
+                case CardButtonKind.BindYes: return VgsIcon.LightbulbSolid;
+                case CardButtonKind.BindNo: return VgsIcon.LightbulbRegular;
+                default: return VgsIcon.SquarePlus;
+            }
         }
 
         /// <summary>
-        /// Zoom factor for the card's text (name, subtype, the T/F glyphs).
+        /// The glyph a button falls back to when its texture is unavailable: the mark it carried
+        /// before it became an icon.
+        /// </summary>
+        private static string GlyphOf(CardButtonKind kind)
+        {
+            switch (kind)
+            {
+                case CardButtonKind.Watch: return VgsText.WatchGlyph;
+                case CardButtonKind.BindYes: return VgsText.TrueButtonGlyph;
+                case CardButtonKind.BindNo: return VgsText.FalseButtonGlyph;
+                default: return VgsText.SingleButtonGlyph;
+            }
+        }
+
+        /// <summary>
+        /// Zoom factor for the card's text (name, subtype, the status line).
         ///
         /// Clamped on both ends and, crucially, <b>below</b> the old floor of 0.75: the card is
         /// now half as tall as it was, and two lines of text at the old floor overflow it once
@@ -2975,7 +2901,7 @@ namespace Vgs.Ui
                 DrawPortDot(GraphToScreen(dotCenter, clipTopLeft), radius, accent, clipTopLeft, clipSize);
             }
 
-            // The remove button: the dot's mirror image, the same size, inverted like the "+".
+            // The remove button: the dot's mirror image, on the other side of the same bar.
             Vector2 removeCenter;
             if (PortGeometry.TryPortRemoveButton(node, port, VgsScreenDraw.ClientAspect, out removeCenter))
             {
@@ -3150,17 +3076,27 @@ namespace Vgs.Ui
             // The hint line has two jobs and one slot: it either explains the gesture, or it
             // says why the last click did not produce a connection. The failure wins, because
             // the user is looking at a line that did not appear and needs to know why.
+            //
+            // Both are clipped to the span left of the Close button. The hint is a long
+            // sentence in Russian, and it grew when the card's buttons stopped being one "+"
+            // (ADR-0020): without the clip it would run under the button on a narrow window,
+            // and a hint that overlaps a control reads as a rendering fault.
+            Vector2 closeTopLeft, closeSize;
+            GetCloseButtonRect(out closeTopLeft, out closeSize);
+            float hintWidth = closeTopLeft.X - 0.02f - VgsConstants.CardButtonTextGap;
+
             string warning = ActiveWarning;
             if (warning != null)
             {
                 VgsScreenDraw.Text(warning,
                                    new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f,
-                                   ColWarning);
+                                   ColWarning, hintWidth);
             }
             else
             {
                 VgsScreenDraw.Text(BottomBarHint,
-                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f, ColTextDim);
+                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f,
+                                   ColTextDim, hintWidth);
             }
 
             DrawCloseButton();

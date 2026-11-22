@@ -151,7 +151,8 @@
 ### 5. У группы нет исходящих портов
 
 `Node.CanDriveBlocks = false` в конструкторе группы, `Toolbar = ToolbarLayout.None`,
-`Events` пуст. Следствия бесплатны: нет «+», нет «T»/«F», `BeginBind` не может начаться с
+`Events` пуст. Следствия бесплатны: нет кнопок ряда карточки (`PortGeometry.CardButtonCount`
+даёт ноль — у группы нет ни привязки, ни отслеживания), `BeginBind` не может начаться с
 группы, `ToolbarWriter.TryWrite*` не примет группу источником, `GridGraph.TryConnect` не найдёт
 у неё событийного порта.
 

@@ -25,8 +25,10 @@
 | [0014](adr/0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет все связи порта (сначала ячейка тулбара, потом ребро); точка — зеркало кнопки; подпись по центру и пропорционально зуму; рамка порта — цветом карточки |
 | [0015](adr/0015-block-groups.md) | Группы блоков — узлы второго вида: рамка позади карточек, «Show in VGS» агрегируется по участникам, входы по правилу игры (пересечение действий, а не «общий предок»), связь — элемент `GroupAction` |
 | [0016](adr/0016-group-drag.md) | Перенос группы — одним смещением по всем нарисованным участникам; ручка — полоса имени |
-| [0017](adr/0017-event-controller-watch-ports.md) | Event controller: квадратная точка привязки «#», порты отслеживания (жёлтые, пунктир в карточку цели), отказ красной линией, описание режима на карточке |
+| [0017](adr/0017-event-controller-watch-ports.md) | Event controller: кнопка отслеживания, порты отслеживания (жёлтые, пунктир в карточку цели), отказ красной линией, описание режима на карточке (кнопка с ADR-0020 — колокольчик в общем ряду) |
 | [0018](adr/0018-game-is-the-source-of-truth.md) | Список отслеживания читается из игры; хранилище мода — надстройка над игровым списком; игровые записи из редактора не удаляются |
+| [0019](adr/0019-icons-atlas.md) | Иконки: отдельная PNG-текстура на иконку, `DrawPixels` в целых пикселях окна, иконка на любом зуме, откат на геометрию только при отсутствии текстуры |
+| [0020](adr/0020-card-button-row.md) | Ряд кнопок карточки: все контролы карточки справа, в одну строку, одного размера, голые иконки; «T»/«F» → `lightbulb` Solid/Regular, «#» → `bell` Regular; каталог иконок со шлюзом |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -315,7 +317,8 @@ classDiagram
         -PortGroup _bindGroup
         -Node _watchSource
         -int _watchErrorUntilFrame
-        -Node _hoverWatch
+        -Node _hoverButton
+        -CardButtonKind _hoverButtonKind
         -Node _hoverWatchRemoveNode
         -WatchTarget _hoverWatchRemoveTarget
         -Node _menuTarget
@@ -361,8 +364,7 @@ classDiagram
         -ValidateInteractionState() void
         -ScreenToGraph(Vector2, Vector2) Vector2
         -HitTest(Vector2) Node
-        -HitTestBindButton(Vector2, out PortGroup) Node
-        -HitTestWatchButton(Vector2) Node
+        -HitTestCardButton(Vector2, out CardButtonKind) Node
         -HitTestWatchRemoveButton(Vector2, out WatchTarget) Node
         -HitTestRemoveButton(Vector2, out Port) Node
         -GetMenuRect(out Vector2, out Vector2) void
@@ -373,7 +375,6 @@ classDiagram
         -DrawPortBars(Node, Color, Vector2, Vector2) void
         -DrawPortBar(Node, Port, Color, Vector2, Vector2) void
         -DrawWatchBars(Node, Color, Vector2, Vector2) void
-        -DrawWatchButton(Node, Vector2, Vector2) void
         -DrawWatchLines(Vector2, Vector2) void
         -DrawPendingWatchLine(Vector2, Vector2) void
         -DrawDashedRoute(Vector2, Vector2, Color, float, float, Vector2, Vector2) void
@@ -382,9 +383,11 @@ classDiagram
         -DrawEdges(Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
-        -DrawBindButtons(Node, Vector2, Vector2) void
-        -DrawPlusButton(Node, PortGroup, Vector2, Vector2) void
-        -DrawGroupButton(Node, PortGroup, string, Vector2, Vector2) void
+        -DrawCardButtons(Node, Vector2, Vector2) void
+        -DrawCardButton(Node, CardButtonKind, Vector2, Vector2) void
+        +IconOf(CardButtonKind) VgsIcon
+        +GlyphOf(CardButtonKind) string
+        +RestingColor(CardButtonKind) Color
         -GetStatusText() string
         -ResolveGridName()
     }
@@ -410,11 +413,18 @@ classDiagram
         +LayoutGroupFrame(GridGraph, Node)
         +LayoutFramesContaining(GridGraph, Node)
         +HasGroupButtons(Node) bool
-        +TryBindButton(Node, PortGroup, float aspectX, out Vector2) bool
-        +HitBindButton(Node, Vector2, float aspectX, out PortGroup) bool
-        +TryWatchButtonRect(Node, float, out Vector2, out Vector2) bool
+        +CardButtonCount(Node) int
+        +HasCardButton(Node, CardButtonKind) bool
+        +CardButtonIndex(Node, CardButtonKind) int
+        +TryCardButtonAt(Node, int, out CardButtonKind) bool
+        +TryGroupOf(CardButtonKind, out PortGroup) bool
+        +TryCardButtonRect(Node, CardButtonKind, float, out Vector2, out Vector2) bool
+        +TryCardButton(Node, CardButtonKind, float, out Vector2) bool
+        +TryCardButtonRow(Node, float, out Vector2, out Vector2) bool
+        +TryCardTextSpan(Node, float, out float, out float) bool
+        +CardTextPaddingRatio float
+        +HitCardButton(Node, Vector2, float, out CardButtonKind) bool
         +TryWatchButton(Node, float, out Vector2) bool
-        +HitWatchButton(Node, Vector2, float) bool
         +TryWatchBarRect(Node, WatchTarget, out Vector2, out Vector2) bool
         +TryWatchDot(Node, WatchTarget, float, out Vector2) bool
         +TryWatchRemoveButton(Node, WatchTarget, float, out Vector2) bool
@@ -451,7 +461,6 @@ classDiagram
         +EnsureResources()
         +Release()
         +SyncScreenSpace()
-        +AspectX(float yExtent) float
         +Rect(Vector2 pos, Vector2 size, Color c)
         +RectClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color)
         +Border(Vector2 pos, Vector2 size, Color c, float t)
@@ -912,7 +921,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | Файл | Ответственность |
 |---|---|
 | `VgsEditorScreen.cs` | экран: камера, ввод, четыре режима указателя, меню действий, кэш строк |
-| `PortGeometry.cs` | геометрия карточки, портов, точки привязки «#» и рамки группы — единственный источник правды для отрисовки **и** hit-testing |
+| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind` |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; разбиение отрезка на штрихи для пунктира |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
@@ -937,14 +946,15 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 `PortGeometry.TryGroupFrame` — чистая функция от карточек участников: наименьший
 прямоугольник, содержащий их и их стаки портов, плюс отступ и полоса имени.
 
-### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md))
+### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md))
 
-Три контрола — точка порта, кнопка привязки и «x» удаления — рисуются иконками Font Awesome
-из текстур `Textures/VGS/Icons/<Id>.png`, по файлу на иконку. Разделение ответственности здесь
-такое же, как у геометрии:
+Семь контролов — точка порта, четыре кнопки карточки (привязка, «да», «нет», отслеживание) и
+«x» удаления на полосе порта — рисуются иконками Font Awesome из текстур
+`Textures/VGS/Icons/<Id>.png`, по файлу на иконку. Разделение ответственности здесь такое же,
+как у геометрии:
 
 ```
-tools/build-icon-atlas.ps1 ──► Icons/*.png + GuiTextures.sbc + VgsIconAtlas.g.cs
+tools/build-icon-atlas.ps1 ──► Icons/*.png + GuiTextures.sbc + VgsIconAtlas.g.cs + docs/icons/*.png
                                         (сборка, вне мода)
 
 VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высота, цвет, ...)
@@ -953,6 +963,14 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
                               ├─► IconPlacement     единицы раскладки → целые пиксели окна
                               └─► MyScreenSpaceSprite.DrawPixels
 ```
+
+**Какая иконка где** записано в каталоге [`07-icon-catalog.md`](07-icon-catalog.md): таблица
+«изображение · описание · идентификатор · где используется». Каталог — не источник истины о
+наборе (источник — `tools/icon-atlas/icons.txt`), а его отражение с ответом «где
+используется»; расхождение ловит `tools/check-icon-catalog.ps1`, входящий в
+`offline-check.ps1`. Причина, по которой каталогу нужен шлюз, та же, по которой шлюзу
+вайтлиста нужна самопроверка: документ, который никто не сверяет, расходится с кодом за один
+этап.
 
 Почему `IconPlacement` — отдельный тип, а не пять строк внутри `VgsScreenDraw`: это
 единственная часть рисования иконки, которую можно проверить без игры, и единственная, где
@@ -977,6 +995,33 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 Почему по файлу на иконку, а не общий атлас, — измерение, а не вкус: на грубых мипах
 промежуток между ячейками схлопывается и соседняя иконка подмешивается. Числа и решение —
 в [ADR-0019](adr/0019-icons-atlas.md) §4 контекста.
+
+### Ряд кнопок карточки ([ADR-0020](adr/0020-card-button-row.md))
+
+Все контролы, принадлежащие **карточке**, живут в одном горизонтальном ряду вдоль её правого
+края, вертикально центрированном, с одним диаметром на всех. Набор кнопок — функция от того,
+что блок умеет: `CardButtonCount` = (умеет управлять? одна группа → 1, две → 2) +
+(event controller? 1). Порядок фиксирован — отслеживание, «да», «нет», одиночная привязка, —
+поэтому кнопка не переезжает, когда у карточки появляется соседняя.
+
+Три следствия, важные для слоёв:
+
+- **геометрия ряда — в `PortGeometry`**, как и у портов: `TryCardButtonRect` (где кнопка),
+  `TryCardButtonRow` (где ряд), `TryCardTextSpan` (докуда доходит подпись карточки),
+  `HitCardButton` (что под указателем). Отрисовка и hit-test берут прямоугольники оттуда же,
+  поэтому разойтись не могут. `TryCardTextSpan` существует отдельно, потому что «подпись
+  обрезается по ряду минус зазор» — это арифметика с осью: зазор задан вертикальной длиной и
+  обязан пройти через поправку на пропорции, иначе на 16:9 он в 1,8 раза шире, чем задумано;
+- **иконка выбирается в UI**, а не в геометрии: `VgsEditorScreen.IconOf` — таблица
+  «жест → иконка», и именно её сверяет шлюз каталога. Геометрия не знает про `VgsIcon`;
+- **hit-test один на ряд.** Кнопки одного ряда при допуске нажатия перекрываются, поэтому
+  побеждает **ближайший центр**, а не первая проверенная кнопка: иначе клик в зазор попадал бы
+  в кнопку, зависящую от порядка обхода.
+
+Что осталось от прежней модели: `PortGroup` (какую группу тулбара заполняет связь) и
+`Node.CanDriveBlocks` (есть ли вообще кнопки привязки). Что появилось: `CardButtonKind` —
+четыре жеста, названных по действию, а не по глифу. Именно это позволяет менять иконку, не
+трогая ни геометрию, ни режимы указателя, — то, что и требовалось.
 
 Почему PNG, а не DDS, — тоже измерение, и оно противоречит первой реализации: DXT5-файлы были
 корректны на диске по двум независимым декодерам и всё равно рисовались в спрайте непрозрачным
@@ -1037,11 +1082,11 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 или квадратное:
 
 - размер по Y задаётся в единицах раскладки как обычно;
-- размер по X получается через `VgsScreenDraw.AspectX(yExtent)`;
+- размер по X получается умножением на `VgsScreenDraw.ClientAspect` (высота ÷ ширина);
 - `VgsScreenDraw.Disc` компенсирует пропорции сам и рисует по одной полосе на пиксель
   высоты — ступенька в один пиксель читается как кривая.
 
-`VgsScreenDraw.ClientAspect` (высота ÷ ширина) вычисляется в `SyncScreenSpace` из тех же
+`VgsScreenDraw.ClientAspect` вычисляется в `SyncScreenSpace` из тех же
 пикселей safe-GUI, что и преобразование координат, поэтому отдельного источника правды не
 появляется. `PortGeometry` принимает пропорции **параметром**, а не читает их из слоя
 отрисовки: так модель геометрии остаётся чистой и проверяемой офлайн.

@@ -79,7 +79,9 @@ namespace Vgs.Ui
         /// Client-area height ÷ width, both in pixels. One X unit of the layout is the window's
         /// width in pixels; one Y unit is its height. On any window that is not square those are
         /// different lengths, so a shape that must look round has to compensate — see
-        /// <see cref="Disc"/> and <see cref="AspectX"/>.
+        /// <see cref="Disc"/>. Geometry that needs the same correction outside the draw path
+        /// (`PortGeometry`) takes the aspect as a parameter instead of reading it from here,
+        /// which is what keeps that type testable without the game.
         /// </summary>
         private static float _clientAspect = 1f;
 
@@ -100,16 +102,6 @@ namespace Vgs.Ui
         public static float ClientAspect
         {
             get { return _clientAspect; }
-        }
-
-        /// <summary>
-        /// Converts a length measured along Y into the X length that is the same distance on
-        /// screen. Everything round or square uses this; everything else uses plain layout
-        /// units, because a card *should* be wider than it is tall.
-        /// </summary>
-        public static float AspectX(float yExtent)
-        {
-            return yExtent * _clientAspect;
         }
 
         /// <summary>True once <see cref="EnsureResources"/> found a usable font and brush.</summary>
@@ -295,7 +287,7 @@ namespace Vgs.Ui
 
                 // The client area is fullWidth × safe.Height pixels, so one X unit of the
                 // layout is fullWidth pixels and one Y unit is safe.Height. Round shapes need
-                // that ratio; see Disc and AspectX.
+                // that ratio; see Disc and ClientAspect.
                 _clientHeightPixels = safe.Height;
                 _clientWidthPixels = fullWidth;
                 _clientAspect = fullWidth > 0f ? safe.Height / fullWidth : 1f;

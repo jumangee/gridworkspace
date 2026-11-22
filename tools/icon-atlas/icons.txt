@@ -6,7 +6,14 @@
 # Order is the atlas cell order and the enum order; appending a line is the normal case.
 #
 # After editing: pwsh -File tools/build-icon-atlas.ps1
+#
+# Every line added here must also get a row in docs/07-icon-catalog.md: the catalogue is what
+# tells a reader which control draws which icon, and tools/check-icon-catalog.ps1 fails when the
+# two lists disagree.
 
 CircleDot       circle-dot-solid.svg      circle-dot (Solid): the port's connection dot
-SquarePlus      square-plus-regular.svg   square-plus (Regular): the bind ("+") button
+SquarePlus      square-plus-regular.svg   square-plus (Regular): the bind button of a one-group toolbar
 Xmark           xmark-solid.svg           xmark (Solid): the remove-connection glyph
+Bell            bell-regular.svg          bell (Regular): the watch-list button of an event controller
+LightbulbSolid  lightbulb-solid.svg       lightbulb (Solid): the bind button of the "true" group
+LightbulbRegular lightbulb-regular.svg    lightbulb (Regular): the bind button of the "false" group

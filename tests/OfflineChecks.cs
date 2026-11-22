@@ -133,8 +133,8 @@ internal static class OfflineChecks
         Console.WriteLine("=== card and port geometry ===");
         Geometry();
 
-        Console.WriteLine("=== bind buttons ===");
-        BindButtons();
+        Console.WriteLine("=== card button row (ADR-0020) ===");
+        CardButtonRow();
 
         Console.WriteLine("=== port controls: dot, remove button, label ===");
         PortControls();
@@ -711,110 +711,370 @@ internal static class OfflineChecks
     }
 
     /// <summary>
-    /// The bind buttons: one "+" for a single-group block, a "T"/"F" pair for a yes/no one.
-    /// What matters is that the control exists exactly where it can be clicked, that the two
-    /// discs do not overlap, and that each of them reports its own group.
+    /// The card's button row (ADR-0020).
+    ///
+    /// Every control that belongs to the *card* — the single bind button, the yes/no pair and a
+    /// controller's watch button — sits in one horizontal row on the card's right edge,
+    /// vertically centred, all at one size. What matters is that each button exists exactly
+    /// where it can be clicked, that the row stays inside the card, that two cards show the same
+    /// button size whatever their toolbars are, and that a click in the gap between two buttons
+    /// lands on the nearer one instead of on whichever was tested first.
     /// </summary>
-    private static void BindButtons()
+    private static void CardButtonRow()
     {
         const float aspect = 1f;
 
         Node timer = MakeNode(1, "LargeBlockTimerBlock");
         timer.Position = new Vector2(0.2f, 0.2f);
 
-        Vector2 plusCenter;
-        Check(PortGeometry.TryBindButton(timer, PortGroup.Single, aspect, out plusCenter),
-              "a single-group block has a bind button");
-        CheckClose(plusCenter.Y, timer.Position.Y + VgsConstants.NodeHeight * 0.5f,
-                   "the plus is vertically centred in the card");
-        Check(!PortGeometry.HasGroupButtons(timer), "a single-group block shows no T/F pair");
-
-        Vector2 noButton;
-        Check(!PortGeometry.TryBindButton(timer, PortGroup.Yes, aspect, out noButton),
-              "a single-group block has no separate yes button");
-
-        CheckClose(VgsConstants.PlusButtonRadius * 2f, VgsConstants.NodeHeight * 0.75f,
-                   "plus button diameter is 75% of the card height");
-
-        PortGroup hit;
-        Check(PortGeometry.HitBindButton(timer, plusCenter, aspect, out hit), "the plus centre hits");
-        Check(hit == PortGroup.Single, "the plus reports the single group");
-        Check(!PortGeometry.HitBindButton(timer, plusCenter + new Vector2(0.05f, 0f), aspect, out hit),
-              "far to the right of the plus is a miss");
-
-        // The single button is drawn as a square icon (ADR-0019 §4a), and a square's corners reach
-        // further from its centre than its sides do. The hit target has to cover them, or the
-        // corners would look pressable and do nothing. The corner offset in layout units is
-        // PlusIconRatio · √2 · r along the diagonal, which is PlusIconRatio · r in each axis.
-        float bindRadius = VgsConstants.PlusButtonRadius;
-        var cornerOffset = new Vector2(VgsConstants.PlusIconRatio * bindRadius,
-                                       VgsConstants.PlusIconRatio * bindRadius);
-        Check(PortGeometry.HitBindButton(timer, plusCenter + cornerOffset, aspect, out hit),
-              "the drawn corner of the bind icon is inside the hit target");
-        Check(PortGeometry.HitBindButton(timer, plusCenter - cornerOffset, aspect, out hit),
-              "the opposite corner is inside the hit target too");
-
-        // And the tolerance is not unlimited: a point well beyond the icon is still a miss.
-        var farCorner = new Vector2(bindRadius * 2f, bindRadius * 2f);
-        Check(!PortGeometry.HitBindButton(timer, plusCenter + farCorner, aspect, out hit),
-              "well outside the bind icon is a miss, so the wider tolerance is still bounded");
-
-        // A yes/no block: two discs, one above the other, each hit-testing to its own group.
         Node sensor = MakeNode(2, "LargeBlockSensor", SensorToolbar());
         sensor.Position = new Vector2(0.2f, 0.4f);
-        Check(PortGeometry.HasGroupButtons(sensor), "a yes/no block shows the T/F pair");
 
-        Vector2 trueCenter, falseCenter;
-        Check(PortGeometry.TryBindButton(sensor, PortGroup.Yes, aspect, out trueCenter), "true button");
-        Check(PortGeometry.TryBindButton(sensor, PortGroup.No, aspect, out falseCenter), "false button");
-        Check(trueCenter.Y < falseCenter.Y, "the true button is above the false one");
-        CheckClose(trueCenter.X, falseCenter.X, "both buttons sit on the same vertical line");
+        var controller = new Node(3, "EventControllerLarge", "controller", Vector3I.Zero,
+                                  SensorToolbar(), true);
+        BlockPortCatalog.FillEvents(controller);
+        controller.Position = new Vector2(0.2f, 0.7f);
 
-        // The discs must not overlap, or the pair reads as one blob and a click is ambiguous.
-        Check(falseCenter.Y - trueCenter.Y > VgsConstants.GroupButtonRadius * 2f,
-              "the two group buttons do not overlap");
+        Node conveyor = MakeTarget(4, "LargeBlockConveyorTube");
 
-        // Both stay inside the card.
-        float halfWidth = VgsConstants.GroupButtonRadius * aspect;
-        Check(trueCenter.X + halfWidth <= sensor.Position.X + VgsConstants.NodeWidth + 1e-5f,
-              "the true button stays inside the card's right edge");
-        Check(trueCenter.X - halfWidth >= sensor.Position.X,
-              "the true button stays inside the card's left edge");
-        Check(trueCenter.Y - VgsConstants.GroupButtonRadius >= sensor.Position.Y - 1e-5f,
-              "the true button stays inside the card's top edge");
-        Check(falseCenter.Y + VgsConstants.GroupButtonRadius
-              <= sensor.Position.Y + VgsConstants.NodeHeight + 1e-5f,
-              "the false button stays inside the card's bottom edge");
+        // ---- which card carries which buttons ----
 
-        Check(PortGeometry.HitBindButton(sensor, trueCenter, aspect, out hit) && hit == PortGroup.Yes,
-              "clicking the upper disc binds the yes group");
-        Check(PortGeometry.HitBindButton(sensor, falseCenter, aspect, out hit) && hit == PortGroup.No,
-              "clicking the lower disc binds the no group");
+        Check(PortGeometry.CardButtonCount(timer) == 1, "a one-group block has one card button");
+        Check(PortGeometry.HasCardButton(timer, CardButtonKind.BindSingle),
+              "that button is the single bind button");
+        Check(!PortGeometry.HasCardButton(timer, CardButtonKind.BindYes),
+              "a one-group block has no yes button");
+        Check(!PortGeometry.HasCardButton(timer, CardButtonKind.Watch),
+              "a timer has no watch button");
 
-        // Aspect independence: the button is round on screen, so its distance from the card's
-        // right border must not depend on the window's shape.
+        Check(PortGeometry.CardButtonCount(sensor) == 2, "a yes/no block has two card buttons");
+        Check(PortGeometry.HasCardButton(sensor, CardButtonKind.BindYes), "the yes button exists");
+        Check(PortGeometry.HasCardButton(sensor, CardButtonKind.BindNo), "the no button exists");
+        Check(!PortGeometry.HasCardButton(sensor, CardButtonKind.BindSingle),
+              "a yes/no block has no single button — the group must be chosen first");
+        Check(!PortGeometry.HasCardButton(sensor, CardButtonKind.Watch),
+              "a sensor is not a controller, so it has no watch button");
+
+        Check(PortGeometry.CardButtonCount(controller) == 3,
+              "a controller shows the watch button and the pair");
+        Check(PortGeometry.HasCardButton(controller, CardButtonKind.Watch),
+              "the controller has a watch button");
+
+        Check(PortGeometry.CardButtonCount(conveyor) == 0,
+              "a block without a toolbar has no card buttons");
+        CardButtonKind none;
+        Check(!PortGeometry.HitCardButton(conveyor, conveyor.Position, aspect, out none),
+              "nothing on a card without buttons is clickable");
+
+        // ---- one row, one size, on the right ----
+
+        Node[] nodes = { timer, sensor, controller };
+        for (int n = 0; n < nodes.Length; n++)
+        {
+            Node node = nodes[n];
+            int count = PortGeometry.CardButtonCount(node);
+            float cardRight = node.Position.X + VgsConstants.NodeWidth;
+            float cardCentreY = node.Position.Y + PortGeometry.CardHeight(node) * 0.5f;
+
+            Vector2 previousTopLeft = Vector2.Zero;
+            Vector2 previousSize = Vector2.Zero;
+            bool havePrevious = false;
+
+            for (int i = 0; i < count; i++)
+            {
+                CardButtonKind kind;
+                Check(PortGeometry.TryCardButtonAt(node, i, out kind),
+                      "button " + i + " of the row has a kind");
+
+                Vector2 topLeft, size;
+                Check(PortGeometry.TryCardButtonRect(node, kind, aspect, out topLeft, out size),
+                      "button " + kind + " of " + node.SubtypeId + " has a rectangle");
+
+                Vector2 centre;
+                Check(PortGeometry.TryCardButton(node, kind, aspect, out centre),
+                      "button " + kind + " of " + node.SubtypeId + " has a centre");
+                CheckClose(centre.X, topLeft.X + size.X * 0.5f, "the centre is the rectangle's centre in X");
+                CheckClose(centre.Y, topLeft.Y + size.Y * 0.5f, "the centre is the rectangle's centre in Y");
+
+                // One size for every button on every card. A controller's card is one line
+                // taller, and its buttons must not grow with it: two cards side by side showing
+                // two button sizes is exactly the state this row replaced.
+                CheckClose(size.Y, VgsConstants.CardButtonDiameter,
+                           "every card button has the standard diameter (" + kind + ")");
+                CheckClose(size.X, VgsConstants.CardButtonDiameter * aspect,
+                           "every card button is as wide as it is tall at aspect 1 (" + kind + ")");
+
+                // One row: every button shares the card's vertical centre line.
+                CheckClose(centre.Y, cardCentreY,
+                           "button " + kind + " is vertically centred on its card");
+
+                // Inside the card, at all four edges.
+                Check(topLeft.X >= node.Position.X - 1e-6f,
+                      "button " + kind + " does not leave the card at the left");
+                Check(topLeft.X + size.X <= cardRight + 1e-6f,
+                      "button " + kind + " does not leave the card at the right");
+                Check(topLeft.Y >= node.Position.Y - 1e-6f,
+                      "button " + kind + " does not leave the card at the top");
+                Check(topLeft.Y + size.Y <= node.Position.Y + PortGeometry.CardHeight(node) + 1e-6f,
+                      "button " + kind + " does not leave the card at the bottom");
+
+                // The row is right-anchored and flush: the last button's right edge stands one
+                // four-pixel gap from the card's border.
+                if (i == count - 1)
+                {
+                    CheckClose(topLeft.X + size.X,
+                               cardRight - VgsConstants.CardButtonMargin * aspect,
+                               "the rightmost button keeps one gap from the card's right border");
+                }
+
+                // Neighbours are separated by the row gap, never touching.
+                if (havePrevious)
+                {
+                    float gap = topLeft.X - (previousTopLeft.X + previousSize.X);
+                    CheckClose(gap, VgsConstants.CardButtonGap * aspect,
+                               "neighbouring buttons are one row gap apart (" + kind + ")");
+                }
+
+                previousTopLeft = topLeft;
+                previousSize = size;
+                havePrevious = true;
+            }
+        }
+
+        // The controller's card really is taller, and its buttons really are not: that is the
+        // unification, stated as a comparison rather than as a constant.
+        Check(PortGeometry.CardHeight(controller) > PortGeometry.CardHeight(timer),
+              "a controller's card is taller than an ordinary one");
+        Vector2 timerButton, controllerButton, timerSize, controllerSize, unusedTopLeft;
+        Check(PortGeometry.TryCardButton(timer, CardButtonKind.BindSingle, aspect, out timerButton),
+              "timer button centre");
+        Check(PortGeometry.TryCardButton(controller, CardButtonKind.BindYes, aspect, out controllerButton),
+              "controller button centre");
+        Check(PortGeometry.TryCardButtonRect(timer, CardButtonKind.BindSingle, aspect,
+                                             out unusedTopLeft, out timerSize),
+              "timer button rectangle");
+        Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.BindYes, aspect,
+                                             out unusedTopLeft, out controllerSize),
+              "controller button rectangle");
+        CheckClose(controllerSize.Y, timerSize.Y,
+                   "the same button is the same size on a taller card");
+        CheckClose(controllerSize.X, timerSize.X,
+                   "and the same width, so the pair reads as one control on every card");
+
+        // ---- the row leaves room for the name ----
+
+        for (int n = 0; n < nodes.Length; n++)
+        {
+            Node node = nodes[n];
+            Vector2 rowTopLeft, rowSize;
+            Check(PortGeometry.TryCardButtonRow(node, aspect, out rowTopLeft, out rowSize),
+                  "the row has a rectangle (" + node.SubtypeId + ")");
+
+            int count = PortGeometry.CardButtonCount(node);
+            CheckClose(rowSize.X, count * VgsConstants.CardButtonDiameter * aspect
+                                  + (count - 1) * VgsConstants.CardButtonGap * aspect,
+                       "the row is exactly as wide as its buttons and gaps");
+            CheckClose(rowTopLeft.Y, node.Position.Y + PortGeometry.CardHeight(node) * 0.5f
+                                     - VgsConstants.CardButtonDiameter * 0.5f,
+                       "the row is centred on the card");
+
+            // The name starts inside the card and has to reach the row with a gap to spare. The
+            // floor is 30% of the card's width: a card whose text span collapsed would show
+            // buttons and no name, and the three-button card is the one that could do it — so
+            // this is the assertion that keeps the row from growing without bound.
+            float spanLeft, spanRight;
+            Check(PortGeometry.TryCardTextSpan(node, aspect, out spanLeft, out spanRight),
+                  "the card's text span is defined (" + node.SubtypeId + ")");
+            Check(spanRight > spanLeft, "the text span is not inverted (" + node.SubtypeId + ")");
+            Check(spanRight - spanLeft > VgsConstants.NodeWidth * 0.3f,
+                  "the row leaves the card's name at least 30% of the card's width ("
+                  + node.SubtypeId + ")");
+            CheckClose(spanRight, rowTopLeft.X - VgsConstants.CardButtonTextGap * aspect,
+                       "the text span ends one gap left of the row");
+            CheckClose(spanLeft, node.Position.X + VgsConstants.NodeWidth
+                                 * PortGeometry.CardTextPaddingRatio,
+                       "the text span starts at the card's inner padding");
+        }
+
+        // ---- the budget for one more button ----
+        //
+        // The row was tightened because a fourth button is expected. No node has four buttons
+        // today, so this cannot be asserted through a node: it is computed from the constants and
+        // is a guard, not a description. It fails the moment a diameter, a gap or a padding grows
+        // enough to squeeze the name on a four-button card — before that card exists to look at.
+        //
+        // The aspect matters more than it looks. A button is round on screen, so its horizontal
+        // extent is radius × aspect: the *wider* the window, the *narrower* the row relative to
+        // the card. A square window is therefore the worst case by a wide margin — at aspect 1
+        // the four-button row takes 73% of the card against 41% at 16:9 — so the two shapes the
+        // editor is actually used in are asserted at the real floor, and the square one at a
+        // degradation floor. Treating aspect 1 as "the neutral case" here would have been wrong:
+        // it is the tightest case, not the typical one.
+        {
+            const int planned = 4;
+            float rowWidth = planned * VgsConstants.CardButtonDiameter
+                             + (planned - 1) * VgsConstants.CardButtonGap;
+            float textLeft = VgsConstants.NodeWidth * PortGeometry.CardTextPaddingRatio;
+
+            float[] usableAspects = { 0.5625f, 0.75f };   // 16:9 and 4:3
+            for (int i = 0; i < usableAspects.Length; i++)
+            {
+                float a = usableAspects[i];
+                float textRight = VgsConstants.NodeWidth - VgsConstants.CardButtonMargin * a
+                                  - rowWidth * a - VgsConstants.CardButtonTextGap * a;
+                Check(textRight - textLeft > VgsConstants.NodeWidth * 0.3f,
+                      "a four-button row still leaves the name 30% of the card at aspect " + a);
+            }
+
+            // A square window is rare but legal; there the row is allowed to crowd the name, but
+            // not to erase it.
+            {
+                const float a = 1f;
+                float textRight = VgsConstants.NodeWidth - VgsConstants.CardButtonMargin * a
+                                  - rowWidth * a - VgsConstants.CardButtonTextGap * a;
+                Check(textRight - textLeft > VgsConstants.NodeWidth * 0.1f,
+                      "a four-button row still leaves some of the name in a square window");
+            }
+
+            // The row must also stay inside the card at every aspect the editor tolerates. This is
+            // a hard invariant and it holds today; it is the assertion that will fail first if a
+            // fourth button ever arrives without the row being re-budgeted, because the button
+            // extent — and therefore the row — grows with the aspect.
+            float[] toleratedAspects = { 0.5625f, 0.75f, 1f, 1.6f };
+            for (int i = 0; i < toleratedAspects.Length; i++)
+            {
+                float a = toleratedAspects[i];
+                Vector2 t, s;
+                Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.BindNo, a,
+                                                     out t, out s),
+                      "no button rectangle at aspect " + a);
+                Check(t.X + s.X <= controller.Position.X + VgsConstants.NodeWidth + 1e-5f,
+                      "the row stays inside the card at aspect " + a);
+                Check(t.X >= controller.Position.X - 1e-5f,
+                      "the row does not leave the card on the left at aspect " + a);
+            }
+
+            // Buttons have to stay visibly separate without the gaps eating the row: a gap of at
+            // most half a radius, and at least one reference pixel so the marks never touch.
+            Check(VgsConstants.CardButtonGap <= VgsConstants.CardButtonRadius * 0.5f,
+                  "the gap between two buttons is at most half a button radius");
+            Check(VgsConstants.CardButtonGapPixels >= 1f,
+                  "the gap between two buttons is at least one pixel at the reference height");
+
+            // The stride must exceed the button, or two hit targets would have the same centre.
+            Check(VgsConstants.CardButtonDiameter + VgsConstants.CardButtonGap
+                  > VgsConstants.CardButtonDiameter,
+                  "two neighbouring buttons are further apart than one button");
+        }
+
+        // ---- clicking ----
+
+        CardButtonKind hit;
+
+        Vector2 timerCentre;
+        Check(PortGeometry.TryCardButton(timer, CardButtonKind.BindSingle, aspect, out timerCentre),
+              "timer button centre for the hit test");
+        Check(PortGeometry.HitCardButton(timer, timerCentre, aspect, out hit), "the bind button hits");
+        Check(hit == CardButtonKind.BindSingle, "the bind button reports its own kind");
+        Check(!PortGeometry.HitCardButton(timer, timerCentre + new Vector2(0.05f, 0f), aspect, out hit),
+              "far to the right of the row is a miss");
+
+        // A square icon's corners reach further from its centre than its sides do. The hit target
+        // has to cover them, or the corners would look pressable and do nothing (ADR-0019 §4a).
+        float bindRadius = VgsConstants.CardButtonRadius;
+        var cornerOffset = new Vector2(VgsConstants.CardButtonIconRatio * bindRadius,
+                                       VgsConstants.CardButtonIconRatio * bindRadius);
+        Check(PortGeometry.HitCardButton(timer, timerCentre + cornerOffset, aspect, out hit),
+              "the drawn corner of the square-plus icon is inside the hit target");
+        Check(PortGeometry.HitCardButton(timer, timerCentre - cornerOffset, aspect, out hit),
+              "the opposite corner is inside the hit target too");
+
+        // ...and the tolerance is bounded: a point well beyond the button is still a miss.
+        var farCorner = new Vector2(bindRadius * 2f, bindRadius * 2f);
+        Check(!PortGeometry.HitCardButton(timer, timerCentre + farCorner, aspect, out hit),
+              "well outside the button is a miss, so the tolerance is still bounded");
+
+        Vector2 yesCentre, noCentre;
+        Check(PortGeometry.TryCardButton(sensor, CardButtonKind.BindYes, aspect, out yesCentre),
+              "yes button centre");
+        Check(PortGeometry.TryCardButton(sensor, CardButtonKind.BindNo, aspect, out noCentre),
+              "no button centre");
+        Check(yesCentre.X < noCentre.X, "the yes button is left of the no button");
+        CheckClose(yesCentre.Y, noCentre.Y, "both buttons of the pair sit on one line");
+
+        Check(PortGeometry.HitCardButton(sensor, yesCentre, aspect, out hit) && hit == CardButtonKind.BindYes,
+              "clicking the yes button reports the yes group");
+        Check(PortGeometry.HitCardButton(sensor, noCentre, aspect, out hit) && hit == CardButtonKind.BindNo,
+              "clicking the no button reports the no group");
+
+        // The hit targets overlap at this tolerance, so the nearer centre has to win: a click in
+        // the gap must not depend on the order the buttons happen to be tested in.
+        var between = new Vector2((yesCentre.X + noCentre.X) * 0.5f, yesCentre.Y);
+        Check(PortGeometry.HitCardButton(sensor, between, aspect, out hit),
+              "the gap between two buttons is still a hit, not a dead zone");
+        Check(hit == CardButtonKind.BindNo,
+              "a click exactly between two buttons lands on the later one, deterministically");
+
+        var nearerNo = new Vector2(yesCentre.X + (noCentre.X - yesCentre.X) * 0.75f, yesCentre.Y);
+        Check(PortGeometry.HitCardButton(sensor, nearerNo, aspect, out hit)
+              && hit == CardButtonKind.BindNo,
+              "a click nearer the no button reports the no button");
+        var nearerYes = new Vector2(yesCentre.X + (noCentre.X - yesCentre.X) * 0.25f, yesCentre.Y);
+        Check(PortGeometry.HitCardButton(sensor, nearerYes, aspect, out hit)
+              && hit == CardButtonKind.BindYes,
+              "a click nearer the yes button reports the yes button");
+
+        // The watch button is the leftmost of the controller's row, and it is the point a watch
+        // line starts from — the port does not exist until a block is attached.
+        Vector2 watchCentre, controllerYes;
+        Check(PortGeometry.TryWatchButton(controller, aspect, out watchCentre),
+              "the controller's watch button has a centre");
+        Check(PortGeometry.HitCardButton(controller, watchCentre, aspect, out hit)
+              && hit == CardButtonKind.Watch,
+              "clicking the bell reports the watch button");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.Watch) == 0,
+              "the watch button is the first (leftmost) of the row");
+        Check(PortGeometry.TryCardButton(controller, CardButtonKind.BindYes, aspect, out controllerYes),
+              "the controller's yes button has a centre");
+        Check(watchCentre.X < controllerYes.X,
+              "the watch button is left of the bind pair, so the row reads watch → yes → no");
+
+        // ---- aspect independence ----
+
+        // A button is round on screen, so its extent and its distance from the card's border are
+        // both vertical lengths turned into horizontal ones. Without that correction the row
+        // would look inset on a wide monitor and flush on a 4:3 one.
         float[] aspects = { 0.5625f, 0.75f, 1f, 1.6f };
         for (int i = 0; i < aspects.Length; i++)
         {
             float a = aspects[i];
-            Vector2 c;
-            Check(PortGeometry.TryBindButton(sensor, PortGroup.Yes, a, out c),
-                  "true button at aspect " + a);
-            float rightEdge = c.X + VgsConstants.GroupButtonRadius * a;
-            CheckClose(rightEdge,
-                       sensor.Position.X + VgsConstants.NodeWidth - VgsConstants.PlusButtonRightMargin,
-                       "true button right edge is a fixed distance from the border at aspect " + a);
-            Check(rightEdge <= sensor.Position.X + VgsConstants.NodeWidth + 1e-5f,
-                  "true button stays inside the card at aspect " + a);
+
+            Vector2 t, s;
+            Check(PortGeometry.TryCardButtonRect(sensor, CardButtonKind.BindNo, a, out t, out s),
+                  "no button rectangle at aspect " + a);
+            CheckClose(s.X / a, s.Y, "the button is square on screen at aspect " + a);
+            CheckClose(t.X + s.X,
+                       sensor.Position.X + VgsConstants.NodeWidth - VgsConstants.CardButtonMargin * a,
+                       "the button's right edge is a fixed distance from the border at aspect " + a);
+            Check(t.X + s.X <= sensor.Position.X + VgsConstants.NodeWidth + 1e-5f,
+                  "the button stays inside the card at aspect " + a);
+
+            // The pair's pitch scales with the aspect too, or the gap would read as a different
+            // number of pixels on every window shape.
+            Vector2 y, ny;
+            Check(PortGeometry.TryCardButton(sensor, CardButtonKind.BindYes, a, out y),
+                  "yes button at aspect " + a);
+            Check(PortGeometry.TryCardButton(sensor, CardButtonKind.BindNo, a, out ny),
+                  "no button at aspect " + a);
+            CheckClose((ny.X - y.X) / a, VgsConstants.CardButtonDiameter + VgsConstants.CardButtonGap,
+                       "the pair's pitch is aspect-independent at aspect " + a);
         }
 
-        // A block that cannot drive anything has no control at all.
-        Node conveyor = MakeTarget(3, "LargeBlockConveyorTube");
-        Vector2 unused;
-        Check(!PortGeometry.TryBindButton(conveyor, PortGroup.Single, aspect, out unused),
-              "no button on a block without a toolbar");
-        Check(!PortGeometry.HitBindButton(conveyor, conveyor.Position, aspect, out hit),
-              "nothing is clickable on a block without a toolbar");
+        // ---- the row is the whole of a card's controls ----
+
+        Check(!PortGeometry.HasGroupButtons(timer), "a one-group block shows no yes/no pair");
+        Check(PortGeometry.HasGroupButtons(sensor), "a yes/no block shows the pair");
+        Check(PortGeometry.HasGroupButtons(controller), "a controller shows the pair too");
     }
 
     /// <summary>
@@ -1864,13 +2124,13 @@ internal static class OfflineChecks
     }
 
     /// <summary>
-    /// The square "#" anchor of an event controller and the watch ports under its card
-    /// (ADR-0017).
+    /// The watch button of an event controller and the watch ports under its card (ADR-0017,
+    /// ADR-0020).
     ///
-    /// What matters and is invisible in a compile: the anchor is a square of exactly 75% of the
-    /// card's height, four screen pixels from the left border, inside the card, and the card's
-    /// text starts to its right; the watch bars stack under the input stack with the dot on the
-    /// right and the "x" on the left; and the anchor exists on a controller and nowhere else.
+    /// What matters and is invisible in a compile: the watch button is a button of the card's row
+    /// like any other — same size, same vertical centre, right-hand side — and it exists on a
+    /// controller and nowhere else; the watch bars stack under the input stack with the dot on
+    /// the right and the "x" on the left.
     /// </summary>
     private static void WatchAnchorAndPorts()
     {
@@ -1898,78 +2158,73 @@ internal static class OfflineChecks
                    "the extra line is exactly NodeStatusLineHeight tall");
 
         Vector2 anchorTopLeft, anchorSize;
-        Check(PortGeometry.TryWatchButtonRect(controller, aspect, out anchorTopLeft, out anchorSize),
-              "a controller has a watch anchor");
+        Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.Watch, aspect,
+                                             out anchorTopLeft, out anchorSize),
+              "a controller has a watch button");
 
-        CheckClose(anchorSize.Y, cardHeight * 0.75f, "the anchor is 75% of the card's height tall");
-        CheckClose(anchorSize.X, anchorSize.Y, "the anchor is a square at aspect 1");
+        // The watch button is one of the card's buttons, so it is the standard size — not a
+        // square grown with the taller card, which is what it used to be.
+        CheckClose(anchorSize.Y, VgsConstants.CardButtonDiameter,
+                   "the watch button is the standard card button diameter");
+        CheckClose(anchorSize.X, anchorSize.Y, "the watch button is round on screen at aspect 1");
 
-        // Four pixels at the reference height, and the same gap expressed in X units.
-        CheckClose(anchorTopLeft.X, controller.Position.X + VgsConstants.WatchButtonMargin,
-                   "the anchor stands one four-pixel gap from the card's left border");
-        CheckClose(VgsConstants.WatchButtonMargin * VgsConstants.ReferenceHeightPixels, 4f,
-                   "that gap is four pixels at the reference height");
-
+        // It sits inside the card, on its right-hand side, vertically centred.
         Check(anchorTopLeft.Y >= controller.Position.Y - 1e-6f,
-              "the anchor does not leave the card at the top");
+              "the watch button does not leave the card at the top");
         Check(anchorTopLeft.Y + anchorSize.Y <= controller.Position.Y + cardHeight + 1e-6f,
-              "the anchor does not leave the card at the bottom");
+              "the watch button does not leave the card at the bottom");
 
-        // Vertically centred: the gaps above and below the square are equal.
         float above = anchorTopLeft.Y - controller.Position.Y;
         float below = controller.Position.Y + cardHeight - (anchorTopLeft.Y + anchorSize.Y);
-        CheckClose(above, below, "the anchor is vertically centred on the card");
+        CheckClose(above, below, "the watch button is vertically centred on the card");
 
-        // The centre of the anchor is the point a watch line starts from while the user picks a
-        // block, so it must be the centre of the square, not its corner.
+        // It is on the right: the row is right-anchored, so the watch button — the leftmost of a
+        // three-button row — still sits well inside the card, past the start of the name. The
+        // old "#" was pinned to the left border instead, which is the placement this row ends.
+        Check(anchorTopLeft.X > controller.Position.X + VgsConstants.NodeWidth * 0.3f,
+              "the watch button sits inside the card's right-hand row, not on the left border");
+
+        // The centre of the button is the point a watch line starts from while the user picks a
+        // block, so it must be the centre of the button, not its corner.
         Vector2 anchorCentre;
         Check(PortGeometry.TryWatchButton(controller, aspect, out anchorCentre),
-              "the anchor has a centre");
-        CheckClose(anchorCentre.X, anchorTopLeft.X + anchorSize.X * 0.5f, "the centre is the square's centre in X");
-        CheckClose(anchorCentre.Y, anchorTopLeft.Y + anchorSize.Y * 0.5f, "the centre is the square's centre in Y");
+              "the watch button has a centre");
+        CheckClose(anchorCentre.X, anchorTopLeft.X + anchorSize.X * 0.5f,
+                   "the centre is the button's centre in X");
+        CheckClose(anchorCentre.Y, anchorTopLeft.Y + anchorSize.Y * 0.5f,
+                   "the centre is the button's centre in Y");
 
-        Check(PortGeometry.HitWatchButton(controller, anchorCentre, aspect),
-              "clicking the anchor hits it");
-        Check(!PortGeometry.HitWatchButton(controller, anchorCentre + new Vector2(0.2f, 0f), aspect),
-              "clicking far to the right of the anchor misses it");
+        CardButtonKind hitKind;
+        Check(PortGeometry.HitCardButton(controller, anchorCentre, aspect, out hitKind)
+              && hitKind == CardButtonKind.Watch,
+              "clicking the watch button hits it");
+        Check(!PortGeometry.HitCardButton(controller, anchorCentre + new Vector2(0.2f, 0f), aspect,
+                                          out hitKind),
+              "clicking far to the right of the watch button misses the row");
 
-        // The anchor is square on screen at any window shape: its X extent is the Y side times
-        // the aspect, so the two extents are equal once the aspect is taken out.
+        // The button is round on screen at any window shape: its X extent is the Y extent times
+        // the aspect, so the two are equal once the aspect is taken out.
         float[] aspects = { 0.5625f, 0.75f, 1f, 1.6f };
         for (int i = 0; i < aspects.Length; i++)
         {
             float a = aspects[i];
             Vector2 t, s;
-            Check(PortGeometry.TryWatchButtonRect(controller, a, out t, out s),
-                  "anchor rectangle at aspect " + a);
-            CheckClose(s.X / a, s.Y, "the anchor is square on screen at aspect " + a);
-            CheckClose(t.X - controller.Position.X, VgsConstants.WatchButtonMargin * a,
-                       "the anchor's left gap is four screen pixels at aspect " + a);
+            Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.Watch, a, out t, out s),
+                  "watch button rectangle at aspect " + a);
+            CheckClose(s.X / a, s.Y, "the watch button is round on screen at aspect " + a);
         }
 
-        // The card's text must start to the right of the anchor, not underneath it.
-        Check(anchorTopLeft.X + anchorSize.X < controller.Position.X + VgsConstants.NodeWidth,
-              "the anchor leaves room for the card's text");
-
-        // A block that is not a controller has no anchor, even with a yes/no toolbar.
-        Check(!PortGeometry.TryWatchButtonRect(watched, aspect, out anchorTopLeft, out anchorSize),
-              "a block that is not a controller has no anchor");
-        Check(!PortGeometry.HitWatchButton(watched, watched.Position, aspect),
-              "nothing is clickable on a block without an anchor");
+        // A block that is not a controller has no watch button, even with a yes/no toolbar.
+        Check(!PortGeometry.HasCardButton(watched, CardButtonKind.Watch),
+              "a block that is not a controller has no watch button");
+        Check(!PortGeometry.TryWatchButton(watched, aspect, out anchorCentre),
+              "there is no watch button to start a watch line from");
+        Check(!PortGeometry.HitCardButton(watched, watched.Position, aspect, out hitKind),
+              "nothing is clickable on a card without buttons");
 
         // ...and its card keeps the plain height: only a controller grows by the extra line.
         CheckClose(PortGeometry.CardHeight(watched), VgsConstants.NodeHeight,
                    "a plain block's card does not grow");
-
-        // The bind buttons scale with the card, so a controller's "T"/"F" pair stays the same
-        // fraction of the taller card instead of reading as two small dots on a big label.
-        Node sensor = MakeNode(4, "LargeBlockSensor", SensorToolbar());
-        Check(PortGeometry.BindButtonRadius(controller, PortGroup.Yes)
-              > PortGeometry.BindButtonRadius(sensor, PortGroup.Yes),
-              "bind buttons grow with the card");
-        CheckClose(PortGeometry.BindButtonRadius(sensor, PortGroup.Yes),
-                   VgsConstants.GroupButtonRadius,
-                   "an ordinary card's bind button keeps its constant size");
 
         // ---- the watch list and its bars ----
 
