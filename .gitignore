@@ -15,3 +15,6 @@ obj/
 Thumbs.db
 desktop.ini
 /data/fontawesome-free-7.3.1-desktop
+
+# Throwaway output of the local harnesses (tools/icon-proto, ACL recovery records).
+/tmp/

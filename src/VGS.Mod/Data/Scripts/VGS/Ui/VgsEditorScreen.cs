@@ -2657,8 +2657,8 @@ namespace Vgs.Ui
                 Vector2 dotCentre;
                 if (PortGeometry.TryWatchDot(node, watch, VgsScreenDraw.ClientAspect, out dotCentre))
                 {
-                    VgsScreenDraw.Disc(GraphToScreen(dotCentre, clipTopLeft), radius, clipTopLeft,
-                                       clipSize, ColWatch);
+                    DrawPortDot(GraphToScreen(dotCentre, clipTopLeft), radius, ColWatch,
+                                clipTopLeft, clipSize);
                 }
 
                 Vector2 removeCentre;
@@ -2668,7 +2668,7 @@ namespace Vgs.Ui
                     bool hot = ReferenceEquals(node, _hoverWatchRemoveNode)
                                && ReferenceEquals(watch, _hoverWatchRemoveTarget);
 
-                    DrawPortRemoveButton(GraphToScreen(removeCentre, clipTopLeft), ColWatchFill, hot,
+                    DrawPortRemoveButton(GraphToScreen(removeCentre, clipTopLeft), ColWatch, hot,
                                          clipTopLeft, clipSize);
                 }
             }
@@ -2768,21 +2768,21 @@ namespace Vgs.Ui
         ///
         /// Two shapes, and the difference is not decoration:
         ///
-        ///  * a single-group toolbar (a timer) gets one round "+" centred on the card;
+        ///  * a single-group toolbar (a timer) gets one bind button centred on the card;
         ///  * a yes/no toolbar (a sensor, an event controller) gets a "T" and an "F" stacked
         ///    on the card's right edge, because the game keeps two independent lists of
         ///    actions and a connection has to say which one it joins.
         ///
-        /// Round, not square, because it must not read as part of the card: it is a control
-        /// that starts a modal gesture, and the one thing the user must never do is drag the
-        /// card when they meant to drag a connection.
+        /// The single-group button is the Font Awesome <c>square-plus</c> icon (ADR-0019). It
+        /// carries no disc behind it: the icon is an outline, and knocking an outline out of a
+        /// filled disc leaves nothing to see. The T/F pair keeps its discs and its letters,
+        /// because a letter is the one thing a player already reads on the vanilla
+        /// toolbar-config screen, and because two small icons on one card edge would be
+        /// indistinguishable at the sizes they are drawn.
         ///
-        /// The plus is <b>geometry, not a glyph</b>. A font glyph is positioned by its baseline
-        /// and carries side bearings, so "centred" text is never exactly centred — which is the
-        /// defect this replaces. Two rectangles, both built around the same centre, are centred
-        /// by construction at every zoom and cost no font lookup. The T/F buttons carry a
-        /// letter because the two groups are otherwise indistinguishable; a letter is the one
-        /// thing a player already reads on the vanilla toolbar-config screen.
+        /// When the atlas is missing, the previous geometry is drawn: a white disc with a plus cut
+        /// out of it. That is the only case — there is no size condition, so the button keeps the
+        /// same shape at every zoom (ADR-0019 §6).
         /// </summary>
         private void DrawBindButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
         {
@@ -2806,6 +2806,16 @@ namespace Vgs.Ui
             float diameter = radius * 2f;
 
             bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
+
+            // The icon is the whole button, so it is allowed to be almost as tall as the disc
+            // the hit-test is computed from.
+            if (VgsScreenDraw.Icon(VgsIcon.SquarePlus, screenCenter,
+                                   diameter * VgsConstants.PlusIconRatio,
+                                   hot ? ColPlusFillHot : ColPlusFill, clipTopLeft, clipSize))
+            {
+                return;
+            }
+
             VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
                                hot ? ColPlusFillHot : ColPlusFill);
 
@@ -2962,8 +2972,7 @@ namespace Vgs.Ui
             Vector2 dotCenter;
             if (PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter))
             {
-                VgsScreenDraw.Disc(GraphToScreen(dotCenter, clipTopLeft), radius, clipTopLeft, clipSize,
-                                   accent);
+                DrawPortDot(GraphToScreen(dotCenter, clipTopLeft), radius, accent, clipTopLeft, clipSize);
             }
 
             // The remove button: the dot's mirror image, the same size, inverted like the "+".
@@ -2973,29 +2982,72 @@ namespace Vgs.Ui
                 bool hot = ReferenceEquals(node, _hoverRemoveNode)
                            && ReferenceEquals(port, _hoverRemovePort);
 
-                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), fill, hot,
+                // Accent, not the bar's fill: the mark is now bare, so its colour has to carry
+                // the contrast instead of the white disc that used to sit behind it.
+                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), accent, hot,
                                      clipTopLeft, clipSize);
             }
         }
 
         /// <summary>
-        /// Draws a port's remove button: a white disc with an "x" cut out in the bar's own
-        /// background colour, the same inversion the "+" uses — a dark glyph on white stays
-        /// legible at every zoom, a light one on a dark disc does not.
+        /// Draws a port's connection dot: the Font Awesome <c>circle-dot</c> icon at the size the
+        /// dot has always had, or a filled disc when the icon cannot be drawn (ADR-0019).
         ///
-        /// The glyph is text rather than geometry, unlike the plus. An "x" is two diagonal
-        /// strokes, and the screen-space API has no line primitive at all, so it cannot be built
-        /// from rectangles; the font is the only thing that can draw it. Its size is a fraction
-        /// of the zoom, like the disc, so the mark and the button stay in proportion.
+        /// The shape changes on purpose — a ring instead of a disc — but nothing else does: the
+        /// diameter, the colour, the position and the hit-test all come from the same constants
+        /// they came from before, because the icon *is* the dot rather than a mark on it.
+        ///
+        /// The disc is a fallback for a missing texture only. It used to also cover small sizes;
+        /// that is gone, because a dot that is a ring at one zoom and a disc at the next reads as
+        /// a fault (ADR-0019 §6).
+        ///
+        /// A watch port uses the same call with its own colour. Two different shapes for the same
+        /// meaning on one card would be a language nobody reads.
+        /// </summary>
+        private void DrawPortDot(Vector2 screenCenter, float radius, Color color,
+                                 Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (VgsScreenDraw.Icon(VgsIcon.CircleDot, screenCenter, radius * 2f, color,
+                                   clipTopLeft, clipSize))
+            {
+                return;
+            }
+
+            VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize, color);
+        }
+
+        /// <summary>
+        /// Draws a port's remove button: the bare <c>xmark</c> icon, in the port's accent colour
+        /// (ADR-0019).
+        ///
+        /// It used to be an inverted white disc with a dark mark on it (ADR-0014), and that was
+        /// right while the mark was a font glyph that had no shape of its own. Now that the dot
+        /// beside it is a bare ring, the disc is the odd one out: the pair reads as "ring =
+        /// connection, cross = removal" only if neither has a filled backdrop. The colour carries
+        /// the affordance instead — accent for the mark, the bar's own fill behind it — and hover
+        /// brightens the mark, which is the same feedback the dot gets.
+        ///
+        /// The hit target is unchanged: it comes from the radius in `PortGeometry`, not from what
+        /// is painted.
         /// </summary>
         private void DrawPortRemoveButton(Vector2 screenCenter, Color glyph, bool hot,
                                           Vector2 clipTopLeft, Vector2 clipSize)
         {
-            VgsScreenDraw.Disc(screenCenter, VgsConstants.PortControlRadius * _zoom,
-                               clipTopLeft, clipSize, hot ? ColPlusFillHot : ColPlusFill);
+            float radius = VgsConstants.PortControlRadius * _zoom;
+            float diameter = radius * 2f;
 
+            Color mark = hot ? ColPlusFillHot : glyph;
+
+            if (VgsScreenDraw.Icon(VgsIcon.Xmark, screenCenter,
+                                   diameter * VgsConstants.PortRemoveIconRatio, mark,
+                                   clipTopLeft, clipSize))
+            {
+                return;
+            }
+
+            // Fallback: the font's "x", in the same colour the icon would have used.
             VgsScreenDraw.TextCentered(VgsText.PortRemoveGlyph, screenCenter,
-                                       VgsConstants.PortRemoveGlyphScale * _zoom, glyph);
+                                       VgsConstants.PortRemoveGlyphScale * _zoom, mark);
         }
 
         /// <summary>

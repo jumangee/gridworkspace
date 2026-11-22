@@ -369,17 +369,21 @@ namespace Vgs.Ui
 
             if (!HasGroupButtons(node))
             {
-                return Hits(node, PortGroup.Single, graphPoint, aspectX);
+                // The single button is drawn as a square icon whose corners reach further from
+                // the centre than its sides do, so it gets a wider tolerance than the two discs.
+                // Otherwise the visible corners would be unclickable — see BindHitTolerance.
+                return Hits(node, PortGroup.Single, graphPoint, aspectX,
+                            VgsConstants.BindHitToleranceSingle);
             }
 
             // The two discs do not overlap, but the hit tolerance could make them touch, so
             // "true" is tested first and wins a tie — it is the common case.
-            if (Hits(node, PortGroup.Yes, graphPoint, aspectX))
+            if (Hits(node, PortGroup.Yes, graphPoint, aspectX, VgsConstants.BindHitTolerancePair))
             {
                 group = PortGroup.Yes;
                 return true;
             }
-            if (Hits(node, PortGroup.No, graphPoint, aspectX))
+            if (Hits(node, PortGroup.No, graphPoint, aspectX, VgsConstants.BindHitTolerancePair))
             {
                 group = PortGroup.No;
                 return true;
@@ -387,12 +391,13 @@ namespace Vgs.Ui
             return false;
         }
 
-        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX)
+        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX,
+                                 float tolerance)
         {
             Vector2 center;
             if (!TryBindButton(node, group, aspectX, out center)) return false;
 
-            float r = BindButtonRadius(node, group) * 1.2f;
+            float r = BindButtonRadius(node, group) * tolerance;
             float dx = (graphPoint.X - center.X) / aspectX;
             float dy = graphPoint.Y - center.Y;
             return dx * dx + dy * dy <= r * r;

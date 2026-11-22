@@ -327,8 +327,21 @@ pwsh -File tools/review-check.ps1       # статические правила 
 pwsh -File tools/offline-check.ps1      # офлайн-проверки логики графа
 pwsh -File tools/deploy-mod.ps1         # выложить мод в папку модов
 pwsh -File tools/tail-mod-log.ps1       # строки [VGS] из последнего лога
+pwsh -File tools/build-icon-atlas.ps1   # пересобрать иконки контролов (только при смене набора)
+pwsh -File tools/build-icon-atlas.ps1 -Verify  # проверить, что иконки не отстали от исходников
 ```
 
 Мод не поставляет DLL: игра сама компилирует `.cs` из `Data/Scripts/`, поэтому стек ограничен
 C# 7.3 и .NET Framework 4.x, а допустимость типов проверяется по вайтлисту игры, а не по
 документации.
+
+## Благодарности и лицензии
+
+Иконки контролов — **Font Awesome Free 7.3.1**, © Fonticons, Inc.,
+<https://fontawesome.com>, лицензия иконок **CC BY 4.0**
+(<https://fontawesome.com/license/free>). Исходные `.svg` лежат в
+[`tools/icon-atlas/icons/`](tools/icon-atlas/icons/README.md), текстуры собираются из них
+скриптом `tools/build-icon-atlas.ps1`. Шрифты Font Awesome (SIL OFL 1.1) в моде не
+используются.
+
+Остальной код мода — собственность проекта.

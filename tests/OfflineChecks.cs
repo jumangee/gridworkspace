@@ -187,6 +187,12 @@ internal static class OfflineChecks
         Console.WriteLine("=== watch list reconciled with the game (ADR-0018) ===");
         WatchReconciliation();
 
+        Console.WriteLine("=== icon atlas table (ADR-0019) ===");
+        IconAtlasTable();
+
+        Console.WriteLine("=== icon placement and clipping (ADR-0019) ===");
+        IconPlacementChecks();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -735,6 +741,23 @@ internal static class OfflineChecks
         Check(hit == PortGroup.Single, "the plus reports the single group");
         Check(!PortGeometry.HitBindButton(timer, plusCenter + new Vector2(0.05f, 0f), aspect, out hit),
               "far to the right of the plus is a miss");
+
+        // The single button is drawn as a square icon (ADR-0019 §4a), and a square's corners reach
+        // further from its centre than its sides do. The hit target has to cover them, or the
+        // corners would look pressable and do nothing. The corner offset in layout units is
+        // PlusIconRatio · √2 · r along the diagonal, which is PlusIconRatio · r in each axis.
+        float bindRadius = VgsConstants.PlusButtonRadius;
+        var cornerOffset = new Vector2(VgsConstants.PlusIconRatio * bindRadius,
+                                       VgsConstants.PlusIconRatio * bindRadius);
+        Check(PortGeometry.HitBindButton(timer, plusCenter + cornerOffset, aspect, out hit),
+              "the drawn corner of the bind icon is inside the hit target");
+        Check(PortGeometry.HitBindButton(timer, plusCenter - cornerOffset, aspect, out hit),
+              "the opposite corner is inside the hit target too");
+
+        // And the tolerance is not unlimited: a point well beyond the icon is still a miss.
+        var farCorner = new Vector2(bindRadius * 2f, bindRadius * 2f);
+        Check(!PortGeometry.HitBindButton(timer, plusCenter + farCorner, aspect, out hit),
+              "well outside the bind icon is a miss, so the wider tolerance is still bounded");
 
         // A yes/no block: two discs, one above the other, each hit-testing to its own group.
         Node sensor = MakeNode(2, "LargeBlockSensor", SensorToolbar());
@@ -2304,5 +2327,260 @@ internal static class OfflineChecks
         Check(controller.Watched.Count == 1, "a missing resolver still adds the target");
         Check(controller.Watched[0].DisplayName == "40",
               "without a name the bar falls back to the id, not to an empty label");
+    }
+
+    // ------------------------------------------------------------------ icon atlas (ADR-0019)
+    //
+    // The atlas is built by tools/build-icon-atlas.ps1 and its table is generated, so what is
+    // asserted here is the contract between that table and the drawing code: every enum member
+    // resolves, every cell lies inside the texture, no two cells overlap, and the numbers the
+    // drawing code multiplies are not degenerate. A wrong cell shows the neighbouring icon; a
+    // cell outside the texture draws nothing at all; a zero aspect collapses the destination.
+    private static void IconAtlasTable()
+    {
+        Check(VgsIconAtlas.Count > 0, "the icon build produced at least one icon");
+
+        var members = (VgsIcon[])Enum.GetValues(typeof(VgsIcon));
+
+        // A drift detector, not a behaviour check: both numbers come from the same generator, so
+        // this can only fail after a hand edit — which is exactly what it is for.
+        Check(members.Length == VgsIconAtlas.Count,
+              "the VgsIcon enum and the generated table agree on the icon count");
+
+        Check(VgsIconAtlas.TextureSize > 0, "the icon textures have a size");
+
+        // The texture is square and is drawn square, so its side must be a multiple of 4: DXT5
+        // compresses 4x4 blocks, and a size that is not a multiple of 4 pads every block.
+        Check(VgsIconAtlas.TextureSize % 4 == 0,
+              "the texture side is a multiple of 4, so the DXT5 blocks are not padded");
+
+        var names = new List<string>();
+
+        for (int i = 0; i < members.Length; i++)
+        {
+            VgsIcon icon = members[i];
+
+            Rectangle source;
+            Check(VgsIconAtlas.TryGetSource(icon, out source),
+                  "every VgsIcon member has a source rectangle (" + icon + ")");
+
+            // One texture per icon: the whole of it is the source, at its origin.
+            Check(source.X == 0 && source.Y == 0
+                  && source.Width == VgsIconAtlas.TextureSize
+                  && source.Height == VgsIconAtlas.TextureSize,
+                  "every icon draws from a whole texture, not from a cell of one (" + icon + ")");
+
+            string name = VgsIconAtlas.MaterialName(icon);
+            Check(!string.IsNullOrEmpty(name), "every icon has a material name (" + icon + ")");
+            Check(name.StartsWith(VgsIconAtlas.MaterialPrefix),
+                  "every material name carries the mod prefix, so it cannot collide with a "
+                  + "vanilla SubtypeName (" + icon + ")");
+
+            // Two icons sharing a SubtypeName would resolve to one texture and one of them would
+            // silently draw the other's picture.
+            Check(!names.Contains(name),
+                  "no two icons share a material name (" + icon + ")");
+            names.Add(name);
+
+            float textureScale = VgsIconAtlas.TextureScale(icon);
+            Check(textureScale >= 1f && textureScale < 2f,
+                  "the texture is at least as large as the ink it contains, and not absurdly "
+                  + "larger (" + icon + ")");
+
+            // The transparent margin must stay a small fraction of the texture: the icon is drawn
+            // at every zoom now, so the margin is pure padding around the ink at all sizes. If it
+            // ever grew to a fifth of the texture, the visible mark would shrink noticeably
+            // against the control's own box.
+            Check(textureScale - 1f <= 0.2f,
+                  "the transparent margin is a small fraction of the texture, so the icon is not "
+                  + "drawn mostly as padding (" + icon + ")");
+        }
+
+        // The lookup has to refuse a value that is not a member, or an icon added to the enum but
+        // not to the build would silently draw the first texture.
+        Rectangle unknown;
+        Check(!VgsIconAtlas.TryGetSource((VgsIcon)999, out unknown),
+              "an unknown icon has no source, rather than the first one");
+        Check(!VgsIconAtlas.TryGetSource((VgsIcon)(-1), out unknown),
+              "a negative icon value is refused, not treated as an index");
+    }
+
+    // ------------------------------------------------------------------ icon placement
+    //
+    // The three ways an icon ends up in the wrong place, each asserted separately: wrong pixel
+    // space, fractional position, and clipping that moves the icon instead of cutting it.
+    private static void IconPlacementChecks()
+    {
+        const float width = 1920f;
+        const float height = 1080f;
+
+        var canvasTopLeft = new Vector2(0.1f, 0.12f);
+        var canvasSize = new Vector2(0.8f, 0.7f);
+
+        // ---- a whole icon, inside the canvas ----
+
+        Rectangle destination, clip;
+        bool placed = IconPlacement.TryPlace(new Vector2(0.5f, 0.5f), 0.0135f, 1f, width, height,
+                                             canvasTopLeft, canvasSize, out destination, out clip);
+        Check(placed, "an icon inside the canvas is placed");
+
+        // 0.0135 of 1080 is 14.58 px, which rounds to 15.
+        Check(destination.Width == 15 && destination.Height == 15,
+              "the icon is drawn at its ink height in screen pixels");
+        Check(destination.X + destination.Width / 2 == (int)Math.Round(0.5f * width),
+              "the icon is centred horizontally on the requested point, in window pixels");
+        Check(destination.Y + destination.Height / 2 == (int)Math.Round(0.5f * height),
+              "the icon is centred vertically on the requested point, in window pixels");
+
+        // Stated as intent, not as the formula above: whatever the rounding, the drawn centre must
+        // be within half a pixel of the point the caller asked for. An odd side puts the exact
+        // centre on a half pixel, so zero would be asserting something impossible.
+        Check(Math.Abs(destination.X + destination.Width / 2f - 0.5f * width) <= 0.5f
+              && Math.Abs(destination.Y + destination.Height / 2f - 0.5f * height) <= 0.5f,
+              "the drawn centre is within half a pixel of the requested centre");
+
+        // ---- the pixel space is the window, not the 4:3 safe area ----
+        //
+        // On 16:9 the safe-GUI box is 1440 wide inside a 1920 window, so a normalised 0.5 would
+        // land at 720 instead of 960 if the conversion were done in the wrong space. That is the
+        // defect this check exists for.
+        Check(destination.X + destination.Width / 2 > 900,
+              "the centre is computed in window pixels, not in the 4:3 safe area");
+
+        // A source rectangle whose origin is NOT square, so a bug that reads source.X where it
+        // means source.Y (or the reverse) cannot hide behind two equal numbers.
+        var offsetSource = new Rectangle(40, 12, 200, 160);
+
+        Rectangle source = new Rectangle(8, 8, 256, 256);
+        Rectangle visibleDestination, visibleSource;
+        Check(IconPlacement.TryClip(destination, source, clip, out visibleDestination, out visibleSource),
+              "an icon fully inside the canvas is not clipped");
+        Check(visibleDestination == destination, "an unclipped destination is unchanged");
+        Check(visibleSource == source, "an unclipped source is unchanged");
+
+        // ---- a fractional position is snapped ----
+        //
+        // The same height at a zoom that produces a fractional pixel size: the destination must
+        // still be whole pixels, or the filter blurs the icon.
+        Rectangle fractional, fractionalClip;
+        Check(IconPlacement.TryPlace(new Vector2(0.31337f, 0.27111f), 0.0131f, 1f, width, height,
+                                     canvasTopLeft, canvasSize, out fractional, out fractionalClip),
+              "a fractional centre still places the icon");
+        Check(fractional.Width == fractional.Height,
+              "the quad is drawn square, because the texture is square");
+        Check(fractional.X == (int)fractional.X && fractional.Y == (int)fractional.Y,
+              "the destination starts on a whole pixel");
+
+        // ---- clipping cuts both rectangles by the same fraction ----
+        //
+        // The icon is placed so that its left half falls outside the canvas.
+        var farLeft = new Vector2(canvasTopLeft.X - 0.002f, 0.5f);
+        Rectangle cutDestination, cutClip;
+        Check(IconPlacement.TryPlace(farLeft, 0.0135f, 1f, width, height,
+                                     canvasTopLeft, canvasSize, out cutDestination, out cutClip),
+              "an icon straddling the canvas edge is still placed");
+
+        Check(IconPlacement.TryClip(cutDestination, source, cutClip,
+                                    out visibleDestination, out visibleSource),
+              "a straddling icon is clipped, not dropped");
+
+        Check(visibleDestination.Width < cutDestination.Width,
+              "the visible part is narrower than the whole icon");
+        Check(visibleSource.Width < source.Width,
+              "the source is cut by the same amount, so the icon does not slide");
+
+        // The two fractions must agree to within the rounding of one source pixel: the source is
+        // 256 texels wide and the destination a handful of pixels, so exact equality is not
+        // reachable and insisting on it would be asserting the wrong thing.
+        float destinationFraction = (float)visibleDestination.Width / cutDestination.Width;
+        float sourceFraction = (float)visibleSource.Width / source.Width;
+        Check(Math.Abs(destinationFraction - sourceFraction) <= 0.5f / source.Width + 1e-5f,
+              "the visible fraction of the source equals the visible fraction of the destination "
+              + "(within one texel)");
+
+        // ---- an off-centre source keeps its origin ----
+        //
+        // The cut is applied to the source's own origin, not to zero: a cell that does not start
+        // at (0,0) must still yield a source rectangle inside itself.
+        Rectangle oddDestination, oddClip;
+        Check(IconPlacement.TryPlace(farLeft, 0.0135f, 1f, width, height,
+                                     canvasTopLeft, canvasSize, out oddDestination, out oddClip),
+              "an icon with an offset source is placed");
+        Check(IconPlacement.TryClip(oddDestination, offsetSource, oddClip,
+                                    out visibleDestination, out visibleSource),
+              "an icon with an offset source is clipped");
+        Check(visibleSource.X >= offsetSource.X
+              && visibleSource.Y >= offsetSource.Y
+              && visibleSource.X + visibleSource.Width <= offsetSource.X + offsetSource.Width
+              && visibleSource.Y + visibleSource.Height <= offsetSource.Y + offsetSource.Height,
+              "the clipped source stays inside its cell, whatever the cell's origin");
+
+        // ---- clipping on the vertical axis is a separate code path ----
+        //
+        // Everything above cuts horizontally, where the vertical cut is zero — so a copy-paste
+        // that read source.X where it means source.Y would pass all of it. This case cuts the
+        // top edge only, and asserts the height fraction the same way the width fraction is
+        // asserted above. An icon whose top half is above the canvas must lose the top of its
+        // source too, or it would be drawn squashed rather than cropped.
+        var aboveCanvas = new Vector2(0.5f, canvasTopLeft.Y - 0.002f);
+        Rectangle topDestination, topClip;
+        Check(IconPlacement.TryPlace(aboveCanvas, 0.0135f, 1f, width, height,
+                                     canvasTopLeft, canvasSize, out topDestination, out topClip),
+              "an icon straddling the canvas top is still placed");
+
+        Check(IconPlacement.TryClip(topDestination, offsetSource, topClip,
+                                    out visibleDestination, out visibleSource),
+              "an icon straddling the canvas top is clipped, not dropped");
+        Check(visibleDestination.Height < topDestination.Height,
+              "the visible part is shorter than the whole icon");
+        Check(visibleDestination.Width == topDestination.Width,
+              "a vertical cut leaves the width alone");
+        Check(visibleSource.Height < offsetSource.Height,
+              "the source is cut vertically by the same amount, so the icon does not squash");
+        Check(visibleSource.Width == offsetSource.Width,
+              "a vertical cut leaves the source width alone");
+
+        float visibleHeightFraction = (float)visibleDestination.Height / topDestination.Height;
+        float sourceHeightFraction = (float)visibleSource.Height / offsetSource.Height;
+        Check(Math.Abs(visibleHeightFraction - sourceHeightFraction) <= 0.5f / offsetSource.Height + 1e-5f,
+              "the visible fraction of the source height equals the visible fraction of the "
+              + "destination height (within one texel)");
+
+        // The cut is at the top, so the visible part must start lower than the whole one — this
+        // is what distinguishes "cropped from the top" from "shrunk from the middle".
+        Check(visibleDestination.Y > topDestination.Y && visibleSource.Y > offsetSource.Y,
+              "the surviving part is the bottom of the icon, so both rectangles start lower");
+
+        // ---- entirely outside: nothing is drawn ----
+        Rectangle outsideDestination, outsideClip;
+        var farAway = new Vector2(2f, 2f);
+        Check(!IconPlacement.TryPlace(farAway, 0.0135f, 1f, width, height,
+                                      canvasTopLeft, canvasSize, out outsideDestination, out outsideClip),
+              "an icon entirely outside the canvas is not placed at all");
+
+        // ---- degenerate inputs never produce a drawable rectangle ----
+        Rectangle zeroDestination, zeroClip;
+        Check(!IconPlacement.TryPlace(new Vector2(0.5f, 0.5f), 0f, 1f, width, height,
+                                      canvasTopLeft, canvasSize, out zeroDestination, out zeroClip),
+              "an icon of zero height is not placed");
+        Check(!IconPlacement.TryPlace(new Vector2(0.5f, 0.5f), 0.0135f, 1f, 0f, 0f,
+                                      canvasTopLeft, canvasSize, out zeroDestination, out zeroClip),
+              "an icon is not placed before the client size is known");
+        Check(!IconPlacement.TryPlace(new Vector2(0.5f, 0.5f), 0.0001f, 1f, width, height,
+                                      canvasTopLeft, canvasSize, out zeroDestination, out zeroClip),
+              "an icon smaller than a pixel is not placed");
+        Check(!IconPlacement.TryClip(new Rectangle(0, 0, 10, 10), source,
+                                     new Rectangle(100, 100, 10, 10),
+                                     out visibleDestination, out visibleSource),
+              "a clip that misses the icon entirely yields nothing");
+
+        // ---- the layout rectangle becomes window pixels ----
+        Rectangle canvasPixels = IconPlacement.ToPixels(canvasTopLeft, canvasSize, width, height);
+        Check(canvasPixels.X == (int)Math.Floor(canvasTopLeft.X * width),
+              "a layout X becomes a window pixel");
+        Check(canvasPixels.Y == (int)Math.Floor(canvasTopLeft.Y * height),
+              "a layout Y becomes a window pixel");
+        Check(canvasPixels.Width > 0 && canvasPixels.Height > 0,
+              "a non-empty layout rectangle becomes a non-empty pixel rectangle");
     }
 }

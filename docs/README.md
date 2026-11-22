@@ -46,6 +46,7 @@
 | [01-research/api-toolbar.md](01-research/api-toolbar.md) | Тулбар блока: кто может управлять другими, форма тулбара, «да»/«нет», правило «одно действие на страницу», запись через `BeginChanges().Apply()`; какой API разрешён моду и почему |
 | [01-research/api-block-groups.md](01-research/api-block-groups.md) | Группы блоков: где живут, как игра считает их действия (пересечение по id, а не «общий предок»), элемент тулбара `GroupAction` и что происходит при срабатывании |
 | [01-research/api-persistence.md](01-research/api-persistence.md) | Хранение данных на блоке (`MyModStorageComponent`, регистрация GUID в SBC), стабильность `EntityId` при save/load, копировании и резке грида, чекбокс на всех `IMyTerminalBlock` через `CustomControlGetter` |
+| [01-research/icons-fontawesome.md](01-research/icons-fontawesome.md) | Иконки Font Awesome в редакторе: полный перечень способов (атлас, отдельная текстура на иконку, растеризация в рантайме, свой bitmap-шрифт, геометрия), что из этого разрешено моду, почему атлас не переживает мипы, почему DDS-контейнер оказался непригоден для спрайтов и чем текстура отличается от растеризации под размер — с измерениями, и какие правила размера при этом сохраняются |
 | [01-research/block-catalog-notes.md](01-research/block-catalog-notes.md) | Как собран каталог 1559 подтипов блоков, 50 кокпитов, пробелы |
 | [01-research/web-research.md](01-research/web-research.md) | Веб-ресёрч: SDK, UI-подходы, готовый код, ограничения. 79 КБ со ссылками |
 
@@ -67,6 +68,9 @@
 | `tools/dump-se-il.ps1` | Дизассемблер IL выбранных методов игры (читаемая семантика API) |
 | `tools/read-se-whitelist.ps1` | Дизассемблер IL-вайтлиста скриптов |
 | `tools/build-block-catalog.ps1` | Пересборка каталога блоков |
+| `tools/build-icon-atlas.ps1` | Пересборка иконок контролов: SVG → PNG без мипов (по файлу на иконку), `GuiTextures.sbc` и сгенерированная таблица. `-Verify` проверяет, что закоммиченные артефакты совпадают со свежей сборкой |
+| `tools/icon-atlas/` | Исходные `.svg`, манифест `icons.txt`, сборщик, `verify_textures.py` (независимая проверка готовых PNG), `preview.py` (превью контролов на реальных размерах) |
+| `tools/icon-proto/` | Стенд исследования: разбор SVG-контуров Font Awesome, растеризация в маску точного размера, сравнение с атласом и с FreeType, контактные листы. В мод не входит |
 | `tools/verify-compile.ps1` | Шлюз компиляции |
 | `tools/check-whitelist.ps1` | Шлюз вайтлиста: запрещённые типы ловятся до запуска игры |
 | `tools/review-check.ps1` | Шлюз качества: правила R001–R010 |

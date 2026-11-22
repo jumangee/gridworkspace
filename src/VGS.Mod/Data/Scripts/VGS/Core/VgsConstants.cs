@@ -289,11 +289,63 @@ namespace Vgs.Core
         public const float PortLabelScale = 0.36f;
 
         /// <summary>
-        /// Font scale of the "x" glyph inside a port's remove button at zoom 1. Smaller than
-        /// the T/F glyph because the disc it sits in is smaller: 75% of a port bar's height,
-        /// not 44% of a card's.
+        /// Font scale of the "x" glyph inside a port's remove button at zoom 1, used only when
+        /// the icon atlas is unavailable (ADR-0019). Smaller than the T/F glyph because the disc
+        /// it sits in is smaller: 75% of a port bar's height, not 44% of a card's.
         /// </summary>
         public const float PortRemoveGlyphScale = 0.40f;
+
+        // ---- icon atlas (ADR-0019) ----
+        //
+        // The editor draws its three controls as Font Awesome icons whenever the atlas is loaded,
+        // at every zoom. There is deliberately no per-icon size floor here: one was implemented
+        // and removed after acceptance in the game.
+        //
+        // The floor existed so that a control would fall back to its old geometry once the icon
+        // became too small to read. In the game that read as a bug, not as a safeguard: the port
+        // dot was a ring at 300% and a plain disc at 112%, and the bind button was a square with a
+        // plus at 300% and a circled "+" at 56%. The shape changing under zoom is more confusing
+        // than an icon that is merely small, and a simulation of the real sampler (bilinear, no
+        // mips) shows the shapes survive far below any floor worth setting: the ring keeps its
+        // hole at 5 px, and the square-plus still shows a plus at 9 px. So the rule is now the
+        // simple one — icon if there is a texture, and only the degenerate 1-pixel case is
+        // refused by IconPlacement.
+
+        /// <summary>
+        /// Height of the "x" icon inside a port's remove button, as a fraction of the button's
+        /// diameter.
+        ///
+        /// The cross's ink is square, so its tips reach the corners of its box; 0.66 leaves a
+        /// small rim against the port bar without shrinking the mark more than it has to.
+        /// </summary>
+        public const float PortRemoveIconRatio = 0.66f;
+
+        /// <summary>
+        /// Height of the bind ("+") icon, as a fraction of the button's diameter. Unlike the "x"
+        /// it has no disc behind it: <c>square-plus</c> Regular is a self-contained outline, and
+        /// knocking an outline out of a filled disc leaves nothing to see.
+        /// </summary>
+        public const float PlusIconRatio = 0.92f;
+
+        /// <summary>
+        /// Hit tolerance of the single bind button, as a multiple of its drawn radius.
+        ///
+        /// It is larger than the tolerance of the yes/no pair on purpose. The pair is two discs,
+        /// whose edge is at the radius, so 1.2 is already generous. The single button is a
+        /// square outline: its sides sit at <see cref="PlusIconRatio"/> · r from the centre but
+        /// its corners reach <see cref="PlusIconRatio"/> · √2 · r ≈ 1.30 · r. With the pair's
+        /// tolerance those corners would be drawn but not clickable — a control that looks
+        /// pressable and is not. 1.35 covers the corners with a margin and cannot collide with
+        /// anything: the single button has no neighbour to confuse it with.
+        /// </summary>
+        public const float BindHitToleranceSingle = 1.35f;
+
+        /// <summary>
+        /// Hit tolerance of each disc of the yes/no bind pair, as a multiple of its drawn radius.
+        /// Kept tight because the two discs are close together and a wider circle would make
+        /// their targets overlap.
+        /// </summary>
+        public const float BindHitTolerancePair = 1.2f;
 
         /// <summary>
         /// Fallback line height as a fraction of the bar's height, used only when the font
@@ -455,9 +507,10 @@ namespace Vgs.Core
         public const string FalseButtonGlyph = "F";
 
         /// <summary>
-        /// Glyph on a port's remove button. The Latin letter, not the multiplication sign: the
-        /// glyph is drawn by the game's font, and the plain letter exists in every font the
-        /// editor may fall back to, while U+00D7 is not guaranteed in any of them.
+        /// Glyph on a port's remove button, used only when the icon atlas is unavailable
+        /// (ADR-0019). The Latin letter, not the multiplication sign: the glyph is drawn by the
+        /// game's font, and the plain letter exists in every font the editor may fall back to,
+        /// while U+00D7 is not guaranteed in any of them.
         /// </summary>
         public const string PortRemoveGlyph = "x";
 

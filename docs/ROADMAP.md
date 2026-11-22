@@ -11,7 +11,7 @@
 загружаются игрой. Приёмочные проверки в игре ещё не выполнены — их делает человек.
 
 Что именно уже сделано на этапе 3: карточка-метка, порты-стаканы под карточкой, режим
-привязки через круглую «+» (у блоков с двумя группами — пара «T»/«F»), меню действий
+привязки через кнопку «+» (у блоков с двумя группами — пара «T»/«F»), меню действий
 получателя, отрисовка линий и их перерисовка при перетаскивании, **запись связи в реальный
 тулбар исходного блока** — то есть связь работает в игре без вычислителя, — **удаление связи
 мышью** кнопкой «x» на полосе порта и **настройка списка отслеживания event controller** прямо
@@ -30,7 +30,8 @@
 [ADR-0014](adr/0014-port-remove-button-and-port-look.md),
 [ADR-0015](adr/0015-block-groups.md),
 [ADR-0016](adr/0016-group-drag.md),
-[ADR-0017](adr/0017-event-controller-watch-ports.md).
+[ADR-0017](adr/0017-event-controller-watch-ports.md),
+[ADR-0019](adr/0019-icons-atlas.md).
 Event controller **реализован** и ждёт проверки в игре: квадратная точка привязки «#»,
 жёлтые порты отслеживания с пунктирной линией в карточку цели, отказ красной линией на
 секунду, описание режима на карточке, список — в хранилище контроллера и проигрывается после
@@ -231,6 +232,7 @@ Event controller **реализован** и ждёт проверки в игр
 | Сверка графа с тулбарами при обновлении | `Game/GridGraphBuilder.ReconcileToolbarEdges` |
 | Сообщение об отказе записи | `VgsEditorScreen.Warn`, строки `VgsText.Warn*` |
 | Удаление связи мышью | `Ui/PortGeometry` (кнопка «x» на полосе, hit-test), `Ui/VgsEditorScreen.RemovePortConnections`, `Model/GridGraph.CollectEdgesForPort`; порядок «ячейка тулбара → ребро» — [ADR-0014](adr/0014-port-remove-button-and-port-look.md) |
+| Иконки контролов Font Awesome | `tools/build-icon-atlas.ps1` (SVG → PNG, по файлу на иконку), `Textures/VGS/Icons/*.png`, `Data/GuiTextures.sbc`, `Ui/VgsIconAtlas.g.cs` (сгенерированная таблица), `Ui/VgsIcons.cs` (материалы иконок), `Ui/IconPlacement.cs` (пиксели окна и обрезка), `Ui/VgsScreenDraw.Icon`; точки, кнопка привязки и «x» — [ADR-0019](adr/0019-icons-atlas.md) |
 | Наблюдение event controller за блоками | `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`), `Model/GridGraph` (`TryAddWatch`/`RemoveWatch`/`LayoutPorts`), `Model/NodeStateFormat.FormatIds/ParseIds`, `Ui/PortGeometry` (точка «#», полосы отслеживания), `Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen` (режим отслеживания), `Game/EventControllerProbe`, `Game/EventControllerKeeper`, `Game/NodeStateStore`; решение — [ADR-0017](adr/0017-event-controller-watch-ports.md) |
 | Источники событий, которые тулбар не умеет (порог, значение) | новый `Vgs.Game/EventSources.cs` |
 | Вычислитель для условий и значений | новый `Vgs.Game/GraphEvaluator.cs` |

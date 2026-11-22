@@ -87,6 +87,13 @@ namespace Vgs.Ui
         private static float _clientHeightPixels;
 
         /// <summary>
+        /// Client-area width in pixels; 0 when the safe area is unavailable. Needed only by
+        /// <see cref="Icon"/>, which hands window pixels to `DrawPixels` and therefore has to
+        /// convert the layout's X axis itself.
+        /// </summary>
+        private static float _clientWidthPixels;
+
+        /// <summary>
         /// Client-area height ÷ width. 1 when unknown, which degrades circles to the old
         /// unstretched look rather than to something worse.
         /// </summary>
@@ -125,6 +132,7 @@ namespace Vgs.Ui
             // draw with, and that is reported rather than silently opening a black screen.
             ResolveFont();
             EnsureSolidBrush();
+            VgsIcons.Ensure();
 
             if (_font == null && !_solidReady)
             {
@@ -234,6 +242,10 @@ namespace Vgs.Ui
             _resourcesReady = false;
             _resourcesFailed = false;
 
+            // The atlas itself belongs to the game (it is a shipped texture), so there is nothing
+            // to dispose — only the material ids this session resolved have to be forgotten.
+            VgsIcons.Release();
+
             // Nothing is on screen after a release, so the next session starts from the
             // identity transform rather than from a stale safe area.
             ResetApiTransform();
@@ -285,7 +297,14 @@ namespace Vgs.Ui
                 // layout is fullWidth pixels and one Y unit is safe.Height. Round shapes need
                 // that ratio; see Disc and AspectX.
                 _clientHeightPixels = safe.Height;
+                _clientWidthPixels = fullWidth;
                 _clientAspect = fullWidth > 0f ? safe.Height / fullWidth : 1f;
+
+                // Icon textures are resolved here rather than only in EnsureResources, because
+                // EnsureResources latches: it runs once and never again, so a texture that was
+                // not yet streamed at that moment would never be picked up. This runs every
+                // frame; a resolved set costs one bool test.
+                VgsIcons.Ensure();
             }
             catch (Exception e)
             {
@@ -305,6 +324,7 @@ namespace Vgs.Ui
             // is the least wrong of the available answers.
             _clientAspect = 1f;
             _clientHeightPixels = 0f;
+            _clientWidthPixels = 0f;
         }
 
         /// <summary>Client-area point to API point. Value types only: no allocation.</summary>
@@ -563,6 +583,79 @@ namespace Vgs.Ui
         /// from turning one circle into hundreds of queued quads.
         /// </summary>
         private const int MaxDiscSlabs = 48;
+
+        // ------------------------------------------------------------------ icons (ADR-0019)
+
+        /// <summary>
+        /// Draws an icon so that its ink is <paramref name="inkHeight"/> layout units tall,
+        /// centred on <paramref name="center"/> (both in client-area coordinates).
+        ///
+        /// This is the only place a sprite is drawn from a texture, and it differs from
+        /// <see cref="Rect"/> in three ways that all matter:
+        ///
+        ///  * <b>It uses <c>DrawPixels</c>, not <c>Draw</c>.</b> `Draw` converts a normalised
+        ///    position from the safe-GUI 4:3 box; `DrawPixels` converts nothing, so the caller
+        ///    must hand it window pixels. <see cref="IconPlacement"/> does that conversion with
+        ///    the same transform the rest of this class uses for the pointer.
+        ///  * <b>It snaps to whole pixels.</b> A sprite on a half-pixel boundary is resampled,
+        ///    which is the blur the textures were built to avoid.
+        ///  * <b>It clips by cutting the source as well.</b> A card that scrolls under the header
+        ///    is cut on both rectangles, so the icon does not slide inside its own box.
+        ///
+        /// Returns false when nothing was drawn: no such texture, or it lies entirely outside the
+        /// canvas. The caller then draws the old shape, which is why this reports instead of just
+        /// returning.
+        ///
+        /// There is no size condition. An earlier version refused icons below a per-icon
+        /// legibility floor and let the caller fall back to geometry; in the game that made the
+        /// control change shape as the player zoomed out, which reads as a bug. ADR-0019 §6 has
+        /// the reversal and the measurement behind it.
+        ///
+        /// One residual risk, recorded rather than hidden: <c>DrawPixels</c> drops a sprite whose
+        /// texture is not resident, and says nothing. <see cref="VgsIcons"/> checks that the
+        /// material resolves and that its file reads as an image, but the only API that answers
+        /// "is it uploaded yet" is <c>MyRenderProxy.IsTextureLoaded</c>, which the mod whitelist
+        /// does not allow. So on the first frame or two after a world loads, this can return true
+        /// for a sprite the renderer then discards, and the control is blank for those frames
+        /// instead of showing its old shape. Every later frame is covered.
+        /// </summary>
+        public static bool Icon(VgsIcon icon, Vector2 center, float inkHeight, Color color,
+                                Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            MyStringId material;
+            if (!VgsIcons.TryGetMaterial(icon, out material)) return false;
+
+            try
+            {
+                Rectangle destination, clip;
+                if (!IconPlacement.TryPlace(center, inkHeight, VgsIconAtlas.TextureScale(icon),
+                                            _clientWidthPixels, _clientHeightPixels,
+                                            clipTopLeft, clipSize, out destination, out clip))
+                {
+                    return false;
+                }
+
+                Rectangle source;
+                if (!VgsIconAtlas.TryGetSource(icon, out source)) return false;
+
+                Rectangle visibleDestination, visibleSource;
+                if (!IconPlacement.TryClip(destination, source, clip,
+                                           out visibleDestination, out visibleSource))
+                {
+                    return false;
+                }
+
+                MyScreenSpaceSprite.DrawPixels(material, visibleDestination, visibleSource, color,
+                                               0f, Layer);
+
+                return true;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("drawicon", "icon draw failed", e, 600);
+                return false;
+            }
+        }
 
         /// <summary>Draws text with its top-left corner at a client-area position.</summary>
         public static void Text(string text, Vector2 position, float scale, Color color)

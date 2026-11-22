@@ -1,0 +1,12 @@
+# Icons that go into the atlas, one per line.
+#
+#   <id>  <svg file>  <comment for the generated doc comment>
+#
+# The id becomes a member of the generated `VgsIcon` enum, so it must be a valid C# identifier.
+# Order is the atlas cell order and the enum order; appending a line is the normal case.
+#
+# After editing: pwsh -File tools/build-icon-atlas.ps1
+
+CircleDot       circle-dot-solid.svg      circle-dot (Solid): the port's connection dot
+SquarePlus      square-plus-regular.svg   square-plus (Regular): the bind ("+") button
+Xmark           xmark-solid.svg           xmark (Solid): the remove-connection glyph
