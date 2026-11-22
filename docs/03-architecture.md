@@ -24,6 +24,9 @@
 | [0013](adr/0013-show-in-vgs-flag.md) | Флаг видимости узла — на блоке; чекбокс «Show in VGS» у всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [0014](adr/0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет все связи порта (сначала ячейка тулбара, потом ребро); точка — зеркало кнопки; подпись по центру и пропорционально зуму; рамка порта — цветом карточки |
 | [0015](adr/0015-block-groups.md) | Группы блоков — узлы второго вида: рамка позади карточек, «Show in VGS» агрегируется по участникам, входы по правилу игры (пересечение действий, а не «общий предок»), связь — элемент `GroupAction` |
+| [0016](adr/0016-group-drag.md) | Перенос группы — одним смещением по всем нарисованным участникам; ручка — полоса имени |
+| [0017](adr/0017-event-controller-watch-ports.md) | Event controller: квадратная точка привязки «#», порты отслеживания (жёлтые, пунктир в карточку цели), отказ красной линией, описание режима на карточке |
+| [0018](adr/0018-game-is-the-source-of-truth.md) | Список отслеживания читается из игры; хранилище мода — надстройка над игровым списком; игровые записи из редактора не удаляются |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -53,9 +56,11 @@
         │
         ├──► Vgs.Game ──── VgsTerminalControls   регистрирует кнопку в кокпите
         │                  GridGraphBuilder      читает грид → GridGraph
+        │                  EventControllerProbe  список отслеживания контроллера
+        │                  EventControllerKeeper проигрывает список после загрузки
         │                  (единственное место, где трогаются живые сущности)
         │
-        ├──► Vgs.Model ─── Node, Port, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
+        ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
         └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
@@ -172,6 +177,9 @@ classDiagram
         +TryReadPosition(IMyTerminalBlock, out Vector2) bool
         +ApplyTo(Node, IMyTerminalBlock)
         +SavePosition(Node) bool
+        +TryReadWatchList(IMyTerminalBlock, List~long~) bool
+        +SaveWatchList(IMyTerminalBlock, List~long~) bool
+        +HasStorage(IMyTerminalBlock) bool
         -TryRead(IMyTerminalBlock, Guid, out string) bool
         -Write(IMyTerminalBlock, Guid, string) bool
     }
@@ -180,6 +188,45 @@ classDiagram
         <<static>>
         +FormatPosition(Vector2) string
         +TryParsePosition(string, out Vector2) bool
+        +FormatIds(IList~long~) string
+        +ParseIds(string, List~long~) void
+    }
+
+    class EventControllerProbe {
+        <<static>>
+        +IsController(IMyTerminalBlock) bool
+        +Describe(IMyTerminalBlock) string
+        +SelectedEventName(IMyTerminalBlock) string
+        +SelectedEventId(IMyTerminalBlock) long
+        +TryReadGameWatchIds(IMyTerminalBlock, List~long~) bool
+        +TryValidate(IMyTerminalBlock, IMyTerminalBlock, out WatchResult) bool
+        +TryAddWatch(IMyTerminalBlock, IMyTerminalBlock) WatchResult
+        +TryRemoveWatch(IMyTerminalBlock, IMyTerminalBlock) WatchResult
+        +ForgetWatch(IMyTerminalBlock, long) bool
+        +ReapplyWatchList(IMyTerminalBlock) int
+        +IsServer() bool
+    }
+
+    class EventControllerKeeper {
+        <<static>>
+        +Install()
+        +Uninstall()
+        +Update()
+    }
+
+    class WatchResult {
+        <<enum, nested in EventControllerProbe>>
+        Ok
+        IsSelf
+        Duplicate
+        NoEvent
+        EventIgnoresBlocks
+        DifferentConstruct
+        NotAccepted
+        ClientNotServer
+        BlockGone
+        Rejected
+        GameOwned
     }
 
     class ToolbarProbe {
@@ -266,6 +313,11 @@ classDiagram
         -Node _bindSource
         -Port _bindPort
         -PortGroup _bindGroup
+        -Node _watchSource
+        -int _watchErrorUntilFrame
+        -Node _hoverWatch
+        -Node _hoverWatchRemoveNode
+        -WatchTarget _hoverWatchRemoveTarget
         -Node _menuTarget
         -List~Port~ _menuRows
         -List~string~ _menuLabels
@@ -288,6 +340,13 @@ classDiagram
         -HandleCanvasInput(Vector2) void
         -SaveGroupPositions(Node) void
         -HandleBindInput(Vector2) void
+        -HandleWatchInput(Vector2) void
+        -BeginWatch(Node) void
+        -CancelWatch() void
+        -TryAttachWatch(Node) void
+        -RemoveWatchTarget(Node, WatchTarget) void
+        -RefuseWatch(string) void
+        -DescribeWatchFailure(WatchResult, IMyTerminalBlock, Node) string
         -HandleMenuInput(Vector2) void
         -BeginBind(Node, PortGroup) void
         -CancelBind() void
@@ -303,6 +362,8 @@ classDiagram
         -ScreenToGraph(Vector2, Vector2) Vector2
         -HitTest(Vector2) Node
         -HitTestBindButton(Vector2, out PortGroup) Node
+        -HitTestWatchButton(Vector2) Node
+        -HitTestWatchRemoveButton(Vector2, out WatchTarget) Node
         -HitTestRemoveButton(Vector2, out Port) Node
         -GetMenuRect(out Vector2, out Vector2) void
         -DrawGroupFrames(Vector2, Vector2) void
@@ -311,6 +372,11 @@ classDiagram
         -DrawNode(Node, Vector2, Vector2, Vector2) void
         -DrawPortBars(Node, Color, Vector2, Vector2) void
         -DrawPortBar(Node, Port, Color, Vector2, Vector2) void
+        -DrawWatchBars(Node, Color, Vector2, Vector2) void
+        -DrawWatchButton(Node, Vector2, Vector2) void
+        -DrawWatchLines(Vector2, Vector2) void
+        -DrawPendingWatchLine(Vector2, Vector2) void
+        -DrawDashedRoute(Vector2, Vector2, Color, float, float, Vector2, Vector2) void
         -DrawPortRemoveButton(Vector2, Color, bool, Vector2, Vector2) void
         -PortLabelHeight float
         -DrawEdges(Vector2, Vector2) void
@@ -335,6 +401,7 @@ classDiagram
     class PortGeometry {
         <<static>>
         +CardRect(Node, out Vector2, out Vector2)
+        +CardHeight(Node) float
         +TryBodyRect(Node, out Vector2, out Vector2) bool
         +TryGroupFrame(Node, GridGraph, out Vector2, out Vector2) bool
         +TryGroupTitleRect(Node, out Vector2, out Vector2) bool
@@ -345,6 +412,17 @@ classDiagram
         +HasGroupButtons(Node) bool
         +TryBindButton(Node, PortGroup, float aspectX, out Vector2) bool
         +HitBindButton(Node, Vector2, float aspectX, out PortGroup) bool
+        +TryWatchButtonRect(Node, float, out Vector2, out Vector2) bool
+        +TryWatchButton(Node, float, out Vector2) bool
+        +HitWatchButton(Node, Vector2, float) bool
+        +TryWatchBarRect(Node, WatchTarget, out Vector2, out Vector2) bool
+        +TryWatchDot(Node, WatchTarget, float, out Vector2) bool
+        +TryWatchRemoveButton(Node, WatchTarget, float, out Vector2) bool
+        +TryWatchLabelRect(Node, WatchTarget, float, out Vector2, out Vector2) bool
+        +HitWatchRemoveButton(Node, Vector2, float) WatchTarget
+        +TryCardCentre(Node, out Vector2) bool
+        +DrawnWatchCount(Node) int
+        +WatchStackHeight(Node) float
         +TryPortBarRect(Node, Port, out Vector2, out Vector2) bool
         +TryPortDot(Node, Port, float aspectX, out Vector2) bool
         +TryPortRemoveButton(Node, Port, float aspectX, out Vector2) bool
@@ -363,6 +441,7 @@ classDiagram
     class EdgeRouting {
         <<static>>
         +Build(Vector2 from, Vector2 to, float gutter, List~Vector4~)
+        +BuildDashes(Vector4 segment, float dashLength, float gapLength, List~Vector4~)
     }
 
     class VgsScreenDraw {
@@ -378,6 +457,7 @@ classDiagram
         +Border(Vector2 pos, Vector2 size, Color c, float t)
         +BorderClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color, float)
         +Segment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
+        +SegmentDashed(Vector2 from, Vector2 to, float t, float dash, float gap, Vector2 clip, Vector2 clipSize, Color)
         +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
         +Text(string text, Vector2 pos, float scale, Color c)
         +Text(string text, Vector2 pos, float scale, Color c, float maxWidth)
@@ -406,6 +486,13 @@ classDiagram
         +SyncGroup(string, List~long~, IList~GroupMemberActions~) Node
         +OffsetGroupMembers(Node, Vector2) int
         +RemoveGroup(string) bool
+        +HasWatch(Node, long) bool
+        +TryAddWatch(Node, long, string) bool
+        +RemoveWatch(Node, long) bool
+        +CollectWatchedIds(Node, List~long~) void$
+        +SyncWatched(Node, List~long~, Func~long,string~) void$
+        +MergeWatchIds(List~long~, List~long~, List~long~) void$
+        +PruneAdoptedWatchIds(List~long~, List~long~) bool$
         -RemoveEdgesToMissingGroupPorts(string)
         +TryConnect(long, string, long, string, ToolbarCell) bool
         +TryConnectToGroup(long, string, string, string, ToolbarCell) bool
@@ -450,6 +537,12 @@ classDiagram
         +bool HasTerminal
         +ToolbarLayout Toolbar
         +bool CanDriveBlocks
+        +bool IsEventController
+        +string StatusText
+        +long WatchEventId
+        +List~WatchTarget~ Watched
+        +bool HasStatusLine
+        +WatchTarget FindWatch(long)
         +List~long~ Members
         +List~Port~ Actions
         +List~Port~ Events
@@ -467,6 +560,12 @@ classDiagram
         +PortDirection Direction
         +PortGroup Group
         +float Anchor
+        +int Slot
+    }
+
+    class WatchTarget {
+        +long EntityId
+        +string DisplayName
         +int Slot
     }
 
@@ -560,6 +659,12 @@ classDiagram
     GridGraphBuilder --> ToolbarWriter : чтение ячеек
     GridGraphBuilder --> ToolbarPlanner : группа ячейки
     GridGraphBuilder --> NodeStateStore : позиция и видимость
+    GridGraphBuilder --> EventControllerProbe : событие и список отслеживания
+    VgsSessionComponent --> EventControllerKeeper : проигрывание списка после загрузки
+    EventControllerKeeper --> EventControllerProbe
+    EventControllerKeeper --> NodeStateStore : сохранённый список
+    EventControllerProbe --> NodeStateStore : список отслеживания
+    EventControllerProbe --> IMyEventComponentWithGui : AddBlocks / RemoveBlocks
     GridGraphBuilder --> IMyTerminalBlock
     GridGraphBuilder --> IMyToolbar
     GridGraphBuilder --> IMyBlockGroup
@@ -591,6 +696,7 @@ classDiagram
     GridGraph ..> ToolbarLayout : проверяет ячейку
     GridGraph ..> GroupMemberActions : правило действий группы
     GridGraph ..> Node : OffsetGroupMembers двигает участников
+    GridGraph ..> WatchTarget : LayoutPorts назначает Slot
     Node ..> NodeKind : различает блок и группу
 
     BlockPortCatalog --> Node
@@ -708,7 +814,9 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами, фильтр скрытых блоков |
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
-| `NodeStateStore.cs` | позиция карточки и флаг видимости в `MyModStorageComponent` блока |
+| `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
+| `EventControllerProbe.cs` | что проверяет event controller, кому из блоков он это разрешает и запись его списка |
+| `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
 `Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет
@@ -737,7 +845,8 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 не увидеть нарисованного участника, и живая группа объявлялась мёртвой.
 
 `NodeStateStore` — единственное место, где мод читает и пишет **своё** состояние блока:
-позицию карточки и флаг видимости. Оба лежат в `MyModStorageComponent` самого блока, а не в
+позицию карточки, флаг видимости и список отслеживания event controller. Все три лежат в
+`MyModStorageComponent` самого блока, а не в
 таблице по `EntityId`, потому что `MyObjectBuilder_CubeBlock.Remap` переназначает id при
 копировании, проекции и резке грида ([ADR-0012](adr/0012-layout-lives-on-the-block.md)).
 Чтение никогда не создаёт компонент: иначе простой просмотр схемы прикреплял бы хранилище к
@@ -752,13 +861,59 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 обновлении, запись — только по клику, и смешивать их значило бы дать пути обновления
 возможность менять блоки.
 
+### Список отслеживания event controller
+
+У event controller есть третье состояние, которого нет ни у одного другого блока: список
+блоков, за которыми он **наблюдает** ([ADR-0017](adr/0017-event-controller-watch-ports.md)).
+Оно не является связью: у него нет ячейки тулбара и нет действия получателя, поэтому в
+модели это не `Edge`, а `WatchTarget` в `Node.Watched`, и в UI — не полоса входящего порта, а
+жёлтая полоса с точкой **справа**.
+
+**Источник истины — игра** ([ADR-0018](adr/0018-game-is-the-source-of-truth.md)). Показывается
+объединение двух источников, и порядок в нём — ответ на вопрос «кто главный»:
+
+```
+игровой список  = IMyCubeBlock.GetObjectBuilderCubeBlock().SelectedBlocks   (первые слоты)
+надстройка      = MyModStorageComponent контроллера                        (следом)
+```
+
+Игровой список читается у живого блока на каждом обновлении, поэтому выбор, сделанный в
+терминале, появляется в редакторе сам. Надстройка нужна ровно для одного: то, что редактор
+добавил через `IMyEventComponentWithGui.AddBlocks`, игра в свой список не кладёт и в сейв не
+пишет. Когда игра начинает отдавать тот же id, надстройка вычищает его у себя — иначе блок
+считался бы дважды.
+
+Три следствия, которые надо держать в голове, меняя этот код:
+
+- **игровые записи из редактора не удаляются.** Приватный список контроллера не имеет
+  публичного сеттера, а `RemoveBlocks` снимает только подписку компонента — `ProcessSelectedBlocks`
+  вернёт запись через секунду. Поэтому «x» на таком порте отвечает сообщением и ничего не
+  меняет (`WatchResult.GameOwned`), а редакторская запись снимается нормально;
+- **смена события пересоздаёт компонент.** Подписки, сделанные модом, к новому компоненту не
+  переходят, поэтому при изменении `SelectedEventId` надстройка проигрывается заново. Иначе
+  порты остались бы, а контроллер перестал бы их слушать;
+- **«не отображается» ≠ «удалить».** Скрытый флагом «Show in VGS» блок не имеет карточки, его
+  линия не рисуется, но порт и игровые данные остаются. Схема скрывает то, что не может
+  нарисовать, и не правит данные игры ради порядка на экране.
+
+Запись — единственное место, где мод меняет контроллер: `EventControllerProbe.TryAddWatch` /
+`TryRemoveWatch`, через `IMyEventComponentWithGui.AddBlocks` / `RemoveBlocks` — тот же метод,
+которым пользуется ванильный терминал. Порядок записи асимметричен и обязателен: добавление —
+проверка → резерв в графе → хранилище → подписка (с откатом резерва), удаление — отписка →
+хранилище → граф (с восстановлением подписки, если запись не удалась).
+
+`EventControllerKeeper` проигрывает надстройку в живой компонент после загрузки мира и при
+смене события: слушает `OnEntityAdd`, откладывает работу на несколько тиков (компоненты блока
+появляются не мгновенно) и вызывает тот же `AddBlocks`. Игровую часть списка игра
+восстанавливает сама.
+
 ### `Vgs.Ui` — экран
 
 | Файл | Ответственность |
 |---|---|
-| `VgsEditorScreen.cs` | экран: камера, ввод, три режима указателя, меню действий, кэш строк |
-| `PortGeometry.cs` | геометрия карточки, портов и рамки группы — единственный источник правды для отрисовки **и** hit-testing |
-| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева |
+| `VgsEditorScreen.cs` | экран: камера, ввод, четыре режима указателя, меню действий, кэш строк |
+| `PortGeometry.cs` | геометрия карточки, портов, точки привязки «#» и рамки группы — единственный источник правды для отрисовки **и** hit-testing |
+| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; разбиение отрезка на штрихи для пунктира |
 | `VgsScreenDraw.cs` | единственная точка вызова API отрисовки; ресурсы; перевод координат клиента ↔ safe-GUI |
 
 `VgsEditorScreen` наследует `MyModScreen` и переопределяет его хуки

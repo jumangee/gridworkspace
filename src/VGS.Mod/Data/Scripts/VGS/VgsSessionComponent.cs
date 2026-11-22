@@ -78,6 +78,20 @@ namespace Vgs
 
             try
             {
+                // The keeper replays an event controller's saved watch list into the live block
+                // once the block exists (ADR-0017). It is installed lazily because the entity
+                // system is not guaranteed to be up in Init, and it runs every tick because a
+                // controller can be built at any moment.
+                EventControllerKeeper.Install();
+                EventControllerKeeper.Update();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("keeper", "event controller keeper failed", e, 300);
+            }
+
+            try
+            {
                 // Deferred registration: the terminal control factory is only usable once the
                 // game has created its block definitions. Doing this in Init() silently loses
                 // the control on some load orders, so we retry here until it sticks.
@@ -115,6 +129,15 @@ namespace Vgs
             catch (Exception e)
             {
                 VgsLog.Error("failed to close the editor screen", e);
+            }
+
+            try
+            {
+                EventControllerKeeper.Uninstall();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Error("failed to uninstall the event controller keeper", e);
             }
 
             try

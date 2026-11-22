@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using VRageMath;
 using Vgs.Core;
@@ -99,6 +100,70 @@ namespace Vgs.Ui
         {
             if (y0 == y1) return;
             into.Add(new Vector4(x, y0, x, y1));
+        }
+
+        /// <summary>
+        /// Turns one orthogonal segment into the dashes it is drawn as, replacing the contents of
+        /// <paramref name="into"/> with <c>(x0, y0, x1, y1)</c> entries — one per dash.
+        ///
+        /// A watch line is dashed (ADR-0017) and the screen-space API has no dash primitive, so
+        /// the pattern is built here — in the same layer as the route, in the same units, and
+        /// therefore assertable without the game. The caller passes the dash and gap already
+        /// scaled by its zoom, which keeps the pattern a constant length on screen instead of a
+        /// constant fraction of the graph: a dashed line that turns solid at low zoom would stop
+        /// being distinguishable from a real connection, which is the only reason it is dashed.
+        ///
+        /// <b>The list is cleared first</b>, like <see cref="Build"/> does and for the same
+        /// reason: the caller reuses one buffer for every line of every frame, and appending
+        /// would make each frame redraw every dash ever produced.
+        ///
+        /// The pattern starts at the segment's first end and is cut at the last: the final dash
+        /// is shortened rather than allowed to overrun, so a dash never pokes out of the route.
+        /// A segment shorter than one dash is drawn as one dash — an empty line would read as a
+        /// gap in the route.
+        /// </summary>
+        public static void BuildDashes(Vector4 segment, float dashLength, float gapLength,
+                                       List<Vector4> into)
+        {
+            if (into == null) return;
+            into.Clear();
+
+            float dx = segment.Z - segment.X;
+            float dy = segment.W - segment.Y;
+            float length = (float)Math.Sqrt(dx * dx + dy * dy);
+            if (length <= 0f) return;
+
+            if (dashLength <= 0f || gapLength < 0f)
+            {
+                into.Add(segment);
+                return;
+            }
+
+            float ux = dx / length;
+            float uy = dy / length;
+            float step = dashLength + gapLength;
+
+            // The dash positions are derived from the index rather than accumulated: `at += step`
+            // drifts in single precision, and the drift shows up as a phantom dash just past the
+            // end of the segment — a dash that pokes out of the line it belongs to.
+            //
+            // The stop is a hair short of the length for the same reason: a dash that *starts*
+            // exactly at the end has nothing left to draw, and whether `n * step` lands just
+            // above or just below the length is an accident of float rounding.
+            float limit = length - step * 1e-4f;
+            if (limit < 0f) limit = 0f;
+
+            for (int i = 0; ; i++)
+            {
+                float at = i * step;
+                if (at > limit) break;
+
+                float end = at + dashLength;
+                if (end > length) end = length;
+
+                into.Add(new Vector4(segment.X + ux * at, segment.Y + uy * at,
+                                     segment.X + ux * end, segment.Y + uy * end));
+            }
         }
     }
 }

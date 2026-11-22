@@ -15,8 +15,9 @@
   invisible until the player reloads the world — the layout and the "Show in VGS" flags would
   simply be gone. Deleting this file therefore looks harmless and destroys player data.
 
-  The keys must match VgsConstants.LayoutStorageKey and VgsConstants.VisibilityStorageKey.
-  They are fixed forever: changing one loses that piece of state in every existing world.
+  The keys must match VgsConstants.LayoutStorageKey, VgsConstants.VisibilityStorageKey and
+  VgsConstants.WatchStorageKey. They are fixed forever: changing one loses that piece of state
+  in every existing world.
 
   The SubtypeId is the mod's name, so two mods claiming the same GUID produce a
   "Duplicate ModStorageComponent GUID" warning in the log instead of silently overwriting
@@ -31,6 +32,7 @@
             <RegisteredStorageGuids>
                 <guid>0d3c1b7a-6a51-4c39-9d2e-7f8a1c4b5e60</guid>
                 <guid>b1e4a2c8-77d3-4a0f-8c61-2f9e5b0d3a47</guid>
+                <guid>4a7d2e19-8c63-4b0f-a51d-6e9f3c2b8d74</guid>
             </RegisteredStorageGuids>
         </EntityComponent>
     </EntityComponents>

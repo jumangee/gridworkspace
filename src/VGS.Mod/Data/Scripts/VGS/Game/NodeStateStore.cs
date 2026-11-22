@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Sandbox.Game.EntityComponents;
 using Sandbox.ModAPI;
 using VRage.Game.Components;
@@ -130,6 +131,73 @@ namespace Vgs.Game
             catch (Exception e)
             {
                 VgsLog.Throttled("nodestate", "could not save node position", e, 300);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Reads the watch list of an event controller: the entity ids of the blocks it
+        /// observes (ADR-0017). False means "nothing is stored" — a controller that never had a
+        /// block attached — and the list is left empty in that case.
+        ///
+        /// Like every other read here it never creates the storage component: opening the
+        /// editor must not attach storage to every block in the world.
+        /// </summary>
+        public static bool TryReadWatchList(IMyTerminalBlock block, List<long> into)
+        {
+            if (into == null) return false;
+            into.Clear();
+
+            string raw;
+            if (!TryRead(block, VgsConstants.WatchStorageKey, out raw)) return false;
+
+            NodeStateFormat.ParseIds(raw, into);
+            return true;
+        }
+
+        /// <summary>
+        /// Stores the watch list of an event controller. The value is the id list as
+        /// <c>"id id id"</c>, or an empty string for "watches nothing" — written explicitly
+        /// rather than removed, so that an emptied list cannot be mistaken for "never set".
+        ///
+        /// Returns false when the block is gone or the write was refused; the caller then has
+        /// to undo whatever it did in the graph (ADR-0017 §6).
+        /// </summary>
+        public static bool SaveWatchList(IMyTerminalBlock block, List<long> ids)
+        {
+            if (block == null) return false;
+
+            try
+            {
+                return Write(block, VgsConstants.WatchStorageKey, NodeStateFormat.FormatIds(ids));
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("nodestate", "could not save watch list", e, 300);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// True when the block already carries a mod-storage component.
+        ///
+        /// The distinction matters to a caller that has to tell "this block never stored
+        /// anything" from "the storage has not been attached yet": a missing component is the
+        /// second case during a world load, and an attached component without our key is the
+        /// first. Reading a value cannot tell them apart, because both come back as "nothing".
+        /// </summary>
+        public static bool HasStorage(IMyTerminalBlock block)
+        {
+            if (block == null) return false;
+
+            try
+            {
+                IMyEntity entity = block;
+                return entity.Storage != null;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("nodestate", "could not read block storage", e, 300);
                 return false;
             }
         }

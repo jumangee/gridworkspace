@@ -44,6 +44,16 @@ namespace Vgs.Game
     public static class GridGraphBuilder
     {
         /// <summary>
+        /// Last known names of watched blocks, used while a controller's list is refreshed.
+        ///
+        /// A watched block can be gone, or hidden from the schema, and its bar still has to carry
+        /// a label. Keeping the previous name in one reusable map avoids both an allocation per
+        /// controller per refresh and a bar that turns into a bare entity id.
+        /// </summary>
+        private static readonly Dictionary<long, string> _nameScratch =
+            new Dictionary<long, string>(8);
+
+        /// <summary>
         /// Creates a graph for the given grid, or an empty graph when the grid is
         /// unavailable. The caller owns the result.
         /// </summary>
@@ -161,12 +171,17 @@ namespace Vgs.Game
                 SafeSubtype(block),
                 SafeName(block),
                 SafePosition(block),
-                toolbar);
+                toolbar,
+                EventControllerProbe.IsController(block));
 
             var actions = new List<string>();
             node.HasTerminal = TryReadActions(block, actions);
             BlockPortCatalog.FillActions(node, actions);
             BlockPortCatalog.FillEvents(node);
+
+            // A controller's mode description and watch list are read here, once, together with
+            // everything else the node needs from the world (ADR-0017).
+            RefreshControllerState(node, block);
 
             // The saved canvas position, if any, is applied before the node reaches the graph,
             // so LayoutUnplaced (end of Refresh) sees it as placed and leaves it alone.
@@ -190,6 +205,111 @@ namespace Vgs.Game
 
                 // FillActions replaces the Port objects, so the drawing slots computed for the
                 // old ones are gone; LayoutPorts (called at the end of Refresh) reassigns them.
+            }
+
+            // The selected event, its threshold and the watch list can all change while the
+            // editor is open — the player has the terminal next to the schema.
+            RefreshControllerState(node, block);
+        }
+
+        /// <summary>
+        /// Refreshes what an event controller contributes to its card and its watch stack: the
+        /// mode description and the list of watched blocks (ADR-0017, ADR-0018).
+        ///
+        /// <b>The game is the source of truth.</b> The list shown here is the union of what the
+        /// controller reports itself (<see cref="EventControllerProbe.TryReadGameWatchIds"/>) and
+        /// the entries the editor added through the event component, which the game does not put
+        /// into its own list. So a block the player adds, removes or re-targets in the vanilla
+        /// terminal appears, disappears or moves here on the next refresh — the schema follows the
+        /// game instead of keeping a private copy of it.
+        ///
+        /// <b>Nothing is deleted because it is not visible.</b> A watched block whose "Show in
+        /// VGS" flag is off has no card, so its line cannot be drawn, but it stays in the list and
+        /// keeps its port: the schema hides what it cannot draw, it never edits the game's data
+        /// to tidy up the picture.
+        ///
+        /// Names are refreshed for every watched block, including ones with no node of their own:
+        /// the watch bar is labelled from this snapshot, and the draw path must not read the world.
+        /// </summary>
+        private static void RefreshControllerState(Node node, IMyTerminalBlock block)
+        {
+            if (node == null || !node.IsEventController) return;
+
+            node.StatusText = EventControllerProbe.Describe(block);
+
+            long eventId = EventControllerProbe.SelectedEventId(block);
+
+            // What the controller itself says it watches. Unreadable is not empty: keeping the
+            // previous picture for one refresh is better than making every port vanish and
+            // reappear, and the next refresh retries.
+            var gameIds = new List<long>();
+            if (!EventControllerProbe.TryReadGameWatchIds(block, gameIds)) return;
+
+            // What the editor added on top, and the game therefore does not store.
+            var overlay = new List<long>();
+            NodeStateStore.TryReadWatchList(block, overlay);
+
+            // An id the game now reports is the game's business: drop it from the overlay, or it
+            // would be counted twice and replayed after a reload for no reason.
+            if (GridGraph.PruneAdoptedWatchIds(gameIds, overlay))
+            {
+                // Only the server may write; on a client the prune stays in memory and simply
+                // repeats next refresh, which is harmless because the union is the same.
+                if (EventControllerProbe.IsServer()) NodeStateStore.SaveWatchList(block, overlay);
+            }
+
+            var ids = new List<long>();
+            GridGraph.MergeWatchIds(gameIds, overlay, ids);
+
+            _nameScratch.Clear();
+            for (int i = 0; i < node.Watched.Count; i++)
+            {
+                _nameScratch[node.Watched[i].EntityId] = node.Watched[i].DisplayName;
+            }
+
+            GridGraph.SyncWatched(node, ids, id => SafeNameOf(id, LookupName(_nameScratch, id)));
+            // The player picked another event in the terminal: the game built a new event
+            // component, and the editor's own additions are subscribed to the old one. Replaying
+            // them is what keeps those ports honest after a switch (ADR-0018).
+            if (eventId != node.WatchEventId && overlay.Count > 0 && EventControllerProbe.IsServer())
+            {
+                VgsLog.Info("event changed on controller " + node.EntityId
+                            + "; replaying " + overlay.Count + " editor-added watch(es)");
+                EventControllerProbe.ReapplyWatchList(block);
+            }
+
+            node.WatchEventId = eventId;
+        }
+
+        /// <summary>
+        /// Last known name of a watched block, or null. Used as the fallback for a block that is
+        /// gone, so its bar keeps a readable label instead of turning into an entity id.
+        /// </summary>
+        private static string LookupName(Dictionary<long, string> names, long id)
+        {
+            string name;
+            return names.TryGetValue(id, out name) ? name : null;
+        }
+
+        /// <summary>
+        /// Name of a block by id, falling back to <paramref name="fallback"/> when it is gone or
+        /// cannot be read. A watched block does not have to be on the canvas, so this resolves
+        /// the live entity rather than asking the graph.
+        /// </summary>
+        private static string SafeNameOf(long entityId, string fallback)
+        {
+            try
+            {
+                var block = MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
+                if (block == null) return fallback ?? entityId.ToString();
+
+                string name = SafeName(block);
+                return string.IsNullOrEmpty(name) ? (fallback ?? entityId.ToString()) : name;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("watch-name", "could not read watched block name", e, 600);
+                return fallback ?? entityId.ToString();
             }
         }
 

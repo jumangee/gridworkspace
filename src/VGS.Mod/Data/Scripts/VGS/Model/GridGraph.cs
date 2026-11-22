@@ -603,6 +603,192 @@ namespace Vgs.Model
             }
         }
 
+        /// <summary>
+        /// True when this controller already watches that block (ADR-0017).
+        ///
+        /// The list is a set: the game keeps one subscription per block, so a second "add" of
+        /// the same block would be a port the player cannot tell apart from the first.
+        /// </summary>
+        public bool HasWatch(Node controller, long targetEntityId)
+        {
+            return controller != null && controller.FindWatch(targetEntityId) != null;
+        }
+
+        /// <summary>
+        /// Adds a block to a controller's watch list and returns false when it cannot be added:
+        /// the node is not an event controller, the target is the controller itself, the target
+        /// is already watched, or the watch stack is full.
+        ///
+        /// <b>The stack is capped at <see cref="MaxPortsPerSide"/> here, not at draw time.</b> A
+        /// watch bar that exists in the list but gets no drawing slot has no "x" on screen, and
+        /// the bar's button is the only way to remove an entry — the player would be left with a
+        /// block they can never detach. Refusing the seventh attach is the honest answer, and it
+        /// is the same cap every other port stack obeys.
+        ///
+        /// The <c>bool</c> is a backstop: the editor checks the same conditions first so it can
+        /// say *which* one failed, because this layer has no user-facing strings.
+        ///
+        /// <b>The graph is the reservation, not the record.</b> What the controller really
+        /// watches is the game's selection plus the editor's overlay on the block (ADR-0018);
+        /// this method only makes the picture follow. The caller writes the world first and
+        /// calls <see cref="RemoveWatch"/> when the world refused, which is why adding here is
+        /// cheap and reversible while writing to a block is not.
+        ///
+        /// Slots are not assigned here: <see cref="LayoutPorts"/> does that, after the change,
+        /// like every other port.
+        /// </summary>
+        public bool TryAddWatch(Node controller, long targetEntityId, string displayName)
+        {
+            if (controller == null || !controller.IsEventController) return false;
+            if (controller.IsGroup) return false;
+            if (targetEntityId == 0 || targetEntityId == controller.EntityId) return false;
+            if (controller.FindWatch(targetEntityId) != null) return false;
+            if (controller.Watched.Count >= MaxPortsPerSide) return false;
+
+            controller.Watched.Add(new WatchTarget(targetEntityId,
+                string.IsNullOrEmpty(displayName) ? targetEntityId.ToString() : displayName));
+            return true;
+        }
+
+        /// <summary>
+        /// Drops a block from a controller's watch list. Returns true when something was
+        /// removed. Nothing is written to any block here — the caller owns the world write and
+        /// its own rollback (ADR-0017).
+        /// </summary>
+        public bool RemoveWatch(Node controller, long targetEntityId)
+        {
+            if (controller == null) return false;
+
+            for (int i = 0; i < controller.Watched.Count; i++)
+            {
+                if (controller.Watched[i].EntityId != targetEntityId) continue;
+                controller.Watched.RemoveAt(i);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Rebuilds a controller's watch list from the ids the caller has resolved, keeping the
+        /// <see cref="WatchTarget"/> objects that survive (ADR-0018).
+        ///
+        /// <b>The ids are the truth, the list is the view.</b> They come from the game — its own
+        /// selection plus the entries the editor added and the game does not store — so this
+        /// method only mirrors them: an id that disappeared loses its bar, an id that appeared
+        /// gains one, and the order is the caller's order, which keeps the bars stable between
+        /// refreshes instead of reshuffling them.
+        ///
+        /// Reusing the existing objects matters: a hover, a tooltip or an in-flight removal holds
+        /// a <see cref="WatchTarget"/> by reference, and replacing them wholesale would make the
+        /// highlight jump to whatever took the same slot. The name, unlike the object, is always
+        /// re-read — a block renamed in the terminal must be relabelled here, and the caller's
+        /// resolver is what decides what to fall back to when the block is gone.
+        /// </summary>
+        public static void SyncWatched(Node controller, List<long> ids, Func<long, string> nameOf)
+        {
+            if (controller == null || ids == null) return;
+
+            // Reuse what is still there. Built as a lookup because the list is short and the
+            // comparison is by id: two WatchTarget objects for one block is the defect this
+            // method exists to prevent.
+            var existing = new Dictionary<long, WatchTarget>(controller.Watched.Count);
+            for (int i = 0; i < controller.Watched.Count; i++)
+            {
+                existing[controller.Watched[i].EntityId] = controller.Watched[i];
+            }
+
+            var rebuilt = new List<WatchTarget>(ids.Count);
+            for (int i = 0; i < ids.Count; i++)
+            {
+                long id = ids[i];
+                if (id <= 0) continue;
+
+                string name = nameOf != null ? nameOf(id) : null;
+                if (string.IsNullOrEmpty(name)) name = id.ToString();
+
+                WatchTarget target;
+                if (existing.TryGetValue(id, out target))
+                {
+                    existing.Remove(id);
+                    target.DisplayName = name;
+                    rebuilt.Add(target);
+                    continue;
+                }
+
+                rebuilt.Add(new WatchTarget(id, name));
+            }
+
+            controller.Watched.Clear();
+            controller.Watched.AddRange(rebuilt);
+        }
+
+        /// <summary>
+        /// Fills <paramref name="into"/> with the union of the ids the game reports and the ids
+        /// the editor added, game first, without duplicates (ADR-0018).
+        ///
+        /// Two sources, and the order says which one is authoritative: what the game reports is
+        /// what the controller is actually configured to watch, so those entries keep the order
+        /// the player gave them in the terminal. The editor's own additions follow, in the order
+        /// they were made.
+        /// </summary>
+        public static void MergeWatchIds(List<long> gameIds, List<long> overlayIds, List<long> into)
+        {
+            if (into == null) return;
+            into.Clear();
+
+            AddMissing(gameIds, into);
+            AddMissing(overlayIds, into);
+        }
+
+        /// <summary>
+        /// Drops from <paramref name="overlayIds"/> every id the game has adopted into its own
+        /// list, and returns true when something was dropped (ADR-0018).
+        ///
+        /// A block the editor added is not in the game's list — the component-level write the
+        /// mod can make does not touch it. But the player can also add that same block in the
+        /// terminal, and then the game *does* own it. Keeping it in both places would count it
+        /// twice: once as game state and once as an editor addition that no longer needs
+        /// replaying after a reload.
+        /// </summary>
+        public static bool PruneAdoptedWatchIds(List<long> gameIds, List<long> overlayIds)
+        {
+            if (gameIds == null || overlayIds == null || overlayIds.Count == 0) return false;
+
+            bool changed = false;
+            for (int i = overlayIds.Count - 1; i >= 0; i--)
+            {
+                if (!gameIds.Contains(overlayIds[i])) continue;
+                overlayIds.RemoveAt(i);
+                changed = true;
+            }
+            return changed;
+        }
+
+        private static void AddMissing(List<long> from, List<long> into)
+        {
+            if (from == null) return;
+
+            for (int i = 0; i < from.Count; i++)
+            {
+                long id = from[i];
+                if (id <= 0 || into.Contains(id)) continue;
+                into.Add(id);
+            }
+        }
+
+        /// <summary>
+        /// Copies the watched entity ids of a controller into a caller-owned list. Used to
+        /// write the list to the block and to compare it with what the storage holds.
+        /// </summary>
+        public static void CollectWatchedIds(Node controller, List<long> into)
+        {
+            if (into == null) return;
+            into.Clear();
+            if (controller == null) return;
+
+            for (int i = 0; i < controller.Watched.Count; i++) into.Add(controller.Watched[i].EntityId);
+        }
+
         public bool RemoveEdge(Edge edge)
         {
             if (edge == null) return false;
@@ -654,6 +840,7 @@ namespace Vgs.Model
             {
                 ClearSlots(_nodeList[i].Actions);
                 ClearSlots(_nodeList[i].Events);
+                ClearWatchSlots(_nodeList[i]);
             }
             for (int i = 0; i < _groupList.Count; i++)
             {
@@ -661,9 +848,12 @@ namespace Vgs.Model
                 // group port that lost its last connection must lose its bar like any other.
                 ClearSlots(_groupList[i].Actions);
                 ClearSlots(_groupList[i].Events);
+                ClearWatchSlots(_groupList[i]);
             }
 
             _lines.Clear();
+
+            for (int i = 0; i < _nodeList.Count; i++) TakeWatchSlots(_nodeList[i]);
 
             for (int i = 0; i < _edges.Count; i++)
             {
@@ -709,6 +899,26 @@ namespace Vgs.Model
         private static void ClearSlots(List<Port> ports)
         {
             for (int i = 0; i < ports.Count; i++) ports[i].Slot = -1;
+        }
+
+        private static void ClearWatchSlots(Node node)
+        {
+            for (int i = 0; i < node.Watched.Count; i++) node.Watched[i].Slot = -1;
+        }
+
+        /// <summary>
+        /// Gives every watch target of a controller a drawing slot, in list order.
+        ///
+        /// Unlike an event or an action port, a watch target needs no "is it connected" test:
+        /// being in the list *is* the connection (ADR-0017), so the whole list is drawn. The
+        /// cap is the same as for the other stacks — a controller watching more blocks than
+        /// fit under its card keeps them all in the graph and the list, and simply does not
+        /// draw the surplus, exactly like a surplus port.
+        /// </summary>
+        private static void TakeWatchSlots(Node node)
+        {
+            int count = node.Watched.Count < MaxPortsPerSide ? node.Watched.Count : MaxPortsPerSide;
+            for (int i = 0; i < count; i++) node.Watched[i].Slot = i;
         }
 
         /// <summary>Gives the port the lowest free slot, if any is left.</summary>

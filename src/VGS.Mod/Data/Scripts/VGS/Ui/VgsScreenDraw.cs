@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Sandbox.ModAPI;
 using VRage.Game.ModAPI;
 using VRage.Utils;
@@ -450,6 +451,47 @@ namespace Vgs.Ui
             RectClipped(new Vector2((from.X + to.X) * 0.5f - thickness * 0.5f, y),
                         new Vector2(thickness, dy), clipTopLeft, clipSize, color);
         }
+
+        /// <summary>
+        /// Draws a dashed axis-aligned segment: the watch line of an event controller
+        /// (ADR-0017).
+        ///
+        /// The dash pattern is built by <see cref="EdgeRouting.BuildDashes"/> — pure geometry,
+        /// assertable offline — and each dash is drawn with the same rectangle primitive as a
+        /// solid segment. The screen-space API has no line style, so "dashed" has to be "many
+        /// short solid segments", and the only question is where the pattern is computed.
+        /// Doing it here would put a per-frame loop with float arithmetic in the draw path where
+        /// nothing can check it; doing it in the router keeps the pattern a value the offline
+        /// gate can measure.
+        ///
+        /// <paramref name="dashLength"/> and <paramref name="gapLength"/> are in client-area
+        /// units, already scaled by the caller's zoom.
+        /// </summary>
+        public static void SegmentDashed(Vector2 from, Vector2 to, float thickness,
+                                         float dashLength, float gapLength,
+                                         Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        {
+            if (thickness <= 0f) return;
+
+            // BuildDashes replaces the buffer's contents, so nothing accumulates between the
+            // lines of one frame or between frames. That is load-bearing: the buffer is static,
+            // and appending would make every frame redraw every dash ever produced.
+            var segment = new Vector4(from.X, from.Y, to.X, to.Y);
+            EdgeRouting.BuildDashes(segment, dashLength, gapLength, _dashBuffer);
+
+            for (int i = 0; i < _dashBuffer.Count; i++)
+            {
+                Vector4 dash = _dashBuffer[i];
+                Segment(new Vector2(dash.X, dash.Y), new Vector2(dash.Z, dash.W),
+                        thickness, clipTopLeft, clipSize, color);
+            }
+        }
+
+        /// <summary>
+        /// Scratch list for dash patterns. Shared because this runs per watch line per frame, and
+        /// a list allocated per call would be an allocation in the draw path.
+        /// </summary>
+        private static readonly List<Vector4> _dashBuffer = new List<Vector4>(64);
 
         /// <summary>
         /// Draws a filled disc, clipped to the canvas. <paramref name="radius"/> is measured

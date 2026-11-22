@@ -54,6 +54,18 @@ namespace Vgs.Core
         /// <remarks>Do not regenerate: changing it loses every flag in every existing world.</remarks>
         public static readonly Guid VisibilityStorageKey = new Guid("b1e4a2c8-77d3-4a0f-8c61-2f9e5b0d3a47");
 
+        /// <summary>
+        /// Storage key of the event controller's watch list: entity ids of the blocks the
+        /// controller observes, space separated (ADR-0017).
+        ///
+        /// It lives on the controller because the game's own selection list has no public API
+        /// — neither to read nor to persist (see docs/01-research/api-event-controller.md).
+        /// Like the layout key it travels with the block instead of being keyed by an entity
+        /// id, so a copied or split ship keeps its controllers wired.
+        /// </summary>
+        /// <remarks>Do not regenerate: changing it loses every watch list in every existing world.</remarks>
+        public static readonly Guid WatchStorageKey = new Guid("4a7d2e19-8c63-4b0f-a51d-6e9f3c2b8d74");
+
         /// <summary>Network message id for future client/server sync. Must be unique per mod.</summary>
         public const ushort NetworkChannelId = 48123;
 
@@ -170,6 +182,59 @@ namespace Vgs.Core
 
         /// <summary>Vertical distance between an input stack and an output stack on one card.</summary>
         public const float PortStackSpacing = 0f;
+
+        // ---- Event controller: watch anchor and watch ports (ADR-0017) ----
+        //
+        // The anchor is a *square*, unlike every other control on a card, because it does not
+        // start a connection between two blocks: it attaches a block to a list the controller
+        // owns. Square versus round is the one difference that survives a glance at a dense
+        // canvas, and it is the whole reason the shape was chosen.
+
+        /// <summary>Side of the square "#" anchor, as a fraction of the card's height.</summary>
+        public const float WatchButtonHeightRatio = 0.75f;
+
+        /// <summary>
+        /// Gap between the card's left border and the "#" anchor, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>. A vertical length like
+        /// <see cref="PortControlMarginPixels"/>, multiplied by the client aspect where a
+        /// horizontal gap is needed.
+        /// </summary>
+        public const float WatchButtonMarginPixels = 4f;
+
+        /// <summary><see cref="WatchButtonMarginPixels"/> in the layout's vertical units.</summary>
+        public const float WatchButtonMargin = WatchButtonMarginPixels / ReferenceHeightPixels;
+
+        /// <summary>Gap between the "#" anchor and the card's text.</summary>
+        public const float WatchButtonTextGap = 0.004f;
+
+        /// <summary>Font scale of the "#" glyph inside the anchor.</summary>
+        public const float WatchButtonGlyphScale = 0.52f;
+
+        /// <summary>
+        /// Height of the extra card line that carries an event controller's mode description.
+        /// The card grows by this much for a node that has one (ADR-0017).
+        /// </summary>
+        public const float NodeStatusLineHeight = 0.015f;
+
+        /// <summary>Font scale of the mode description line.</summary>
+        public const float NodeStatusScale = 0.40f;
+
+        /// <summary>
+        /// How long the refused watch line stays red, in frames — about one second at 60 fps.
+        /// The line is the only feedback at the moment of the click, so it has to be long
+        /// enough to be seen and short enough not to read as "this is how it looks".
+        /// </summary>
+        public const int WatchErrorFrames = 60;
+
+        /// <summary>
+        /// Dash and gap of a watch line, in layout units at zoom 1. Multiplied by the zoom at
+        /// draw time like every other screen length, so the pattern shrinks with the canvas
+        /// instead of turning into a solid line at low zoom.
+        /// </summary>
+        public const float WatchDashLength = 0.010f;
+
+        /// <summary>Gap between two dashes of a watch line, in layout units at zoom 1.</summary>
+        public const float WatchDashGap = 0.007f;
 
         // ---- Block group frame (ADR-0015) ----
         //
@@ -401,6 +466,114 @@ namespace Vgs.Core
 
         public const string BindHintFalse =
             "Привязка к «нет»: нажмите блок-получатель · ПКМ — отмена";
+
+        // ---- Event controller watch mode (ADR-0017) ----
+        //
+        // The "#" anchor attaches a block to the controller's watch list. It is a third kind
+        // of gesture: not a connection (nothing is written into a toolbar) and not a selection
+        // (the block stays where it is), so it gets its own glyph and its own hint.
+
+        /// <summary>Glyph on the square watch anchor.</summary>
+        public const string WatchGlyph = "#";
+
+        public const string WatchHint =
+            "Режим отслеживания: нажмите блок, который должен отслеживать контроллер · ПКМ — отмена";
+
+        /// <summary>
+        /// Mode description on the controller's card: event, comparison sign, threshold.
+        /// Built by <c>Vgs.Game.EventControllerProbe</c>, drawn by the card.
+        /// </summary>
+        public const string WatchStatusThresholdFormat = "{0} · {1} {2}";
+
+        /// <summary>Mode description for an event that has no threshold (only a name).</summary>
+        public const string WatchStatusPlainFormat = "{0}";
+
+        /// <summary>
+        /// Mode description of a controller with no event selected. Written on the card rather
+        /// than left blank: the "#" anchor is still there, and a player who presses it deserves
+        /// to know why nothing can be attached.
+        /// </summary>
+        public const string WatchStatusNoEvent = "Событие не выбрано";
+
+        /// <summary>
+        /// Appended when the controller requires *every* watched block to satisfy the condition
+        /// (the game's "AND gate"). "OR" is the default and is not written: a line on every
+        /// card stating the default would only take space.
+        /// </summary>
+        public const string WatchStatusAndSuffix = " · И";
+
+        /// <summary>
+        /// Comparison sign for "less or equal" (the game's inverted condition).
+        ///
+        /// ASCII on purpose, like <see cref="PortRemoveGlyph"/>: the editor falls back between
+        /// several fonts, and a glyph that is missing from one of them draws as a box. "&lt;="
+        /// reads the same and is guaranteed to exist in every font the editor may pick.
+        /// </summary>
+        public const string WatchSignLower = "<=";
+
+        /// <summary>Comparison sign for "greater" (the default condition). ASCII, see above.</summary>
+        public const string WatchSignHigher = ">=";
+
+        /// <summary>Number format of the threshold, invariant culture.</summary>
+        public const string WatchThresholdFormat = "0.00";
+
+        // Refusals of a watch attachment. Each reason gets its own sentence for the same
+        // reason a toolbar refusal does: they call for different actions from the player.
+        public const string WarnWatchSelf =
+            "Блок не добавлен: контроллер не может отслеживать сам себя";
+
+        public const string WarnWatchDuplicateFormat =
+            "Блок «{0}» уже отслеживается этим контроллером";
+
+        public const string WarnWatchNoEvent =
+            "Блок не добавлен: у контроллера не выбрано событие";
+
+        public const string WarnWatchEventIgnoresBlocks =
+            "Блок не добавлен: выбранное событие не следит за блоками";
+
+        public const string WarnWatchDifferentConstruct =
+            "Блок не добавлен: он на другом конструкте, а контроллер видит только свой";
+
+        public const string WarnWatchNotAcceptedFormat =
+            "Блок «{0}» не подходит для события «{1}»";
+
+        public const string WarnWatchClient =
+            "Блок не добавлен: список контроллера хранится на сервере";
+
+        public const string WarnWatchRejected =
+            "Блок не добавлен: игра не приняла изменение списка контроллера";
+
+        public const string WarnWatchBlockGone =
+            "Блок не добавлен: блок исчез";
+
+        /// <summary>
+        /// A group cannot be watched: the controller's list holds block entity ids, and a group
+        /// is not an entity at all (ADR-0015). Said explicitly, because a click on a group's
+        /// title strip would otherwise fall through to "the block is gone", which is untrue.
+        /// </summary>
+        public const string WarnWatchGroup =
+            "Блок не добавлен: контроллер следит за отдельными блоками, а не за группой";
+
+        /// <summary>
+        /// The watch stack is capped like every other stack on a card
+        /// (<see cref="Vgs.Model.GridGraph.MaxPortsPerSide"/>). The cap is enforced when a block
+        /// is attached, not when the bars are drawn: a bar that exists in the list but is not
+        /// drawn would have no "x", and the player could never remove it.
+        /// </summary>
+        public const string WarnWatchTooManyFormat =
+            "Блок не добавлен: у контроллера уже {0} отслеживаемых блоков — это предел";
+
+        public const string WarnWatchRemoveRejectedFormat =
+            "Блок «{0}» не убран: игра не приняла изменение списка контроллера";
+
+        /// <summary>
+        /// A watch the *player* selected in the vanilla terminal. The controller keeps that list
+        /// in private fields with no public setter, so the editor can show it and cannot remove
+        /// it (ADR-0018). Saying so is the only honest answer; silently pretending would bring
+        /// the port back on the next refresh.
+        /// </summary>
+        public const string WarnWatchGameOwnedFormat =
+            "Блок «{0}» выбран в терминале контроллера — уберите его там, редактор этот список не меняет";
 
         // Action menu
         public const string ActionMenuTitleFormat = "Действие для «{0}»";

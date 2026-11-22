@@ -335,6 +335,48 @@ namespace Vgs.Model
     }
 
     /// <summary>
+    /// One block an event controller watches: a member of the controller's "selected blocks"
+    /// list (ADR-0017).
+    ///
+    /// A watch target is <b>not</b> an <see cref="Edge"/>. An edge is a connection that lives in
+    /// the source block's toolbar and occupies a cell there (ADR-0011); watching has no cell and
+    /// no action — the controller does not *call* the block, it *observes* it. Putting the two
+    /// in one type would mean an edge without a cell, which is exactly the invariant the graph
+    /// is built on.
+    ///
+    /// <see cref="DisplayName"/> is the watched block's name as of the last refresh. It is
+    /// copied rather than resolved so the port can be labelled without the draw path ever
+    /// touching a live block — and so the bar keeps its name even when the target is hidden
+    /// from the schema with "Show in VGS".
+    /// </summary>
+    public sealed class WatchTarget
+    {
+        /// <summary>Entity id of the watched block.</summary>
+        public readonly long EntityId;
+
+        /// <summary>Player-visible name of the watched block. Refreshed with the graph.</summary>
+        public string DisplayName; // review:allow R009 written only by the refresh pass
+
+        /// <summary>
+        /// Drawing slot: which stacked watch bar under the card this target occupies. Assigned
+        /// by <see cref="GridGraph.LayoutPorts"/> — the UI never computes it.
+        /// </summary>
+        public int Slot; // review:allow R009 assigned only by GridGraph.LayoutPorts
+
+        public WatchTarget(long entityId, string displayName)
+        {
+            EntityId = entityId;
+            DisplayName = displayName;
+            Slot = -1;
+        }
+
+        public override string ToString()
+        {
+            return EntityId + " " + DisplayName;
+        }
+    }
+
+    /// <summary>
     /// A block shown on the canvas — or a named block group of the grid, which is drawn as a
     /// light frame around the cards of its members (ADR-0015).
     ///
@@ -522,6 +564,72 @@ namespace Vgs.Model
         /// </summary>
         public bool CanDriveBlocks; // review:allow R009 set once by the probe, never re-read per frame
 
+        /// <summary>
+        /// True when this node's block is an event controller — the one block that owns a list
+        /// of blocks it *observes* (ADR-0017).
+        ///
+        /// Read from the game's own interface (<c>Sandbox.ModAPI.IMyEventControllerBlock</c>)
+        /// when the node is built, never from the subtype name: a modded block that implements
+        /// the interface is a controller too, and a block that merely *looks* like one is not.
+        ///
+        /// It gates the square "#" anchor and the watch mode, nothing else: a controller is
+        /// still an ordinary source of connections and keeps its "+"/"T"/"F" buttons.
+        /// </summary>
+        public readonly bool IsEventController;
+
+        /// <summary>
+        /// One line describing what the controller checks, or null for every other block:
+        /// event name, comparison direction and threshold — whatever the selected event uses.
+        ///
+        /// Written by <c>Vgs.Game.EventControllerProbe</c> from the live block and drawn as a
+        /// third line of the card. It is a snapshot: the game's threshold and event can change
+        /// between two refreshes, and the card follows on the next one.
+        /// </summary>
+        public string StatusText; // review:allow R009 written only by the refresh pass
+
+        /// <summary>
+        /// Blocks this controller watches: its "selected blocks" list, in the order the player
+        /// added them (ADR-0017).
+        ///
+        /// Rebuilt from the controller's own storage by the refresh pass, and edited by the
+        /// watch gesture through <see cref="GridGraph.TryAddWatch"/> /
+        /// <see cref="GridGraph.RemoveWatch"/>. A watch target is drawn as a yellow bar under
+        /// the card; the list *is* the connection, so a member is always drawn.
+        /// </summary>
+        public readonly List<WatchTarget> Watched = new List<WatchTarget>();
+
+        /// <summary>
+        /// Identity of the event the controller had when its watch list was last read, or 0.
+        ///
+        /// The game builds a *new* event component when the player picks another event, and a
+        /// watch added through the component does not survive that switch. Comparing this value
+        /// across refreshes is how the editor notices that it has to replay its own additions
+        /// into the new component (ADR-0018).
+        /// </summary>
+        public long WatchEventId; // review:allow R009 written only by the refresh pass
+
+        /// <summary>
+        /// True when the card carries a third line — the mode description of a controller.
+        ///
+        /// Reserved for every event controller rather than only while the text is non-empty: a
+        /// card that grows and shrinks as the player picks a different event in the terminal
+        /// would move its own port stack under the pointer.
+        /// </summary>
+        public bool HasStatusLine
+        {
+            get { return IsEventController || !string.IsNullOrEmpty(StatusText); }
+        }
+
+        /// <summary>The watch target for this block, or null when the controller does not watch it.</summary>
+        public WatchTarget FindWatch(long entityId)
+        {
+            for (int i = 0; i < Watched.Count; i++)
+            {
+                if (Watched[i].EntityId == entityId) return Watched[i];
+            }
+            return null;
+        }
+
         /// <summary>Input ports: terminal actions this block can be told to perform.</summary>
         public readonly List<Port> Actions = new List<Port>();
 
@@ -535,6 +643,12 @@ namespace Vgs.Model
 
         public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
                     ToolbarLayout toolbar)
+            : this(entityId, subtypeId, displayName, gridPosition, toolbar, false)
+        {
+        }
+
+        public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
+                    ToolbarLayout toolbar, bool isEventController)
         {
             EntityId = entityId;
             Kind = NodeKind.Block;
@@ -543,6 +657,7 @@ namespace Vgs.Model
             DisplayName = displayName;
             GridPosition = gridPosition;
             Toolbar = toolbar ?? ToolbarLayout.None;
+            IsEventController = isEventController;
 
             // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
             // placed, and the automatic layout would then never place it. A new node starts
@@ -566,8 +681,10 @@ namespace Vgs.Model
 
             // A group has nothing that fires, so it cannot drive anything: no "+" button, no
             // bind mode, no event ports. Filling this in explicitly is cheaper than defending
-            // every caller against the opposite assumption.
+            // every caller against the opposite assumption. It is also never an event
+            // controller: the watch list belongs to one block, and a group is not a block.
             CanDriveBlocks = false;
+            IsEventController = false;
         }
 
         /// <summary>

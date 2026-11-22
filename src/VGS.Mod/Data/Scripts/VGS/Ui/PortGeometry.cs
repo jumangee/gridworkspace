@@ -60,7 +60,25 @@ namespace Vgs.Ui
         public static void CardRect(Node node, out Vector2 topLeft, out Vector2 size)
         {
             topLeft = node.Position;
-            size = new Vector2(VgsConstants.NodeWidth, VgsConstants.NodeHeight);
+            size = new Vector2(VgsConstants.NodeWidth, CardHeight(node));
+        }
+
+        /// <summary>
+        /// Height of a node's card: the label (name and subtype), plus one line when the node
+        /// carries a mode description — which today means an event controller (ADR-0017).
+        ///
+        /// The height is derived rather than stored because it follows from what the card has
+        /// to show, and a stored height would need its own refresh path to stay in step with
+        /// the text. Everything positioned from the card — port stacks, the "#" anchor, the
+        /// "+"/"T"/"F" buttons, a group's frame, culling — already goes through
+        /// <see cref="CardRect"/>, so growing the card here moves them all at once.
+        /// </summary>
+        public static float CardHeight(Node node)
+        {
+            if (node == null) return VgsConstants.NodeHeight;
+
+            return VgsConstants.NodeHeight
+                   + (node.HasStatusLine ? VgsConstants.NodeStatusLineHeight : 0f);
         }
 
         /// <summary>
@@ -267,6 +285,26 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// Radius of a bind button on this node, in the layout's vertical units.
+        ///
+        /// Derived from the node's own card height rather than from the constant alone, because
+        /// a controller's card is one line taller (ADR-0017): a disc sized for a short card and
+        /// centred on a tall one reads as a small dot floating on a big label. Scaling the radius
+        /// by the same factor keeps the disc the same fraction of the card it sits on, and leaves
+        /// every ordinary card exactly as it was.
+        /// </summary>
+        public static float BindButtonRadius(Node node, PortGroup group)
+        {
+            float baseRadius = HasGroupButtons(node)
+                ? VgsConstants.GroupButtonRadius
+                : VgsConstants.PlusButtonRadius;
+
+            if (node == null) return baseRadius;
+
+            return baseRadius * (CardHeight(node) / VgsConstants.NodeHeight);
+        }
+
+        /// <summary>
         /// True when the node shows a bind button for this group, and where its centre is.
         /// The button is the entry point of bind mode: it exists only for blocks that can
         /// drive other blocks, so a conveyor tube has no button at all.
@@ -294,21 +332,21 @@ namespace Vgs.Ui
             {
                 if (group != PortGroup.Single) return false;
 
-                float halfWidth = VgsConstants.PlusButtonRadius * aspectX;
+                float halfWidth = BindButtonRadius(node, group) * aspectX;
                 center = new Vector2(rightEdge - halfWidth,
-                                     node.Position.Y + VgsConstants.NodeHeight * 0.5f);
+                                     node.Position.Y + CardHeight(node) * 0.5f);
                 return true;
             }
 
             if (group == PortGroup.Single) return false;
 
-            float halfGroupWidth = VgsConstants.GroupButtonRadius * aspectX;
+            float halfGroupWidth = BindButtonRadius(node, group) * aspectX;
             float centreY = group == PortGroup.Yes
                 ? VgsConstants.GroupButtonTrueY
                 : VgsConstants.GroupButtonFalseY;
 
             center = new Vector2(rightEdge - halfGroupWidth,
-                                 node.Position.Y + VgsConstants.NodeHeight * centreY);
+                                 node.Position.Y + CardHeight(node) * centreY);
             return true;
         }
 
@@ -331,17 +369,17 @@ namespace Vgs.Ui
 
             if (!HasGroupButtons(node))
             {
-                return Hits(node, PortGroup.Single, graphPoint, aspectX, VgsConstants.PlusButtonRadius);
+                return Hits(node, PortGroup.Single, graphPoint, aspectX);
             }
 
             // The two discs do not overlap, but the hit tolerance could make them touch, so
             // "true" is tested first and wins a tie — it is the common case.
-            if (Hits(node, PortGroup.Yes, graphPoint, aspectX, VgsConstants.GroupButtonRadius))
+            if (Hits(node, PortGroup.Yes, graphPoint, aspectX))
             {
                 group = PortGroup.Yes;
                 return true;
             }
-            if (Hits(node, PortGroup.No, graphPoint, aspectX, VgsConstants.GroupButtonRadius))
+            if (Hits(node, PortGroup.No, graphPoint, aspectX))
             {
                 group = PortGroup.No;
                 return true;
@@ -349,15 +387,240 @@ namespace Vgs.Ui
             return false;
         }
 
-        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX, float radius)
+        private static bool Hits(Node node, PortGroup group, Vector2 graphPoint, float aspectX)
         {
             Vector2 center;
             if (!TryBindButton(node, group, aspectX, out center)) return false;
 
-            float r = radius * 1.2f;
+            float r = BindButtonRadius(node, group) * 1.2f;
             float dx = (graphPoint.X - center.X) / aspectX;
             float dy = graphPoint.Y - center.Y;
             return dx * dx + dy * dy <= r * r;
+        }
+
+        /// <summary>
+        /// Rectangle of the square "#" anchor on an event controller's card (ADR-0017), in
+        /// graph units. False for every other node: the anchor exists only where a watch list
+        /// can exist.
+        ///
+        /// The shape is a square on <em>screen</em>: the side is 75% of the card's height, and
+        /// its horizontal extent goes through the aspect correction, exactly like a disc's
+        /// horizontal half-width. The left gap is four screen pixels
+        /// (<see cref="VgsConstants.WatchButtonMarginPixels"/>), converted to X units the same
+        /// way — a gap written as an X length would be four pixels on one monitor and seven on
+        /// another.
+        /// </summary>
+        public static bool TryWatchButtonRect(Node node, float aspectX, out Vector2 topLeft,
+                                              out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (node == null || !node.IsEventController) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float cardHeight = CardHeight(node);
+            float side = cardHeight * VgsConstants.WatchButtonHeightRatio;
+
+            topLeft = new Vector2(node.Position.X + VgsConstants.WatchButtonMargin * aspectX,
+                                  node.Position.Y + (cardHeight - side) * 0.5f);
+            size = new Vector2(side * aspectX, side);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the "#" anchor: the point a watch line starts from while the user is
+        /// choosing a block. Once the block is attached the line leaves the watch port's dot
+        /// instead, because the port is then what the connection belongs to (ADR-0017).
+        /// </summary>
+        public static bool TryWatchButton(Node node, float aspectX, out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryWatchButtonRect(node, aspectX, out topLeft, out size)) return false;
+
+            center = topLeft + size * 0.5f;
+            return true;
+        }
+
+        /// <summary>
+        /// True when a graph-space point is on the "#" anchor. The rectangle itself is the
+        /// target — it is already the square the player sees, so no tolerance correction is
+        /// needed here.
+        /// </summary>
+        public static bool HitWatchButton(Node node, Vector2 graphPoint, float aspectX)
+        {
+            if (node == null || !node.IsEventController) return false;
+
+            Vector2 topLeft, size;
+            if (!TryWatchButtonRect(node, aspectX, out topLeft, out size)) return false;
+            return Contains(topLeft, size, graphPoint);
+        }
+
+        /// <summary>
+        /// Rectangle of the bar for one watch target, in graph units (ADR-0017). False when the
+        /// bar is not drawn (slot negative: the controller watches more blocks than fit under
+        /// its card).
+        ///
+        /// The watch stack sits under the input stack, so the card's own actions stay the first
+        /// thing under it. Every stack is flush with the one above, which is what makes the
+        /// column read as one node rather than as a card with boxes hanging off it.
+        /// </summary>
+        public static bool TryWatchBarRect(Node node, WatchTarget watch, out Vector2 topLeft,
+                                           out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (node == null || watch == null || watch.Slot < 0) return false;
+
+            Vector2 bodyTopLeft, bodySize;
+            if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return false;
+
+            float y = bodyTopLeft.Y + bodySize.Y;
+
+            float outputHeight = OutputStackHeight(node);
+            if (outputHeight > 0f) y += outputHeight + VgsConstants.PortStackSpacing;
+
+            float inputHeight = InputStackHeight(node);
+            if (inputHeight > 0f) y += inputHeight + VgsConstants.PortStackSpacing;
+
+            y += watch.Slot * PortBarStride;
+
+            topLeft = new Vector2(bodyTopLeft.X, y);
+            size = new Vector2(bodySize.X, VgsConstants.PortBarHeight);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the dot on a watch bar: inside the bar, at the right edge, the same size
+        /// and the same four-pixel gap as every other port control.
+        ///
+        /// Right, not left, because the line <em>leaves</em> this port for the watched block.
+        /// The side of the dot is what tells an input from an output at a glance, and a watch
+        /// is an output of sorts: the controller is the one that acts, the watched block only
+        /// reports its state.
+        /// </summary>
+        public static bool TryWatchDot(Node node, WatchTarget watch, float aspectX, out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryWatchBarRect(node, watch, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            center = new Vector2(topLeft.X + size.X - ControlOffset(aspectX),
+                                 topLeft.Y + size.Y * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the "x" on a watch bar: the dot's mirror image, on the left. Clicking it
+        /// removes the block from the controller's list (ADR-0017).
+        /// </summary>
+        public static bool TryWatchRemoveButton(Node node, WatchTarget watch, float aspectX,
+                                                out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryWatchBarRect(node, watch, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            center = new Vector2(topLeft.X + ControlOffset(aspectX),
+                                 topLeft.Y + size.Y * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Rectangle of a watch bar's label: the span between the two round controls, the same
+        /// span an input or output bar gets. The label is the watched block's name.
+        /// </summary>
+        public static bool TryWatchLabelRect(Node node, WatchTarget watch, float aspectX,
+                                             out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            Vector2 barTopLeft, barSize;
+            if (!TryWatchBarRect(node, watch, out barTopLeft, out barSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float inset = ControlOffset(aspectX) + ControlHalfWidth(aspectX)
+                          + VgsConstants.PortLabelPadding;
+            float width = barSize.X - inset * 2f;
+            if (width <= 0f) return false;
+
+            topLeft = new Vector2(barTopLeft.X + inset, barTopLeft.Y);
+            size = new Vector2(width, barSize.Y);
+            return true;
+        }
+
+        /// <summary>The watch target whose "x" is under a graph-space point, or null.</summary>
+        public static WatchTarget HitWatchRemoveButton(Node node, Vector2 graphPoint, float aspectX)
+        {
+            if (node == null || !node.IsEventController) return null;
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
+
+            for (int i = 0; i < node.Watched.Count; i++)
+            {
+                WatchTarget watch = node.Watched[i];
+                if (watch.Slot < 0) continue;
+
+                Vector2 center;
+                if (!TryWatchRemoveButton(node, watch, aspectX, out center)) continue;
+
+                float dx = (graphPoint.X - center.X) / aspectX;
+                float dy = graphPoint.Y - center.Y;
+                if (dx * dx + dy * dy <= tolerance * tolerance) return watch;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Centre of a node's card. A watch line ends here rather than on a port: the watched
+        /// block has no "observe me" port, and a line into one of its real ports would claim a
+        /// call the controller never makes (ADR-0017).
+        ///
+        /// Cards are drawn after lines, so the visible end of the line is the card's border —
+        /// which is exactly "the line ends in the card".
+        /// </summary>
+        public static bool TryCardCentre(Node node, out Vector2 center)
+        {
+            center = Vector2.Zero;
+            if (node == null) return false;
+
+            Vector2 topLeft, size;
+            if (!TryBodyRect(node, out topLeft, out size)) return false;
+
+            center = topLeft + size * 0.5f;
+            return true;
+        }
+
+        /// <summary>Number of watch bars of this node that are actually drawn.</summary>
+        public static int DrawnWatchCount(Node node)
+        {
+            if (node == null) return 0;
+
+            int count = 0;
+            for (int i = 0; i < node.Watched.Count; i++)
+            {
+                if (node.Watched[i].Slot >= 0) count++;
+            }
+            return count;
+        }
+
+        /// <summary>Height of the watch stack under a card, for culling and hit-testing.</summary>
+        public static float WatchStackHeight(Node node)
+        {
+            int count = DrawnWatchCount(node);
+            if (count == 0) return 0f;
+            return count * PortBarStride - VgsConstants.PortBarGap;
         }
 
         /// <summary>
@@ -576,7 +839,7 @@ namespace Vgs.Ui
             return count * PortBarStride - VgsConstants.PortBarGap;
         }
 
-        /// <summary>Total height a node occupies: body plus both port stacks.</summary>
+        /// <summary>Total height a node occupies: body plus all three port stacks.</summary>
         public static float TotalHeight(Node node)
         {
             Vector2 bodyTopLeft, bodySize;
@@ -584,12 +847,21 @@ namespace Vgs.Ui
 
             float output = OutputStackHeight(node);
             float input = InputStackHeight(node);
+            float watch = WatchStackHeight(node);
 
             float total = bodySize.Y + output;
             if (input > 0f)
             {
                 if (output > 0f) total += VgsConstants.PortStackSpacing;
                 total += input;
+            }
+            if (watch > 0f)
+            {
+                // The watch stack follows the same rule as the input stack: the separating gap
+                // is added only when there is something above, or the first watch bar would
+                // float away from the card it belongs to.
+                if (output > 0f || input > 0f) total += VgsConstants.PortStackSpacing;
+                total += watch;
             }
             return total;
         }
@@ -675,7 +947,24 @@ namespace Vgs.Ui
             }
 
             return HitAnyPortBar(node.Events, node, graphPoint)
-                || HitAnyPortBar(node.Actions, node, graphPoint);
+                || HitAnyPortBar(node.Actions, node, graphPoint)
+                || HitAnyWatchBar(node, graphPoint);
+        }
+
+        /// <summary>
+        /// True when the point is on one of the node's drawn watch bars. A watch bar belongs to
+        /// the controller for the same reason a port bar belongs to its block: a click there
+        /// must select the node, not start a pan under it (ADR-0017).
+        /// </summary>
+        private static bool HitAnyWatchBar(Node node, Vector2 graphPoint)
+        {
+            for (int i = 0; i < node.Watched.Count; i++)
+            {
+                Vector2 topLeft, size;
+                if (!TryWatchBarRect(node, node.Watched[i], out topLeft, out size)) continue;
+                if (Contains(topLeft, size, graphPoint)) return true;
+            }
+            return false;
         }
 
         private static bool HitAnyPortBar(System.Collections.Generic.List<Port> ports, Node node,

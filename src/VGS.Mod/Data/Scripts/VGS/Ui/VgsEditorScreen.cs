@@ -74,6 +74,21 @@ namespace Vgs.Ui
         private static readonly Color ColLine = new Color(120, 220, 160, 190);
         private static readonly Color ColLinePending = new Color(255, 170, 60, 235);
 
+        // A watch line is a third kind of line: the controller *observes* a block instead of
+        // calling it (ADR-0017). It is drawn in a warm yellow, dashed, so it cannot be confused
+        // with a connection at a glance — the fill is the same family as the watch bar's, which
+        // is what ties the line to the port it leaves from.
+        private static readonly Color ColWatch = new Color(240, 200, 90, 255);
+        private static readonly Color ColWatchFill = new Color(62, 52, 24, 255);
+        private static readonly Color ColWatchLine = new Color(240, 200, 90, 210);
+
+        /// <summary>
+        /// Colour of a refused watch line: the same line the player is dragging, turned red for
+        /// about a second (ADR-0017 §5). Red because the failure is not "you missed", it is "this
+        /// block cannot be attached" — and the line itself is the only thing under the cursor.
+        /// </summary>
+        private static readonly Color ColWatchError = new Color(255, 90, 90, 245);
+
         // A group is a light frame *behind* its members' cards (ADR-0015). Light, because it
         // has to be readable on the dark canvas without competing with the cards it contains:
         // a card is what the player acts on, the frame only says "these belong together".
@@ -180,6 +195,29 @@ namespace Vgs.Ui
         /// <summary>Fire group the current bind belongs to; drives the hint text.</summary>
         private PortGroup _bindGroup;
 
+        /// <summary>
+        /// Controller whose watch list is being extended, or null. Non-null means watch mode is
+        /// active (ADR-0017).
+        ///
+        /// A field of its own rather than a flag on the bind: the two gestures are mutually
+        /// exclusive and they write to different things — a bind writes an item into a toolbar,
+        /// a watch writes an id into a controller's list. Sharing one field would force every
+        /// input path to ask which kind of gesture it is looking at.
+        /// </summary>
+        private Node _watchSource;
+
+        /// <summary>
+        /// Frame until which the watch line is drawn red — the refusal of the last click.
+        ///
+        /// The line is the only feedback under the cursor at the moment of a refused attach, so
+        /// it turns red instead of the mode ending: the next click can still land on a block
+        /// that fits, and the player does not have to press "#" again.
+        /// </summary>
+        private int _watchErrorUntilFrame;
+
+        /// <summary>Controller whose "#" anchor is under the pointer, or null.</summary>
+        private Node _hoverWatch;
+
         /// <summary>Card whose action menu is open. Non-null implies bind mode.</summary>
         private Node _menuTarget;
 
@@ -218,6 +256,12 @@ namespace Vgs.Ui
 
         /// <summary>Port whose remove button is under the pointer, or null.</summary>
         private Port _hoverRemovePort;
+
+        /// <summary>Controller whose watch port carries the "x" under the pointer, or null.</summary>
+        private Node _hoverWatchRemoveNode;
+
+        /// <summary>Watch target whose "x" is under the pointer, or null.</summary>
+        private WatchTarget _hoverWatchRemoveTarget;
 
         /// <summary>
         /// Edges collected for a removal click. Reused so that clicking a remove button does
@@ -453,11 +497,17 @@ namespace Vgs.Ui
         {
             try
             {
-                // Esc exits the deepest mode first — cancelling a bind is what the player
-                // expects from Escape — and only closes the editor when there is none.
+                // Esc exits the deepest mode first — cancelling a bind or a watch is what the
+                // player expects from Escape — and only closes the editor when there is none.
                 if (_menuTarget != null || _bindSource != null)
                 {
                     CancelBind();
+                    return false;
+                }
+
+                if (_watchSource != null)
+                {
+                    CancelWatch();
                     return false;
                 }
 
@@ -481,6 +531,8 @@ namespace Vgs.Ui
                 _selected = null;
                 _bindSource = null;
                 _bindPort = null;
+                _watchSource = null;
+                _watchErrorUntilFrame = 0;
                 _menuTarget = null;
                 _menuRows.Clear();
                 _menuLabels.Clear();
@@ -492,6 +544,9 @@ namespace Vgs.Ui
                 _hoverPlus = null;
                 _hoverRemoveNode = null;
                 _hoverRemovePort = null;
+                _hoverWatch = null;
+                _hoverWatchRemoveNode = null;
+                _hoverWatchRemoveTarget = null;
                 _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
@@ -691,6 +746,28 @@ namespace Vgs.Ui
 
             if (_bindSource != null && !_graph.ContainsNode(_bindSource)) CancelBind();
 
+            // A controller can be destroyed, or stop being one, while its watch mode is open.
+            // The mode is cancelled rather than silently re-aimed: the port it was going to
+            // write into no longer exists.
+            if (_watchSource != null && !_graph.ContainsNode(_watchSource)) CancelWatch();
+
+            if (_hoverWatch != null && !_graph.ContainsNode(_hoverWatch)) _hoverWatch = null;
+            if (_hoverWatchRemoveNode != null && !_graph.ContainsNode(_hoverWatchRemoveNode))
+            {
+                _hoverWatchRemoveNode = null;
+                _hoverWatchRemoveTarget = null;
+            }
+
+            // The refresh rebuilds the watch list, so the hovered target can be a stale object
+            // even while its controller is still there. Re-resolve by id rather than by
+            // reference: the highlight must follow the entry, not the object that used to be it.
+            if (_hoverWatchRemoveNode != null && _hoverWatchRemoveTarget != null)
+            {
+                _hoverWatchRemoveTarget =
+                    _hoverWatchRemoveNode.FindWatch(_hoverWatchRemoveTarget.EntityId);
+                if (_hoverWatchRemoveTarget == null) _hoverWatchRemoveNode = null;
+            }
+
             // A bind holds a specific port object, chosen when it started. A refresh that
             // rebuilt the source's event list (its action set changed, or the block was
             // rebuilt) leaves that object orphaned, and the line would then point at a port
@@ -753,6 +830,7 @@ namespace Vgs.Ui
 
                 if (_menuTarget != null) { HandleMenuInput(mouse); return; }
                 if (_bindSource != null) { HandleBindInput(mouse); return; }
+                if (_watchSource != null) { HandleWatchInput(mouse); return; }
 
                 HandleCanvasInput(mouse);
             }
@@ -847,6 +925,26 @@ namespace Vgs.Ui
                 if (removeNode != null)
                 {
                     RemovePortConnections(removeNode, removePort);
+                    return;
+                }
+
+                // A watch port's "x" is the same kind of target on the same kind of bar, and it
+                // is resolved before the card for the same reason (ADR-0017).
+                WatchTarget watchRemove;
+                Node watchRemoveNode = HitTestWatchRemoveButton(graphPos, out watchRemove);
+                if (watchRemoveNode != null)
+                {
+                    RemoveWatchTarget(watchRemoveNode, watchRemove);
+                    return;
+                }
+
+                // The "#" anchor sits on the card's left edge, where the text starts, so it is
+                // resolved before the card: starting a watch instead of a drag is the whole
+                // point of the button (ADR-0017).
+                Node watchButton = HitTestWatchButton(graphPos);
+                if (watchButton != null)
+                {
+                    BeginWatch(watchButton);
                     return;
                 }
 
@@ -1036,6 +1134,7 @@ namespace Vgs.Ui
             // a click on chrome.
             _hoverNode = insideCanvas ? HitTest(graphPos) : null;
             _hoverPlus = null;
+            _hoverWatch = null;
 
             // The remove button is a click target of the idle mode only: while binding, every
             // click picks the target, and a bar (with its button) counts as its block. Clearing
@@ -1043,6 +1142,8 @@ namespace Vgs.Ui
             // is not.
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
 
             if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
 
@@ -1062,6 +1163,309 @@ namespace Vgs.Ui
             }
 
             OpenActionMenu(target, mouse);
+        }
+
+        // ------------------------------------------------------------------ watch mode
+
+        /// <summary>
+        /// Input while a watch is being attached to a controller (ADR-0017).
+        ///
+        /// The gesture is the bind's twin and deliberately so: a line follows the pointer from
+        /// the "#" anchor, the left button picks the block, the right button and Esc cancel, the
+        /// middle button still pans so a target off-screen can be reached without losing the
+        /// gesture. What differs is what a click *means*: no action menu opens, because there is
+        /// no action to choose — the controller only observes.
+        /// </summary>
+        private void HandleWatchInput(Vector2 mouse)
+        {
+            if (MyAPIGateway.Input.IsNewRightMousePressed())
+            {
+                CancelWatch();
+                return;
+            }
+
+            Vector2 canvasTopLeft, canvasSize;
+            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
+
+            bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
+            if (insideCanvas && middleDown)
+            {
+                if (!_panning)
+                {
+                    _panning = true;
+                    _panAnchor = mouse;
+                }
+                else
+                {
+                    _camera -= (mouse - _panAnchor) / _zoom;
+                    _panAnchor = mouse;
+                }
+                return;
+            }
+            if (_panning && !middleDown) _panning = false;
+
+            Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+            _hoverNode = insideCanvas ? HitTest(graphPos) : null;
+            _hoverPlus = null;
+            _hoverWatch = null;
+
+            // The port controls are idle-mode targets only: while a watch is being attached,
+            // every click picks a block, and a bar counts as its block.
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
+
+            if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
+
+            Node target = _hoverNode;
+            if (target == null)
+            {
+                // Clicking the void abandons the gesture, exactly like a bind.
+                CancelWatch();
+                return;
+            }
+
+            TryAttachWatch(target);
+        }
+
+        /// <summary>
+        /// Starts watch mode from a controller's "#" anchor. Refuses on a node that is not a
+        /// controller, and on one whose list cannot be written from this machine — telling the
+        /// player before they aim at a block rather than after.
+        /// </summary>
+        private void BeginWatch(Node controller)
+        {
+            if (controller == null || !controller.IsEventController) return;
+
+            _watchSource = controller;
+            _watchErrorUntilFrame = 0;
+            _selected = controller;
+            _dragging = false;
+            _draggedNode = null;
+            _draggedGroup = null;
+            _panning = false;
+            CancelBind();
+
+            VgsLog.Debug("watch mode started on controller " + controller.EntityId);
+        }
+
+        /// <summary>
+        /// Leaves watch mode. Deliberately does not touch the selection or the camera: the
+        /// player is looking at the controller they just edited.
+        /// </summary>
+        private void CancelWatch()
+        {
+            if (_watchSource != null) VgsLog.Debug("watch mode cancelled");
+
+            _watchSource = null;
+            _hoverWatch = null;
+            _hoverNode = null;
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
+            _panning = false;
+        }
+
+        /// <summary>
+        /// Attaches one block to the controller being edited, or refuses and turns the line red.
+        ///
+        /// <b>Order: reserve in the graph, write the block, keep the picture only on success.</b>
+        /// The block is the record — the game's selection plus the overlay, never the graph
+        /// (ADR-0018) — and the port is only its picture. The reservation is what makes a refusal
+        /// cost nothing: it answers the cheap questions first (is this a controller, is the block
+        /// already watched, is the stack full) and rolls back without a trace when the world
+        /// refuses. `LayoutPorts` is not called between the two, so no port is ever drawn for a
+        /// watch that did not happen.
+        /// </summary>
+        private void TryAttachWatch(Node target)
+        {
+            Node controller = _watchSource;
+            if (controller == null || target == null) return;
+
+            // A group is not an entity, so it has no id to store and nothing the controller
+            // could subscribe to (ADR-0015, ADR-0017). Refused explicitly: falling through to
+            // "the block is gone" would be a lie about a block the player can see.
+            if (target.IsGroup)
+            {
+                RefuseWatch(VgsText.WarnWatchGroup);
+                return;
+            }
+
+            IMyTerminalBlock controllerBlock = ResolveBlock(controller.EntityId);
+            if (controllerBlock == null)
+            {
+                RefuseWatch(VgsText.WarnWatchBlockGone);
+                return;
+            }
+
+            IMyTerminalBlock targetBlock = ResolveBlock(target.EntityId);
+            if (targetBlock == null)
+            {
+                RefuseWatch(VgsText.WarnWatchBlockGone);
+                return;
+            }
+
+            if (ReferenceEquals(target, controller))
+            {
+                RefuseWatch(VgsText.WarnWatchSelf);
+                return;
+            }
+
+            if (_graph.HasWatch(controller, target.EntityId))
+            {
+                RefuseWatch(string.Format(VgsText.WarnWatchDuplicateFormat, target.DisplayName));
+                return;
+            }
+
+            // The stack is capped, and the cap is enforced before the write so the refusal costs
+            // nothing. A bar with no drawing slot would have no "x", and that button is the only
+            // way to detach a block.
+            if (controller.Watched.Count >= GridGraph.MaxPortsPerSide)
+            {
+                RefuseWatch(string.Format(VgsText.WarnWatchTooManyFormat, GridGraph.MaxPortsPerSide));
+                return;
+            }
+
+            // The graph is the reservation: it answers the cheap questions (is this a
+            // controller, is the block already watched) before a single read of the world.
+            if (!_graph.TryAddWatch(controller, target.EntityId, target.DisplayName))
+            {
+                RefuseWatch(VgsText.WarnWatchRejected);
+                return;
+            }
+
+            EventControllerProbe.WatchResult result =
+                EventControllerProbe.TryAddWatch(controllerBlock, targetBlock);
+
+            if (result != EventControllerProbe.WatchResult.Ok)
+            {
+                _graph.RemoveWatch(controller, target.EntityId);
+                RefuseWatch(DescribeWatchFailure(result, controllerBlock, target));
+                return;
+            }
+
+            _graph.LayoutPorts();
+            if (_graph.GroupCount > 0) PortGeometry.LayoutGroupFrames(_graph);
+
+            VgsLog.Info("controller " + controller.EntityId + " now watches " + target.EntityId);
+        }
+
+        /// <summary>
+        /// Removes a block from a controller's watch list from the port's "x".
+        ///
+        /// <b>Order: block first, graph second</b> — the mirror of attaching, and for the same
+        /// reason: the block is the record, the port is its picture (ADR-0018). A refused removal
+        /// keeps the port and says why, because dropping the bar while the block stayed watched
+        /// would hide a live watch — and a block the player selected in the vanilla terminal
+        /// cannot be removed from here at all, so it answers with that instead.
+        /// </summary>
+        private void RemoveWatchTarget(Node controller, WatchTarget watch)
+        {
+            if (controller == null || watch == null) return;
+
+            IMyTerminalBlock controllerBlock = ResolveBlock(controller.EntityId);
+            if (controllerBlock == null)
+            {
+                Warn(VgsText.WarnWatchBlockGone);
+                return;
+            }
+
+            IMyTerminalBlock targetBlock = ResolveBlock(watch.EntityId);
+
+            // A block that no longer exists has nothing left to unsubscribe from: the entry is
+            // dropped from the storage and the bar goes with it. Refusing here would leave the
+            // player with a port they can never remove.
+            EventControllerProbe.WatchResult result;
+            if (targetBlock == null)
+            {
+                result = EventControllerProbe.ForgetWatch(controllerBlock, watch.EntityId)
+                    ? EventControllerProbe.WatchResult.Ok
+                    : EventControllerProbe.WatchResult.Rejected;
+            }
+            else
+            {
+                result = EventControllerProbe.TryRemoveWatch(controllerBlock, targetBlock);
+            }
+
+            if (result != EventControllerProbe.WatchResult.Ok)
+            {
+                // A client is not a refusal of the game's — it is a different machine. Saying
+                // "the game did not accept it" there would be untrue and would send the player
+                // looking for a problem that does not exist.
+                if (result == EventControllerProbe.WatchResult.ClientNotServer)
+                {
+                    Warn(VgsText.WarnWatchClient);
+                    return;
+                }
+
+                // A block the player selected in the vanilla terminal is not ours to remove: the
+                // controller's own list has no public setter, so the port would return on the
+                // next refresh anyway (ADR-0018). Sending them to the terminal is the truth.
+                if (result == EventControllerProbe.WatchResult.GameOwned)
+                {
+                    Warn(string.Format(VgsText.WarnWatchGameOwnedFormat, watch.DisplayName));
+                    return;
+                }
+
+                Warn(string.Format(VgsText.WarnWatchRemoveRejectedFormat, watch.DisplayName));
+                return;
+            }
+
+            _graph.RemoveWatch(controller, watch.EntityId);
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
+
+            _graph.LayoutPorts();
+            if (_graph.GroupCount > 0) PortGeometry.LayoutGroupFrames(_graph);
+
+            VgsLog.Info("controller " + controller.EntityId + " no longer watches " + watch.EntityId);
+        }
+
+        /// <summary>
+        /// Reports a refused attach: the line turns red for
+        /// <see cref="VgsConstants.WatchErrorFrames"/>, the reason goes to the bottom bar, and
+        /// watch mode stays on so the next click can land on a block that fits.
+        /// </summary>
+        private void RefuseWatch(string reason)
+        {
+            _watchErrorUntilFrame = VgsSession.Frame + VgsConstants.WatchErrorFrames;
+            Warn(reason);
+        }
+
+        /// <summary>
+        /// Turns a refusal into the sentence the player sees. Each reason has its own wording
+        /// because they call for different actions: a different block, a different event, or a
+        /// different machine.
+        /// </summary>
+        private string DescribeWatchFailure(EventControllerProbe.WatchResult result,
+                                            IMyTerminalBlock controllerBlock, Node target)
+        {
+            switch (result)
+            {
+                case EventControllerProbe.WatchResult.IsSelf:
+                    return VgsText.WarnWatchSelf;
+                case EventControllerProbe.WatchResult.Duplicate:
+                    return string.Format(VgsText.WarnWatchDuplicateFormat, target.DisplayName);
+                case EventControllerProbe.WatchResult.NoEvent:
+                    return VgsText.WarnWatchNoEvent;
+                case EventControllerProbe.WatchResult.EventIgnoresBlocks:
+                    return VgsText.WarnWatchEventIgnoresBlocks;
+                case EventControllerProbe.WatchResult.DifferentConstruct:
+                    return VgsText.WarnWatchDifferentConstruct;
+                case EventControllerProbe.WatchResult.NotAccepted:
+                    return string.Format(VgsText.WarnWatchNotAcceptedFormat, target.DisplayName,
+                                         EventControllerProbe.SelectedEventName(controllerBlock));
+                case EventControllerProbe.WatchResult.ClientNotServer:
+                    return VgsText.WarnWatchClient;
+                case EventControllerProbe.WatchResult.BlockGone:
+                    return VgsText.WarnWatchBlockGone;
+                default:
+                    return VgsText.WarnWatchRejected;
+            }
         }
 
         /// <summary>Input while the action menu is open.</summary>
@@ -1143,6 +1547,7 @@ namespace Vgs.Ui
             _bindSource = null;
             _bindPort = null;
             _hoverNode = null;
+            _hoverWatch = null;
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
             _panning = false;
@@ -1621,6 +2026,35 @@ namespace Vgs.Ui
             return null;
         }
 
+        /// <summary>Topmost node whose "#" watch anchor is under the pointer, or null.</summary>
+        private Node HitTestWatchButton(Vector2 graphPoint)
+        {
+            float aspect = VgsScreenDraw.ClientAspect;
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                if (PortGeometry.HitWatchButton(nodes[i], graphPoint, aspect)) return nodes[i];
+            }
+            return null;
+        }
+
+        /// <summary>Topmost controller whose watch port carries the "x" under the pointer.</summary>
+        private Node HitTestWatchRemoveButton(Vector2 graphPoint, out WatchTarget watch)
+        {
+            watch = null;
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                WatchTarget hit = PortGeometry.HitWatchRemoveButton(nodes[i], graphPoint, aspect);
+                if (hit == null) continue;
+                watch = hit;
+                return nodes[i];
+            }
+            return null;
+        }
+
         /// <summary>Topmost node whose port remove button is under the pointer, and which port.</summary>
         private Node HitTestRemoveButton(Vector2 graphPoint, out Port port)
         {
@@ -1661,11 +2095,14 @@ namespace Vgs.Ui
         {
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
 
             if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse))
             {
                 _hoverNode = null;
                 _hoverPlus = null;
+                _hoverWatch = null;
                 return;
             }
 
@@ -1682,16 +2119,34 @@ namespace Vgs.Ui
                 _hoverRemovePort = removePort;
                 _hoverNode = null;
                 _hoverPlus = null;
+                _hoverWatch = null;
                 return;
             }
+
+            // A watch port's "x" is the same kind of target (ADR-0017).
+            WatchTarget watchRemove;
+            Node watchRemoveNode = HitTestWatchRemoveButton(graphPos, out watchRemove);
+            if (watchRemoveNode != null)
+            {
+                _hoverWatchRemoveNode = watchRemoveNode;
+                _hoverWatchRemoveTarget = watchRemove;
+                _hoverNode = null;
+                _hoverPlus = null;
+                _hoverWatch = null;
+                return;
+            }
+
+            // The "#" anchor before the card and before the bind buttons: it sits on the left
+            // edge, where a card click would otherwise start a drag.
+            _hoverWatch = HitTestWatchButton(graphPos);
 
             PortGroup group;
             _hoverPlus = HitTestBindButton(graphPos, out group);
             _hoverGroup = group;
 
-            // A card under the button is not "hovered": the button is the thing about to be
+            // A card under a control is not "hovered": the control is the thing about to be
             // clicked, and highlighting the card as well would suggest a drag.
-            _hoverNode = _hoverPlus == null ? HitTest(graphPos) : null;
+            _hoverNode = (_hoverPlus == null && _hoverWatch == null) ? HitTest(graphPos) : null;
         }
 
         // ------------------------------------------------------------------ drawing
@@ -1718,7 +2173,9 @@ namespace Vgs.Ui
                 // hidden under a line that ends on its dot.
                 DrawGroupFrames(canvasTopLeft, canvasSize);
                 DrawEdges(canvasTopLeft, canvasSize);
+                DrawWatchLines(canvasTopLeft, canvasSize);
                 DrawPendingLine(canvasTopLeft, canvasSize);
+                DrawPendingWatchLine(canvasTopLeft, canvasSize);
                 DrawNodes(canvasTopLeft, canvasSize);
                 DrawGroupPorts(canvasTopLeft, canvasSize);
 
@@ -1857,6 +2314,112 @@ namespace Vgs.Ui
             VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _zoom, topLeft, size, ColLinePending);
         }
 
+        /// <summary>
+        /// Draws every watch link: a dashed line from a watch port's dot to the watched block's
+        /// card (ADR-0017).
+        ///
+        /// It ends at the card's centre, not at a port: the watched block has no "observe me"
+        /// port, and a line into one of its real ports would claim a call the controller never
+        /// makes. Cards are drawn after lines, so the visible end of the line is the card's
+        /// border — which reads as "the line ends in the block".
+        ///
+        /// Dashed, unlike a connection, because the two mean different things: a solid line is
+        /// "this fires that", a dashed one is "this watches that".
+        /// </summary>
+        private void DrawWatchLines(Vector2 topLeft, Vector2 size)
+        {
+            float aspect = VgsScreenDraw.ClientAspect;
+            float dash = VgsConstants.WatchDashLength * _zoom;
+            float gap = VgsConstants.WatchDashGap * _zoom;
+
+            IList<Node> nodes = _graph.Nodes;
+            int drawn = 0;
+
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                Node controller = nodes[i];
+                if (controller.Watched.Count == 0) continue;
+
+                for (int w = 0; w < controller.Watched.Count; w++)
+                {
+                    // The same cap a connection line obeys: a canvas full of controllers must not
+                    // be able to queue an unbounded number of dash quads per frame.
+                    if (drawn >= VgsConstants.MaxRenderedEdges) return;
+
+                    WatchTarget watch = controller.Watched[w];
+                    if (watch.Slot < 0) continue;
+
+                    Vector2 from;
+                    if (!PortGeometry.TryWatchDot(controller, watch, aspect, out from)) continue;
+
+                    Node target = _graph.GetNode(watch.EntityId);
+                    Vector2 to;
+
+                    if (target == null || !PortGeometry.TryCardCentre(target, out to))
+                    {
+                        // The watched block is hidden from the schema or gone: the port still
+                        // exists (the list is the player's data), but there is nowhere on the
+                        // canvas to draw its line to.
+                        continue;
+                    }
+
+                    DrawDashedRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
+                                    ColWatchLine, dash, gap, topLeft, size);
+                    drawn++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Draws the watch line from the "#" anchor to the pointer while a watch is being
+        /// attached, and the red refusal flash (ADR-0017 §5).
+        ///
+        /// The line starts at the anchor's centre because the port does not exist yet: the
+        /// point the line leaves from is the point the player pressed, and the moment the port
+        /// appears the line moves to its dot.
+        /// </summary>
+        private void DrawPendingWatchLine(Vector2 topLeft, Vector2 size)
+        {
+            if (_watchSource == null || !_mouseValid) return;
+
+            Vector2 from;
+            if (!PortGeometry.TryWatchButton(_watchSource, VgsScreenDraw.ClientAspect, out from)) return;
+
+            bool refused = VgsSession.Frame < _watchErrorUntilFrame;
+            Color colour = refused ? ColWatchError : ColWatchLine;
+
+            Vector2 start = GraphToScreen(from, topLeft);
+            Vector2 end = _mouse;
+
+            DrawDashedRoute(start, end, colour,
+                            VgsConstants.WatchDashLength * _zoom,
+                            VgsConstants.WatchDashGap * _zoom,
+                            topLeft, size);
+
+            VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _zoom, topLeft, size, colour);
+        }
+
+        /// <summary>
+        /// Draws an orthogonal route with every segment dashed. The route itself comes from
+        /// <see cref="EdgeRouting.Build"/>, the same router a connection uses, so a watch line
+        /// bends and arrives exactly like a wire.
+        /// </summary>
+        private void DrawDashedRoute(Vector2 from, Vector2 to, Color color, float dash, float gap,
+                                     Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            EdgeRouting.Build(from, to, VgsConstants.LineGutter * _zoom, _route);
+
+            for (int i = 0; i < _route.Count; i++)
+            {
+                Vector4 segment = _route[i];
+                VgsScreenDraw.SegmentDashed(
+                    new Vector2(segment.X, segment.Y),
+                    new Vector2(segment.Z, segment.W),
+                    VgsConstants.LineThickness, dash, gap,
+                    clipTopLeft, clipSize, color);
+            }
+        }
+
         private void DrawRoute(Vector2 from, Vector2 to, Color color, Vector2 clipTopLeft, Vector2 clipSize)
         {
             // The dots are already in screen space, so the gutter has to be too. It is a graph
@@ -1928,7 +2491,7 @@ namespace Vgs.Ui
             bool selected = ReferenceEquals(node, _selected);
             bool hovered = ReferenceEquals(node, _hoverNode);
 
-            Vector2 cardSize = new Vector2(VgsConstants.NodeWidth, VgsConstants.NodeHeight) * _zoom;
+            Vector2 cardSize = new Vector2(VgsConstants.NodeWidth, PortGeometry.CardHeight(node)) * _zoom;
 
             // The card is a single filled rectangle. The port bars are separate rectangles
             // below it and must *not* be covered by this fill, or the stack would read as one
@@ -1942,6 +2505,20 @@ namespace Vgs.Ui
             float zoomText = CardTextScale;
             float pad = cardSize.X * 0.05f;
             float textRight = cardSize.X - pad;
+            float textLeft = pad;
+
+            // The "#" anchor occupies the left end of the card, so the labels start to its
+            // right instead of running underneath a square drawn on top of them (ADR-0017).
+            if (node.IsEventController)
+            {
+                Vector2 watchTopLeft, watchSize;
+                if (PortGeometry.TryWatchButtonRect(node, VgsScreenDraw.ClientAspect,
+                                                    out watchTopLeft, out watchSize))
+                {
+                    float rightInCard = watchTopLeft.X + watchSize.X - node.Position.X;
+                    textLeft = (rightInCard + VgsConstants.WatchButtonTextGap) * _zoom;
+                }
+            }
 
             // The bind button occupies the right end of the card, so the labels must stop
             // before it instead of running underneath a circle that is drawn on top of them.
@@ -1952,9 +2529,7 @@ namespace Vgs.Ui
             // square — which is every window.
             if (node.CanDriveBlocks)
             {
-                float radius = PortGeometry.HasGroupButtons(node)
-                    ? VgsConstants.GroupButtonRadius
-                    : VgsConstants.PlusButtonRadius;
+                float radius = PortGeometry.BindButtonRadius(node, FirstGroupOf(node));
 
                 Vector2 buttonCenter;
                 if (PortGeometry.TryBindButton(node, FirstGroupOf(node), VgsScreenDraw.ClientAspect,
@@ -1966,22 +2541,137 @@ namespace Vgs.Ui
                 }
             }
 
-            float textWidth = textRight - pad;
+            float textWidth = textRight - textLeft;
             if (textWidth < 0f) textWidth = 0f;
 
+            // Lines are placed by dividing the card's height into as many bands as it has
+            // lines, rather than by fixed fractions of the card: a controller's card carries a
+            // third line, and fixed fractions would leave that line half outside its own band.
+            int lines = node.HasStatusLine ? 3 : 2;
+            float band = cardSize.Y / lines;
+
             VgsScreenDraw.Text(node.DisplayName,
-                               screenPos + new Vector2(pad, cardSize.Y * 0.08f),
+                               screenPos + new Vector2(textLeft, band * 0.10f),
                                VgsConstants.NodeTitleScale * zoomText, ColText, textWidth);
 
             VgsScreenDraw.Text(node.SubtypeId,
-                               screenPos + new Vector2(pad, cardSize.Y * 0.52f),
+                               screenPos + new Vector2(textLeft, band * 1.10f),
                                VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
+
+            // The mode description: what an event controller actually checks. A third line, in
+            // the watch colour, because it is the block's *state* rather than its identity —
+            // and it is the only place the player can see the threshold without the terminal.
+            if (node.HasStatusLine && !string.IsNullOrEmpty(node.StatusText))
+            {
+                VgsScreenDraw.Text(node.StatusText,
+                                   screenPos + new Vector2(textLeft, band * 2.10f),
+                                   VgsConstants.NodeStatusScale * zoomText, ColWatch, textWidth);
+            }
 
             DrawPortBars(node, border, clipTopLeft, clipSize);
 
             // The bind buttons are drawn last so they are never covered by a port bar of a
             // neighbouring card that happens to be drawn later.
             if (node.CanDriveBlocks) DrawBindButtons(node, clipTopLeft, clipSize);
+            if (node.IsEventController) DrawWatchButton(node, clipTopLeft, clipSize);
+        }
+
+        /// <summary>
+        /// Draws the square "#" anchor of an event controller (ADR-0017).
+        ///
+        /// <b>Square, unlike every other control on a card.</b> The round controls start
+        /// connections between blocks; this one attaches a block to a list the controller owns.
+        /// A third round disc on the same card would be indistinguishable from the other two at a
+        /// glance, and the shape is the cheapest difference that survives a dense canvas.
+        ///
+        /// Drawn inverted like the "+" and the "x" — a near-white square with the glyph in the
+        /// card's colour — for the same reason: a dark glyph on light stays legible at every
+        /// zoom, a light one on dark does not. The glyph is text, not geometry: a "#" is four
+        /// strokes, and the font draws it for free (the same call the "T"/"F" letters make).
+        /// </summary>
+        private void DrawWatchButton(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            Vector2 topLeft, size;
+            if (!PortGeometry.TryWatchButtonRect(node, VgsScreenDraw.ClientAspect, out topLeft, out size))
+            {
+                return;
+            }
+
+            Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
+            Vector2 screenSize = size * _zoom;
+
+            bool hot = ReferenceEquals(node, _hoverWatch);
+            VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize,
+                                      hot ? ColPlusFillHot : ColPlusFill);
+
+            Vector2 centre = screenTopLeft + screenSize * 0.5f;
+            VgsScreenDraw.TextCentered(VgsText.WatchGlyph, centre,
+                                       VgsConstants.WatchButtonGlyphScale * CardTextScale, ColNode);
+        }
+
+        /// <summary>
+        /// Draws the watch bars of one controller: the yellow bars under the card, each with the
+        /// watched block's name, a dot on the right (the line leaves from there) and an "x" on
+        /// the left (removes the block from the list).
+        ///
+        /// They are drawn with the node's port bars, not in a pass of their own, because they are
+        /// part of the same column: a watch bar that was drawn after the next card would cover
+        /// it. The frame colour is the card's, like every other bar of the node (ADR-0014) —
+        /// only the fill differs, and that is what says "this is a watch, not a call".
+        /// </summary>
+        private void DrawWatchBars(Node node, Color border, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            for (int i = 0; i < node.Watched.Count; i++)
+            {
+                WatchTarget watch = node.Watched[i];
+                if (watch.Slot < 0) continue;
+
+                Vector2 topLeft, size;
+                if (!PortGeometry.TryWatchBarRect(node, watch, out topLeft, out size)) continue;
+
+                Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
+                Vector2 screenSize = size * _zoom;
+
+                VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, ColWatchFill);
+                VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, border,
+                                            Hairline);
+
+                Vector2 labelTopLeft, labelSize;
+                if (PortGeometry.TryWatchLabelRect(node, watch, VgsScreenDraw.ClientAspect,
+                                                   out labelTopLeft, out labelSize))
+                {
+                    Vector2 labelScreen = GraphToScreen(labelTopLeft, clipTopLeft);
+                    float textHeight = PortLabelHeight;
+                    if (textHeight <= 0f) textHeight = screenSize.Y * VgsConstants.PortLabelFallbackHeightRatio;
+
+                    VgsScreenDraw.Text(watch.DisplayName,
+                                       new Vector2(labelScreen.X,
+                                                   PortGeometry.CentredTextTop(labelScreen.Y,
+                                                                               screenSize.Y, textHeight)),
+                                       VgsConstants.PortLabelScale * _zoom,
+                                       ColText, labelSize.X * _zoom);
+                }
+
+                float radius = VgsConstants.PortControlRadius * _zoom;
+
+                Vector2 dotCentre;
+                if (PortGeometry.TryWatchDot(node, watch, VgsScreenDraw.ClientAspect, out dotCentre))
+                {
+                    VgsScreenDraw.Disc(GraphToScreen(dotCentre, clipTopLeft), radius, clipTopLeft,
+                                       clipSize, ColWatch);
+                }
+
+                Vector2 removeCentre;
+                if (PortGeometry.TryWatchRemoveButton(node, watch, VgsScreenDraw.ClientAspect,
+                                                      out removeCentre))
+                {
+                    bool hot = ReferenceEquals(node, _hoverWatchRemoveNode)
+                               && ReferenceEquals(watch, _hoverWatchRemoveTarget);
+
+                    DrawPortRemoveButton(GraphToScreen(removeCentre, clipTopLeft), ColWatchFill, hot,
+                                         clipTopLeft, clipSize);
+                }
+            }
         }
 
         /// <summary>The group whose button sits highest on the card; used to reserve text width.</summary>
@@ -2112,7 +2802,7 @@ namespace Vgs.Ui
             if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
 
             Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
-            float radius = VgsConstants.PlusButtonRadius * _zoom;
+            float radius = PortGeometry.BindButtonRadius(node, group) * _zoom;
             float diameter = radius * 2f;
 
             bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
@@ -2157,7 +2847,7 @@ namespace Vgs.Ui
             if (!PortGeometry.TryBindButton(node, group, VgsScreenDraw.ClientAspect, out center)) return;
 
             Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
-            float radius = VgsConstants.GroupButtonRadius * _zoom;
+            float radius = PortGeometry.BindButtonRadius(node, group) * _zoom;
 
             bool hot = ReferenceEquals(node, _hoverPlus) && _hoverGroup == group;
             VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize,
@@ -2206,6 +2896,9 @@ namespace Vgs.Ui
                 DrawPortBar(node, node.Events[i], border, clipTopLeft, clipSize);
             for (int i = 0; i < node.Actions.Count; i++)
                 DrawPortBar(node, node.Actions[i], border, clipTopLeft, clipSize);
+
+            // The watch stack follows the input stack in the same column (ADR-0017).
+            DrawWatchBars(node, border, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -2444,6 +3137,7 @@ namespace Vgs.Ui
         {
             get
             {
+                if (_watchSource != null) return VgsText.WatchHint;
                 if (_bindSource == null) return VgsText.Hint;
                 if (_bindGroup == PortGroup.Yes) return VgsText.BindHintTrue;
                 if (_bindGroup == PortGroup.No) return VgsText.BindHintFalse;

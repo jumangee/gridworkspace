@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using VRageMath;
 
@@ -83,6 +84,65 @@ namespace Vgs.Model
         private static bool TryParseFloat(string text, out float value)
         {
             return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        }
+
+        /// <summary>
+        /// Formats a list of entity ids as <c>"id id id"</c> (ADR-0017, an event controller's
+        /// watch list). An empty list becomes an empty string rather than a stray separator.
+        ///
+        /// Invariant culture, like the position: the value is read back on a machine whose
+        /// locale may format numbers differently, and a list that fails to parse would silently
+        /// empty the controller on the next load.
+        /// </summary>
+        public static string FormatIds(IList<long> ids)
+        {
+            if (ids == null || ids.Count == 0) return string.Empty;
+
+            var text = new System.Text.StringBuilder(ids.Count * 8);
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (i > 0) text.Append(Separator);
+                text.Append(ids[i].ToString(CultureInfo.InvariantCulture));
+            }
+            return text.ToString();
+        }
+
+        /// <summary>
+        /// Parses <c>"id id id"</c> into <paramref name="into"/>, which is cleared first.
+        ///
+        /// <b>Tolerant on purpose, unlike <see cref="TryParsePosition"/>.</b> A watch list is a
+        /// set of independent ids: one unreadable token must not cost the others, so it is
+        /// skipped. A repeated id is skipped too — a block cannot be watched twice, and the
+        /// graph would otherwise grow a second port for the same block. Zero and negative ids
+        /// are skipped as well: no entity has them, and they would draw a bar with no block
+        /// behind it.
+        /// </summary>
+        public static void ParseIds(string text, List<long> into)
+        {
+            if (into == null) return;
+            into.Clear();
+            if (string.IsNullOrEmpty(text)) return;
+
+            int start = 0;
+            while (start < text.Length)
+            {
+                int end = text.IndexOf(Separator, start);
+                if (end < 0) end = text.Length;
+
+                if (end > start)
+                {
+                    long id;
+                    if (long.TryParse(text.Substring(start, end - start), NumberStyles.Integer,
+                                      CultureInfo.InvariantCulture, out id)
+                        && id > 0
+                        && !into.Contains(id))
+                    {
+                        into.Add(id);
+                    }
+                }
+
+                start = end + 1;
+            }
         }
     }
 }

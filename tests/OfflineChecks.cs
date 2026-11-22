@@ -175,6 +175,18 @@ internal static class OfflineChecks
         Console.WriteLine("=== dragging a group by its title strip (ADR-0016) ===");
         GroupDrag();
 
+        Console.WriteLine("=== watch anchor and watch ports (ADR-0017) ===");
+        WatchAnchorAndPorts();
+
+        Console.WriteLine("=== dashed watch line (ADR-0017) ===");
+        WatchDashes();
+
+        Console.WriteLine("=== watch list format (ADR-0017) ===");
+        WatchListFormat();
+
+        Console.WriteLine("=== watch list reconciled with the game (ADR-0018) ===");
+        WatchReconciliation();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -1826,5 +1838,471 @@ internal static class OfflineChecks
               "the strip below the title is not a drag handle");
         Check(!PortGeometry.HitGroupTitle(a, a.Position + new Vector2(0.01f, 0.01f)),
               "a card has no title strip");
+    }
+
+    /// <summary>
+    /// The square "#" anchor of an event controller and the watch ports under its card
+    /// (ADR-0017).
+    ///
+    /// What matters and is invisible in a compile: the anchor is a square of exactly 75% of the
+    /// card's height, four screen pixels from the left border, inside the card, and the card's
+    /// text starts to its right; the watch bars stack under the input stack with the dot on the
+    /// right and the "x" on the left; and the anchor exists on a controller and nowhere else.
+    /// </summary>
+    private static void WatchAnchorAndPorts()
+    {
+        var graph = new GridGraph(21);
+
+        // A controller: a yes/no toolbar like the game builds for it, and the flag that makes it
+        // a controller (read from the game's interface in the real build).
+        var controller = new Node(1, "EventControllerLarge", "controller", Vector3I.Zero,
+                                  SensorToolbar(), true);
+        BlockPortCatalog.FillEvents(controller);
+        controller.Position = new Vector2(0.30f, 0.20f);
+
+        Node watched = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
+        watched.Position = new Vector2(0.70f, 0.20f);
+
+        graph.AddNode(controller);
+        graph.AddNode(watched);
+
+        const float aspect = 1f;
+
+        // The card is one line taller, because the mode description needs a line.
+        float cardHeight = PortGeometry.CardHeight(controller);
+        Check(cardHeight > VgsConstants.NodeHeight, "a controller's card carries the extra line");
+        CheckClose(cardHeight, VgsConstants.NodeHeight + VgsConstants.NodeStatusLineHeight,
+                   "the extra line is exactly NodeStatusLineHeight tall");
+
+        Vector2 anchorTopLeft, anchorSize;
+        Check(PortGeometry.TryWatchButtonRect(controller, aspect, out anchorTopLeft, out anchorSize),
+              "a controller has a watch anchor");
+
+        CheckClose(anchorSize.Y, cardHeight * 0.75f, "the anchor is 75% of the card's height tall");
+        CheckClose(anchorSize.X, anchorSize.Y, "the anchor is a square at aspect 1");
+
+        // Four pixels at the reference height, and the same gap expressed in X units.
+        CheckClose(anchorTopLeft.X, controller.Position.X + VgsConstants.WatchButtonMargin,
+                   "the anchor stands one four-pixel gap from the card's left border");
+        CheckClose(VgsConstants.WatchButtonMargin * VgsConstants.ReferenceHeightPixels, 4f,
+                   "that gap is four pixels at the reference height");
+
+        Check(anchorTopLeft.Y >= controller.Position.Y - 1e-6f,
+              "the anchor does not leave the card at the top");
+        Check(anchorTopLeft.Y + anchorSize.Y <= controller.Position.Y + cardHeight + 1e-6f,
+              "the anchor does not leave the card at the bottom");
+
+        // Vertically centred: the gaps above and below the square are equal.
+        float above = anchorTopLeft.Y - controller.Position.Y;
+        float below = controller.Position.Y + cardHeight - (anchorTopLeft.Y + anchorSize.Y);
+        CheckClose(above, below, "the anchor is vertically centred on the card");
+
+        // The centre of the anchor is the point a watch line starts from while the user picks a
+        // block, so it must be the centre of the square, not its corner.
+        Vector2 anchorCentre;
+        Check(PortGeometry.TryWatchButton(controller, aspect, out anchorCentre),
+              "the anchor has a centre");
+        CheckClose(anchorCentre.X, anchorTopLeft.X + anchorSize.X * 0.5f, "the centre is the square's centre in X");
+        CheckClose(anchorCentre.Y, anchorTopLeft.Y + anchorSize.Y * 0.5f, "the centre is the square's centre in Y");
+
+        Check(PortGeometry.HitWatchButton(controller, anchorCentre, aspect),
+              "clicking the anchor hits it");
+        Check(!PortGeometry.HitWatchButton(controller, anchorCentre + new Vector2(0.2f, 0f), aspect),
+              "clicking far to the right of the anchor misses it");
+
+        // The anchor is square on screen at any window shape: its X extent is the Y side times
+        // the aspect, so the two extents are equal once the aspect is taken out.
+        float[] aspects = { 0.5625f, 0.75f, 1f, 1.6f };
+        for (int i = 0; i < aspects.Length; i++)
+        {
+            float a = aspects[i];
+            Vector2 t, s;
+            Check(PortGeometry.TryWatchButtonRect(controller, a, out t, out s),
+                  "anchor rectangle at aspect " + a);
+            CheckClose(s.X / a, s.Y, "the anchor is square on screen at aspect " + a);
+            CheckClose(t.X - controller.Position.X, VgsConstants.WatchButtonMargin * a,
+                       "the anchor's left gap is four screen pixels at aspect " + a);
+        }
+
+        // The card's text must start to the right of the anchor, not underneath it.
+        Check(anchorTopLeft.X + anchorSize.X < controller.Position.X + VgsConstants.NodeWidth,
+              "the anchor leaves room for the card's text");
+
+        // A block that is not a controller has no anchor, even with a yes/no toolbar.
+        Check(!PortGeometry.TryWatchButtonRect(watched, aspect, out anchorTopLeft, out anchorSize),
+              "a block that is not a controller has no anchor");
+        Check(!PortGeometry.HitWatchButton(watched, watched.Position, aspect),
+              "nothing is clickable on a block without an anchor");
+
+        // ...and its card keeps the plain height: only a controller grows by the extra line.
+        CheckClose(PortGeometry.CardHeight(watched), VgsConstants.NodeHeight,
+                   "a plain block's card does not grow");
+
+        // The bind buttons scale with the card, so a controller's "T"/"F" pair stays the same
+        // fraction of the taller card instead of reading as two small dots on a big label.
+        Node sensor = MakeNode(4, "LargeBlockSensor", SensorToolbar());
+        Check(PortGeometry.BindButtonRadius(controller, PortGroup.Yes)
+              > PortGeometry.BindButtonRadius(sensor, PortGroup.Yes),
+              "bind buttons grow with the card");
+        CheckClose(PortGeometry.BindButtonRadius(sensor, PortGroup.Yes),
+                   VgsConstants.GroupButtonRadius,
+                   "an ordinary card's bind button keeps its constant size");
+
+        // ---- the watch list and its bars ----
+
+        Check(graph.TryAddWatch(controller, 2, watched.DisplayName), "a block can be watched");
+        Check(graph.HasWatch(controller, 2), "the controller now watches that block");
+        Check(!graph.TryAddWatch(controller, 2, watched.DisplayName), "the same block cannot be watched twice");
+        Check(!graph.TryAddWatch(controller, 1, "self"), "a controller cannot watch itself");
+        Check(!graph.TryAddWatch(watched, 2, "self"), "a block that is not a controller cannot watch anything");
+        Check(!graph.TryAddWatch(controller, 0, "zero"), "entity id zero is not a block");
+
+        // The slot is assigned by the layout pass, from the list, with no edge involved.
+        graph.LayoutPorts();
+        WatchTarget target = controller.FindWatch(2);
+        Check(target != null, "the watch target is in the list");
+        Check(target.Slot == 0, "the first watch target takes the first watch slot");
+        Check(PortGeometry.DrawnWatchCount(controller) == 1, "one watch bar is drawn");
+
+        Vector2 barTopLeft, barSize;
+        Check(PortGeometry.TryWatchBarRect(controller, target, out barTopLeft, out barSize),
+              "the watch bar has a rectangle");
+        CheckClose(barTopLeft.X, controller.Position.X, "the watch bar starts at the card's left edge");
+        CheckClose(barSize.X, VgsConstants.NodeWidth, "the watch bar is as wide as the card");
+
+        // Under the card, and below any stack that is already there: the card and its own
+        // actions stay the first thing under it.
+        float minimumTop = controller.Position.Y + cardHeight
+                           + PortGeometry.OutputStackHeight(controller)
+                           + PortGeometry.InputStackHeight(controller);
+        Check(barTopLeft.Y >= minimumTop - 1e-6f, "the watch bar sits under the card and its stacks");
+
+        // The dot is on the right (the line leaves for the watched block), the "x" on the left.
+        Vector2 dot, remove;
+        Check(PortGeometry.TryWatchDot(controller, target, aspect, out dot), "the watch bar has a dot");
+        Check(PortGeometry.TryWatchRemoveButton(controller, target, aspect, out remove),
+              "the watch bar has a remove button");
+        Check(dot.X > remove.X, "the dot is to the right of the remove button");
+        CheckClose(dot.Y, barTopLeft.Y + barSize.Y * 0.5f, "the dot is centred on the bar");
+        CheckClose(remove.Y, dot.Y, "the remove button is centred on the bar");
+
+        float inset = ControlOffset(aspect);
+        CheckClose(dot.X, barTopLeft.X + barSize.X - inset, "the dot is inset from the bar's right edge");
+        CheckClose(remove.X, barTopLeft.X + inset, "the remove button is inset from the bar's left edge");
+
+        Check(dot.X + ControlHalfWidth(aspect) <= barTopLeft.X + barSize.X + 1e-6f,
+              "the dot stays inside its bar");
+        Check(remove.X - ControlHalfWidth(aspect) >= barTopLeft.X - 1e-6f,
+              "the remove button stays inside its bar");
+
+        // The label is the watched block's name, between the two controls.
+        Vector2 labelTopLeft, labelSize;
+        Check(PortGeometry.TryWatchLabelRect(controller, target, aspect, out labelTopLeft, out labelSize),
+              "the watch bar has a label rectangle");
+        Check(labelTopLeft.X > remove.X, "the label starts right of the remove button");
+        Check(labelTopLeft.X + labelSize.X < dot.X, "the label ends left of the dot");
+
+        // Hit testing: the bar belongs to the node, and the "x" reports its own target.
+        Check(PortGeometry.HitNode(controller, barTopLeft + new Vector2(barSize.X * 0.5f, barSize.Y * 0.5f)),
+              "the watch bar belongs to the controller for hit-testing");
+        Check(ReferenceEquals(PortGeometry.HitWatchRemoveButton(controller, remove, aspect), target),
+              "the watch remove button reports its own target");
+        Check(PortGeometry.HitWatchRemoveButton(controller, dot, aspect) == null,
+              "the watch dot is not the remove button");
+
+        // Total height covers the watch stack as well.
+        float total = PortGeometry.TotalHeight(controller);
+        Check(total >= cardHeight + barSize.Y - 1e-6f, "the node's height includes the watch stack");
+
+        // A second watched block stacks below the first, contiguously.
+        Node second = MakeTarget(3, "LargeBlockSmallGenerator", "OnOff");
+        second.Position = new Vector2(0.70f, 0.40f);
+        graph.AddNode(second);
+        Check(graph.TryAddWatch(controller, 3, second.DisplayName), "a second block can be watched");
+        graph.LayoutPorts();
+        Check(controller.FindWatch(3).Slot == 1, "the second watch target takes the second slot");
+
+        Vector2 secondTopLeft, secondSize;
+        Check(PortGeometry.TryWatchBarRect(controller, controller.FindWatch(3), out secondTopLeft, out secondSize),
+              "the second watch bar has a rectangle");
+        CheckClose(secondTopLeft.Y, barTopLeft.Y + barSize.Y, "the watch bars stack flush");
+
+        // Removing a block closes the gap: slots are reassigned from the list, not kept.
+        Check(graph.RemoveWatch(controller, 2), "a watched block can be removed");
+        Check(!graph.HasWatch(controller, 2), "the controller no longer watches it");
+        Check(!graph.RemoveWatch(controller, 2), "removing a block that is not watched does nothing");
+        graph.LayoutPorts();
+        Check(controller.FindWatch(3).Slot == 0, "the remaining watch target moves up to the first slot");
+        Check(PortGeometry.DrawnWatchCount(controller) == 1, "one watch bar is still drawn");
+
+        // Removing the last one clears the slot too: no bar survives an empty list.
+        Check(graph.RemoveWatch(controller, 3), "the last watched block can be removed");
+        graph.LayoutPorts();
+        Check(PortGeometry.DrawnWatchCount(controller) == 0, "an empty watch list draws no bars");
+        CheckClose(PortGeometry.WatchStackHeight(controller), 0f, "an empty watch list has no stack");
+
+        // The stack is capped, and the cap is enforced on attach rather than on draw: a bar with
+        // no drawing slot would have no "x", and the player could never detach that block.
+        var full = new Node(90, "EventControllerLarge", "full", Vector3I.Zero, SensorToolbar(), true);
+        full.Position = new Vector2(0.1f, 0.8f);
+        graph.AddNode(full);
+        for (int i = 0; i < GridGraph.MaxPortsPerSide; i++)
+        {
+            Check(graph.TryAddWatch(full, 100 + i, "b" + i), "watch " + i + " fits");
+        }
+        Check(!graph.TryAddWatch(full, 200, "overflow"),
+              "the watch stack refuses more than MaxPortsPerSide blocks");
+        graph.LayoutPorts();
+        Check(PortGeometry.DrawnWatchCount(full) == GridGraph.MaxPortsPerSide,
+              "every accepted watch gets a bar — none is silently invisible");
+
+        // Collecting the ids is what the storage writer consumes.
+        var ids = new List<long>();
+        GridGraph.CollectWatchedIds(full, ids);
+        Check(ids.Count == GridGraph.MaxPortsPerSide, "the collected list holds every accepted id");
+
+        // A watched block's card centre is where the watch line ends.
+        Vector2 centre;
+        Check(PortGeometry.TryCardCentre(watched, out centre), "the watched card has a centre");
+        CheckClose(centre.X, watched.Position.X + VgsConstants.NodeWidth * 0.5f, "the card centre in X");
+        CheckClose(centre.Y, watched.Position.Y + PortGeometry.CardHeight(watched) * 0.5f,
+                   "the card centre in Y");
+    }
+
+    /// <summary>
+    /// The dash pattern of a watch line (ADR-0017). It is pure geometry, so it is checkable
+    /// without the game — and it has to be, because a dash pattern that overruns its segment
+    /// draws a line past the card it is heading for.
+    /// </summary>
+    private static void WatchDashes()
+    {
+        var dashes = new List<Vector4>();
+
+        // A horizontal segment of known length with a pattern that divides it evenly.
+        const float dash = 0.01f;
+        const float gap = 0.01f;
+        var segment = new Vector4(0.10f, 0.50f, 0.30f, 0.50f);   // 0.20 long
+        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
+
+        Check(dashes.Count == 10, "a 0.20 segment with a 0.02 period yields ten dashes");
+        CheckClose(dashes[0].X, 0.10f, "the first dash starts at the segment's start");
+        CheckClose(dashes[0].Z, 0.10f + dash, "the first dash is one dash long");
+        CheckClose(dashes[0].Y, 0.50f, "a horizontal dash keeps the segment's Y");
+
+        // The pattern may end on a gap — that is what a dash pattern does — but it must not end
+        // earlier than one period before the end, or the line would look truncated.
+        Check(dashes[dashes.Count - 1].Z <= segment.Z + 1e-6f,
+              "the last dash does not pass the segment's end");
+        Check(dashes[dashes.Count - 1].Z > segment.Z - dash - gap,
+              "the last dash reaches within one period of the segment's end");
+
+        // No dash overruns its neighbour, and none leaves the segment.
+        for (int i = 0; i < dashes.Count; i++)
+        {
+            Check(dashes[i].Z >= dashes[i].X, "a dash is not negative");
+            Check(dashes[i].Z <= segment.Z + 1e-6f, "a dash does not leave the segment");
+            if (i > 0) Check(dashes[i].X >= dashes[i - 1].Z, "dashes do not overlap");
+        }
+
+        // A segment shorter than one dash is drawn as one dash, not as nothing.
+        dashes.Clear();
+        EdgeRouting.BuildDashes(new Vector4(0f, 0f, 0.004f, 0f), dash, gap, dashes);
+        Check(dashes.Count == 1, "a segment shorter than a dash is one dash");
+        CheckClose(dashes[0].Z, 0.004f, "the shortened dash ends at the segment's end");
+
+        // Vertical segments go through the same arithmetic, along Y.
+        dashes.Clear();
+        EdgeRouting.BuildDashes(new Vector4(0.5f, 0.1f, 0.5f, 0.3f), dash, gap, dashes);
+        Check(dashes.Count == 10, "a vertical segment is dashed like a horizontal one");
+        CheckClose(dashes[0].X, 0.5f, "a vertical dash keeps the segment's X");
+        CheckClose(dashes[0].Y, 0.1f, "a vertical dash starts at the segment's start");
+
+        // Degenerate inputs: no length, and a zero dash length (draw it solid rather than drop).
+        dashes.Clear();
+        EdgeRouting.BuildDashes(new Vector4(0.2f, 0.2f, 0.2f, 0.2f), dash, gap, dashes);
+        Check(dashes.Count == 0, "a zero-length segment has no dashes");
+
+        // A zero dash length draws the segment solid.
+        dashes.Clear();
+        EdgeRouting.BuildDashes(segment, 0f, gap, dashes);
+        Check(dashes.Count == 1, "a zero dash length draws the segment solid");
+
+        // Reusing one buffer must not accumulate: the draw path reuses a single static list for
+        // every watch line of every frame, and appending would redraw every dash ever produced.
+        dashes.Clear();
+        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
+        int first = dashes.Count;
+        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
+        Check(dashes.Count == first, "reusing the dash buffer replaces its contents");
+    }
+
+    /// <summary>
+    /// The wire format of an event controller's watch list (ADR-0017): ids separated by spaces,
+    /// tolerant on read, invariant on write.
+    /// </summary>
+    private static void WatchListFormat()
+    {
+        var ids = new List<long> { 1234567890123L, 42L, 7L };
+        string text = NodeStateFormat.FormatIds(ids);
+
+        Check(text == "1234567890123 42 7", "the list is written space separated");
+
+        var back = new List<long>();
+        NodeStateFormat.ParseIds(text, back);
+        Check(back.Count == 3, "all three ids come back");
+        Check(back[0] == 1234567890123L && back[1] == 42L && back[2] == 7L,
+              "the ids come back in order");
+
+        // An empty list is an empty string, and an empty string is an empty list.
+        Check(NodeStateFormat.FormatIds(new List<long>()) == string.Empty,
+              "an empty list is an empty string");
+        Check(NodeStateFormat.FormatIds(null) == string.Empty, "a null list is an empty string");
+
+        back.Add(999);
+        NodeStateFormat.ParseIds(string.Empty, back);
+        Check(back.Count == 0, "an empty string clears the list");
+
+        NodeStateFormat.ParseIds(null, back);
+        Check(back.Count == 0, "a null string clears the list");
+
+        // Tolerant on read: garbage costs its own token, not the whole list.
+        back.Clear();
+        NodeStateFormat.ParseIds("12  garbage  34", back);
+        Check(back.Count == 2 && back[0] == 12 && back[1] == 34,
+              "an unreadable token is skipped, the rest survives");
+
+        // A set has no duplicates, and no entity has id zero or a negative id.
+        back.Clear();
+        NodeStateFormat.ParseIds("5 5 0 -3 6", back);
+        Check(back.Count == 2 && back[0] == 5 && back[1] == 6,
+              "duplicates, zero and negative ids are dropped");
+
+        // Leading and trailing separators are not a format change: they produce no token.
+        back.Clear();
+        NodeStateFormat.ParseIds(" 8  9 ", back);
+        Check(back.Count == 2 && back[0] == 8 && back[1] == 9,
+              "extra separators are harmless");
+
+        // Round trip through the storage format is stable, which is the property a save/load
+        // cycle depends on.
+        back.Clear();
+        NodeStateFormat.ParseIds(NodeStateFormat.FormatIds(ids), back);
+        Check(NodeStateFormat.FormatIds(back) == text, "the round trip is stable");
+    }
+
+    /// <summary>
+    /// The rule that makes the schema follow the game (ADR-0018): the displayed list is the union
+    /// of what the controller reports and what the editor added, and an entry the game has adopted
+    /// stops being an editor addition.
+    ///
+    /// This is the part of the feature a player notices first — change the selection in the
+    /// terminal, open the editor, and the ports must match — and it is pure data, so it is
+    /// checked here rather than in the game.
+    /// </summary>
+    private static void WatchReconciliation()
+    {
+        var game = new List<long>();
+        var overlay = new List<long>();
+        var merged = new List<long>();
+
+        // Terminal-only: the game's order is kept.
+        game.AddRange(new long[] { 30, 10, 20 });
+        GridGraph.MergeWatchIds(game, overlay, merged);
+        Check(merged.Count == 3, "a terminal-only list is shown as it is");
+        Check(merged[0] == 30 && merged[1] == 10 && merged[2] == 20,
+              "the game's order is preserved, not sorted");
+
+        // Editor-only: what the game does not store is still shown.
+        game.Clear();
+        overlay.Clear();
+        overlay.AddRange(new long[] { 5, 6 });
+        GridGraph.MergeWatchIds(game, overlay, merged);
+        Check(merged.Count == 2 && merged[0] == 5 && merged[1] == 6,
+              "editor-added entries are shown after the game's");
+
+        // Both: the game's entries come first, and nothing is duplicated.
+        game.Clear();
+        overlay.Clear();
+        game.AddRange(new long[] { 10, 20 });
+        overlay.AddRange(new long[] { 5, 20, 7 });
+        GridGraph.MergeWatchIds(game, overlay, merged);
+        Check(merged.Count == 4, "the union has no duplicates");
+        Check(merged[0] == 10 && merged[1] == 20, "game entries keep the first slots");
+        Check(merged[2] == 5 && merged[3] == 7, "editor entries follow, in their own order");
+
+        // Garbage is not a block: zero, negatives and repeats never reach the list.
+        game.Clear();
+        overlay.Clear();
+        game.AddRange(new long[] { 0, -3, 10, 10 });
+        overlay.AddRange(new long[] { 0, 10 });
+        GridGraph.MergeWatchIds(game, overlay, merged);
+        Check(merged.Count == 1 && merged[0] == 10, "zero, negative and duplicate ids are dropped");
+
+        // Null sources are empty, not an exception: the caller reads them from the world.
+        merged.Add(999);
+        GridGraph.MergeWatchIds(null, null, merged);
+        Check(merged.Count == 0, "missing sources clear the list instead of throwing");
+
+        // The game adopts an id the editor added (the player also selected it in the terminal):
+        // the editor must forget it, or it would be counted twice and replayed after a reload.
+        game.Clear();
+        overlay.Clear();
+        game.AddRange(new long[] { 10, 20 });
+        overlay.AddRange(new long[] { 20, 30 });
+        Check(GridGraph.PruneAdoptedWatchIds(game, overlay), "an adopted id is pruned from the overlay");
+        Check(overlay.Count == 1 && overlay[0] == 30, "only the editor-owned id survives");
+        Check(!GridGraph.PruneAdoptedWatchIds(game, overlay), "pruning again changes nothing");
+
+        // Nothing adopted: the overlay is untouched.
+        game.Clear();
+        overlay.Clear();
+        game.Add(10);
+        overlay.Add(30);
+        Check(!GridGraph.PruneAdoptedWatchIds(game, overlay), "an unrelated id is not pruned");
+        Check(overlay.Count == 1, "the overlay keeps its entry");
+
+        // An empty overlay and an empty game list are both fine.
+        game.Clear();
+        overlay.Clear();
+        Check(!GridGraph.PruneAdoptedWatchIds(game, overlay), "pruning two empty lists does nothing");
+
+        // ---- SyncWatched: the ids are the truth, the list is the view ----
+
+        var controller = new Node(1, "EventControllerLarge", "controller", Vector3I.Zero,
+                                  SensorToolbar(), true);
+        controller.Position = new Vector2(0.2f, 0.2f);
+
+        var ids = new List<long> { 10, 20 };
+        GridGraph.SyncWatched(controller, ids, id => "block" + id);
+        Check(controller.Watched.Count == 2, "two ids make two watch targets");
+        Check(controller.Watched[0].EntityId == 10 && controller.Watched[1].EntityId == 20,
+              "the targets follow the ids' order");
+        Check(controller.Watched[0].DisplayName == "block10", "the name comes from the resolver");
+
+        // The surviving target object is reused, so a hover held by reference stays valid.
+        WatchTarget kept = controller.Watched[0];
+        var ids2 = new List<long> { 10, 30 };
+        GridGraph.SyncWatched(controller, ids2, id => "renamed" + id);
+        Check(controller.Watched.Count == 2, "a changed list is rebuilt to the new ids");
+        Check(ReferenceEquals(controller.Watched[0], kept),
+              "a surviving watch target keeps its object");
+        Check(controller.Watched[0].DisplayName == "renamed10", "a surviving target gets its new name");
+        Check(controller.Watched[1].EntityId == 30, "the new id appears");
+
+        // An id that disappears loses its target — that is how a removal in the terminal reaches
+        // the schema.
+        var ids3 = new List<long> { 30 };
+        GridGraph.SyncWatched(controller, ids3, id => "block" + id);
+        Check(controller.Watched.Count == 1 && controller.Watched[0].EntityId == 30,
+              "an id the game no longer reports loses its port");
+
+        // An empty list empties the stack, and a null resolver does not throw.
+        GridGraph.SyncWatched(controller, new List<long>(), id => "x");
+        Check(controller.Watched.Count == 0, "an empty id list draws no ports");
+
+        GridGraph.SyncWatched(controller, new List<long> { 40 }, null);
+        Check(controller.Watched.Count == 1, "a missing resolver still adds the target");
+        Check(controller.Watched[0].DisplayName == "40",
+              "without a name the bar falls back to the id, not to an empty label");
     }
 }
