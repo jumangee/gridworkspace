@@ -11,6 +11,14 @@ The SVGs in this folder are copied verbatim from **Font Awesome Free 7.3.1**
 | `bell-regular.svg` | `bell` | Regular | `svgs/regular/bell.svg` |
 | `lightbulb-solid.svg` | `lightbulb` | Solid | `svgs/solid/lightbulb.svg` |
 | `lightbulb-regular.svg` | `lightbulb` | Regular | `svgs/regular/lightbulb.svg` |
+| `share-from-square-regular.svg` | `share-from-square` | Regular | `svgs/regular/share-from-square.svg` |
+
+> The jump-to-terminal button was asked for as `up-right-from-square` **Regular**. That icon has no
+> Regular cut in the free set — `metadata/icons.json` lists `styles: ["solid"]` for it, and
+> `svgs/regular/up-right-from-square.svg` does not exist. `share-from-square` (alias
+> `share-square`) is the same square-with-an-arrow-leaving-it silhouette and *does* ship in Regular,
+> so it is the one copied. The reasoning is recorded in
+> [ADR-0021](../../docs/adr/0021-jump-to-block-terminal.md) §Context 4.
 
 Which icon is drawn by which control is recorded in the catalogue,
 [`docs/07-icon-catalog.md`](../../docs/07-icon-catalog.md). This file only says where the source
@@ -27,8 +35,8 @@ The files keep their upstream header comment, which states the same.
 ## Why the sources live in the repository
 
 The Font Awesome package itself is not committed (`data/fontawesome-free-7.3.1-desktop` is
-ignored), because it is a 30 MB download of 2883 icons of which six are used. Copying those
-six here keeps the atlas reproducible from a clean checkout: no download, no package manager,
+ignored), because it is a 30 MB download of 2883 icons of which seven are used. Copying those
+seven here keeps the atlas reproducible from a clean checkout: no download, no package manager,
 no network.
 
 ## Adding an icon

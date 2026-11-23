@@ -33,6 +33,7 @@
 | Запись связи в мир | `IMyToolbarSlots.BeginChanges()` → `Set` → `Apply` | [ПРОВЕРЕНО] сигнатуры, вайтлист, IL `SendChanges` |
 | Группы блоков: перечисление, действия, запись связи на группу | `IMyGridTerminalSystem.GetBlockGroups` → `IMyBlockGroup`; действия — по правилу `MyToolbarItemTerminalGroup.GetActions`; запись — `MyToolbarItemInfo.GroupAction` | [ПРОВЕРЕНО] сигнатуры и IL; см. [api-block-groups.md](01-research/api-block-groups.md) |
 | Логика взаимодействий | исполняет сама игра из тулбара; для условий и значений — `ITerminalAction.Apply` + `MySessionComponentBase` | [ПРОВЕРЕНО] сигнатуры |
+| Переход из редактора в терминал блока | `IMyGui` (`MyAPIGateway.Gui`): `ChangeInteractedEntity` для открытого терминала, `ShowTerminalPage` для закрытого, `GetCurrentScreen` для выбора ветки | [ПРОВЕРЕНО] сигнатуры и IL, вайтлист; см. [api-terminal-jump.md](01-research/api-terminal-jump.md) |
 
 Главный риск — не «можно ли», а **как именно рисовать** и **чем связь работает в игре**.
 Оба разобраны ниже, у обоих есть рабочий путь.

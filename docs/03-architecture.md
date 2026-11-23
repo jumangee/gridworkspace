@@ -29,6 +29,7 @@
 | [0018](adr/0018-game-is-the-source-of-truth.md) | Список отслеживания читается из игры; хранилище мода — надстройка над игровым списком; игровые записи из редактора не удаляются |
 | [0019](adr/0019-icons-atlas.md) | Иконки: отдельная PNG-текстура на иконку, `DrawPixels` в целых пикселях окна, иконка на любом зуме, откат на геометрию только при отсутствии текстуры |
 | [0020](adr/0020-card-button-row.md) | Ряд кнопок карточки: все контролы карточки справа, в одну строку, одного размера, голые иконки; «T»/«F» → `lightbulb` Solid/Regular, «#» → `bell` Regular; каталог иконок со шлюзом |
+| [0021](adr/0021-jump-to-block-terminal.md) | Четвёртая кнопка карточки (пятый вид) — переход в терминал блока (`share-from-square` Regular), первая в ряду; `Vgs.Game.TerminalJump` через `IMyGui`; диаметр кнопок 0,75 → 0,60 |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -58,6 +59,7 @@
         │
         ├──► Vgs.Game ──── VgsTerminalControls   регистрирует кнопку в кокпите
         │                  GridGraphBuilder      читает грид → GridGraph
+        │                  TerminalJump          открывает терминал игры на блоке
         │                  EventControllerProbe  список отслеживания контроллера
         │                  EventControllerKeeper проигрывает список после загрузки
         │                  (единственное место, где трогаются живые сущности)
@@ -152,6 +154,11 @@ classDiagram
         -OnCustomControlGetter(block, controls)
         -CanOpenEditor(block) bool
         -OnButtonPressed(block)
+    }
+
+    class TerminalJump {
+        <<static>>
+        +TryOpen(entityId, out string failure) bool
     }
 
     class GridGraphBuilder {
@@ -388,6 +395,7 @@ classDiagram
         +IconOf(CardButtonKind) VgsIcon
         +GlyphOf(CardButtonKind) string
         +RestingColor(CardButtonKind) Color
+        -TryJumpToTerminal(Node) void
         -GetStatusText() string
         -ResolveGridName()
     }
@@ -413,11 +421,14 @@ classDiagram
         +LayoutGroupFrame(GridGraph, Node)
         +LayoutFramesContaining(GridGraph, Node)
         +HasGroupButtons(Node) bool
+        +MaxCardButtonCount int
         +CardButtonCount(Node) int
         +HasCardButton(Node, CardButtonKind) bool
         +CardButtonIndex(Node, CardButtonKind) int
         +TryCardButtonAt(Node, int, out CardButtonKind) bool
+        +GetCardButtons(Node, CardButtonKind[]) int
         +TryGroupOf(CardButtonKind, out PortGroup) bool
+        +CardButtonRectAt(Node, int, int, float, out Vector2, out Vector2)
         +TryCardButtonRect(Node, CardButtonKind, float, out Vector2, out Vector2) bool
         +TryCardButton(Node, CardButtonKind, float, out Vector2) bool
         +TryCardButtonRow(Node, float, out Vector2, out Vector2) bool
@@ -632,6 +643,9 @@ classDiagram
     class IMyBlockGroup {
         <<game>>
     }
+    class IMyGui {
+        <<game>>
+    }
     class IMyGridTerminalSystem {
         <<game>>
     }
@@ -660,6 +674,12 @@ classDiagram
     VgsEditorScreen --> EdgeRouting : маршрут линии
     VgsEditorScreen --> IMyCubeGrid
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
+    VgsEditorScreen --> TerminalJump : переход в терминал блока (ADR-0021)
+
+    TerminalJump --> IMyGui : ShowTerminalPage / ChangeInteractedEntity
+    TerminalJump --> IMyTerminalBlock : проверка, что сущность терминальна
+    TerminalJump --> IMyRadioAntenna : есть ли передающая антенна для далёкого блока
+    TerminalJump --> VgsSession : есть ли локальный игрок
 
     GridGraphBuilder --> GridGraph
     GridGraphBuilder --> Node
@@ -731,8 +751,14 @@ classDiagram
 Vgs.Core   →  Vgs.Core
 Vgs.Model  →  Vgs.Model            (и VRageMath)
 Vgs.Game   →  Vgs.Model, Vgs.Core
-Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
+Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновления, никогда из отрисовки)
 ```
+
+Стрелка `Ui → Game` разрешена всегда; запрещён вызов `Vgs.Game` из `OnDraw` и всего, что он
+зовёт. Экран не умеет писать в мир сам, поэтому запись связи (`ToolbarWriter`), сохранение
+позиции (`NodeStateStore`), отслеживание (`EventControllerProbe`) и переход в терминал
+(`TerminalJump`) — это вызовы `Game` из `OnHandleInput`, то есть по действию игрока, а не из
+кадрового пути картинки (ADR-0003).
 
 Запрещено, и это проверяется шлюзом:
 
@@ -826,6 +852,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 | `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
 | `EventControllerProbe.cs` | что проверяет event controller, кому из блоков он это разрешает и запись его списка |
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
+| `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
 `Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет
@@ -946,10 +973,10 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (только Refresh)
 `PortGeometry.TryGroupFrame` — чистая функция от карточек участников: наименьший
 прямоугольник, содержащий их и их стаки портов, плюс отступ и полоса имени.
 
-### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md))
+### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md))
 
-Семь контролов — точка порта, четыре кнопки карточки (привязка, «да», «нет», отслеживание) и
-«x» удаления на полосе порта — рисуются иконками Font Awesome из текстур
+Восемь контролов — точка порта, **пять** кнопок карточки (переход в терминал, привязка, «да»,
+«нет», отслеживание) и «x» удаления на полосе порта — рисуются иконками Font Awesome из текстур
 `Textures/VGS/Icons/<Id>.png`, по файлу на иконку. Разделение ответственности здесь такое же,
 как у геометрии:
 
@@ -996,32 +1023,45 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 промежуток между ячейками схлопывается и соседняя иконка подмешивается. Числа и решение —
 в [ADR-0019](adr/0019-icons-atlas.md) §4 контекста.
 
-### Ряд кнопок карточки ([ADR-0020](adr/0020-card-button-row.md))
+### Ряд кнопок карточки ([ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md))
 
 Все контролы, принадлежащие **карточке**, живут в одном горизонтальном ряду вдоль её правого
 края, вертикально центрированном, с одним диаметром на всех. Набор кнопок — функция от того,
-что блок умеет: `CardButtonCount` = (умеет управлять? одна группа → 1, две → 2) +
-(event controller? 1). Порядок фиксирован — отслеживание, «да», «нет», одиночная привязка, —
-поэтому кнопка не переезжает, когда у карточки появляется соседняя.
+что блок умеет: кнопка перехода есть у любого блока (у группы её нет — у группы нет терминала),
+остальные — по тулбару (умеет управлять? одна группа → одиночная привязка, две → пара «да»/«нет»)
+и по типу блока (event controller → отслеживание). Порядок задан **данными** — массив
+`PortGeometry.RowOrder`: переход, отслеживание, «да», «нет», одиночная привязка. Карточка
+показывает подпоследовательность этого массива, поэтому кнопка не переезжает, когда у карточки
+появляется соседняя, а новая кнопка добавляется одной строкой в массив и одной веткой в
+`HasCardButton`.
+
+Количество, позиция и «какая кнопка на позиции i» — три обхода этого массива, а не три копии
+порядка: `CardButtonCount`, `CardButtonIndex`, `TryCardButtonAt`. Для пути отрисовки есть
+однопроходная форма — `GetCardButtons` заполняет буфер вызывающего, `CardButtonRectAt` ставит
+кнопку по её позиции; это единственное место, где ряд обходится один раз на карточку, а не
+`n + 1` раз.
 
 Три следствия, важные для слоёв:
 
 - **геометрия ряда — в `PortGeometry`**, как и у портов: `TryCardButtonRect` (где кнопка),
-  `TryCardButtonRow` (где ряд), `TryCardTextSpan` (докуда доходит подпись карточки),
-  `HitCardButton` (что под указателем). Отрисовка и hit-test берут прямоугольники оттуда же,
-  поэтому разойтись не могут. `TryCardTextSpan` существует отдельно, потому что «подпись
-  обрезается по ряду минус зазор» — это арифметика с осью: зазор задан вертикальной длиной и
-  обязан пройти через поправку на пропорции, иначе на 16:9 он в 1,8 раза шире, чем задумано;
+  `CardButtonRectAt` (то же по позиции в ряду), `TryCardButtonRow` (где ряд), `TryCardTextSpan`
+  (докуда доходит подпись карточки), `HitCardButton` (что под указателем). Отрисовка и hit-test
+  берут прямоугольники оттуда же, поэтому разойтись не могут. `TryCardTextSpan` существует
+  отдельно, потому что «подпись обрезается по ряду минус зазор» — это арифметика с осью: зазор
+  задан вертикальной длиной и обязан пройти через поправку на пропорции, иначе на 16:9 он в 1,8
+  раза шире, чем задумано;
 - **иконка выбирается в UI**, а не в геометрии: `VgsEditorScreen.IconOf` — таблица
-  «жест → иконка», и именно её сверяет шлюз каталога. Геометрия не знает про `VgsIcon`;
+  «кнопка → иконка», и именно её сверяет шлюз каталога. Геометрия не знает про `VgsIcon`;
 - **hit-test один на ряд.** Кнопки одного ряда при допуске нажатия перекрываются, поэтому
   побеждает **ближайший центр**, а не первая проверенная кнопка: иначе клик в зазор попадал бы
   в кнопку, зависящую от порядка обхода.
 
 Что осталось от прежней модели: `PortGroup` (какую группу тулбара заполняет связь) и
 `Node.CanDriveBlocks` (есть ли вообще кнопки привязки). Что появилось: `CardButtonKind` —
-четыре жеста, названных по действию, а не по глифу. Именно это позволяет менять иконку, не
-трогая ни геометрию, ни режимы указателя, — то, что и требовалось.
+пять видов, названных по действию, а не по глифу; четыре из них жесты на схеме (привязка, «да»,
+«нет», отслеживание), пятый — переход в терминал блока, который схему закрывает (ADR-0021).
+Именно это позволяет менять иконку, не трогая ни геометрию, ни режимы указателя, — то, что и
+требовалось.
 
 Почему PNG, а не DDS, — тоже измерение, и оно противоречит первой реализации: DXT5-файлы были
 корректны на диске по двум независимым декодерам и всё равно рисовались в спрайте непрозрачным

@@ -308,16 +308,17 @@ namespace Vgs.Core
         /// diameter. It is also still inside the hit target: a square outline's corners reach
         /// 0.92·√2 ≈ 1.30 radii from the centre, and the tolerance is 1.35.
         ///
-        /// Large on purpose. Two of the four icons (`bell` and the outlined `lightbulb`) are thin
-        /// Regular outlines, and at the minimum zoom a button is about 10 px across — an outline
-        /// that did not fill its button would blur into a smudge before it became unreadable.
+        /// Large on purpose. Three of the five icons (`bell`, the outlined `lightbulb` and
+        /// `share-from-square`) are thin Regular outlines, and at the minimum zoom a button is
+        /// about 7,5 px across — an outline that did not fill its button would blur into a smudge
+        /// before it became unreadable.
         /// </summary>
         public const float CardButtonIconRatio = 0.92f;
 
         /// <summary>
         /// Hit tolerance of a card button, as a multiple of its radius.
         ///
-        /// One value for all four kinds, because they are one kind of control now: same size,
+        /// One value for all five kinds, because they are one kind of control now: same size,
         /// same row, same shape of target. 1.35 covers the corners of the square bind icon
         /// (1.22 radii) with a margin. Buttons of one row overlap at this tolerance, which is
         /// harmless by construction: <c>PortGeometry.HitCardButton</c> resolves the overlap by
@@ -342,26 +343,49 @@ namespace Vgs.Core
         /// </summary>
         public const float PortControlHitTolerance = 1.25f;
 
-        // ---- Card button row (ADR-0020) ----
+        // ---- Card button row (ADR-0020, ADR-0021) ----
         //
-        // Every control that belongs to the *card* — the bind button, the yes/no pair and the
-        // controller's watch button — sits in one horizontal row along the card's right edge,
-        // vertically centred. The row is right-anchored: buttons are packed from the card's
-        // right border leftwards, so a card with one button keeps that button exactly where the
-        // "+" has always been, and a card with three grows leftwards.
+        // Every control that belongs to the *card* — the jump-to-terminal button, the bind
+        // button, the yes/no pair and the controller's watch button — sits in one horizontal row
+        // along the card's right edge, vertically centred. The row is right-anchored: buttons are
+        // packed from the card's right border leftwards, so a card with one button keeps that
+        // button exactly where the "+" has always been, and a card with four grows leftwards.
         //
         // Why a row and not a column: a card is much wider than it is tall, so its right edge
         // has room in only one direction. The old yes/no pair stacked two small discs 44% of the
         // card's height apart, which forced them to be half the size of the "+" beside them and
         // made the card's control area read as two different things.
 
-        /// <summary>Diameter of a card button, as a fraction of the standard card height.</summary>
-        public const float CardButtonHeightRatio = 0.75f;
+        /// <summary>
+        /// Diameter of a card button, as a fraction of the standard card height.
+        ///
+        /// <b>0.60, down from 0.75 (ADR-0021).</b> The row gained a fifth kind of button — the
+        /// jump to the block's terminal — and a controller now carries four of them. The row is
+        /// right-anchored and grows leftwards, so the fourth button is paid for by the card's
+        /// name: at the old diameter the four-button row filled the card in a square window and
+        /// overflowed it in a portrait one. Shrinking the button is the price the product owner
+        /// chose over widening the card, which would have changed the layout of every saved
+        /// schema.
+        ///
+        /// The budget, as fractions of the card's width, for the widest row (jump, watch, "yes",
+        /// "no") — the row's width grows with the client aspect, because a button is round on
+        /// screen: the row takes 33% at 16:9, 44% at 4:3 and 59% in a square window, leaving the
+        /// name's span 58%, 46% and 30%. The span, not the "width minus the row", is what these
+        /// numbers describe: it also loses the card's inner text padding (a ratio owned by
+        /// <c>PortGeometry</c>), and quoting the wider figure would overstate the margin by five
+        /// points — which matters in the square window, where the span sits exactly on the 30%
+        /// floor the offline check asserts.
+        ///
+        /// Beyond an aspect of about 1.46 (a window noticeably taller than it is wide) the row
+        /// fills the card and the name has nowhere left to go; that is recorded as a limitation,
+        /// not as a case the row is designed for.
+        /// </summary>
+        public const float CardButtonHeightRatio = 0.60f;
 
         /// <summary>
         /// Diameter of every card button, in the layout's vertical units.
         ///
-        /// One value for all four kinds and for every block type. The button belongs to the
+        /// One value for all five kinds and for every block type. The button belongs to the
         /// *card*, not to a particular toolbar shape, so two cards side by side must not show
         /// two different button sizes — including a controller, whose card is one line taller
         /// because it carries a description, not because its buttons are more important.
@@ -396,10 +420,15 @@ namespace Vgs.Core
         /// so the clear space a player sees is this gap plus the two icons' margins, not this gap
         /// alone.
         ///
-        /// The budget is what set the number. A row of four buttons — one more than the editor
-        /// draws today, and the reason the row was tightened from six pixels — takes about 41% of
-        /// the card's width at 16:9 and 55% at 4:3, leaving the name 51% and 36%. At six pixels it
-        /// took 44% and 58%, and the row visibly drifted towards the card's left edge.
+        /// The budget is what set the number. A row of four buttons takes about 33% of the
+        /// card's width at 16:9 and 44% at 4:3, leaving the name 58% and 46% — the span the name
+        /// actually gets, which is less than "the card minus the row" because the text keeps an
+        /// inset of its own on both sides (the same accounting as <see
+        /// cref="CardButtonHeightRatio"/>); at six pixels it took 44% and 58%, and the row visibly
+        /// drifted towards the card's left edge. The numbers are quoted for the widest row (jump,
+        /// watch, "yes", "no") and for the diameter the row has carried since ADR-0021 — a
+        /// narrower button makes the same gap look relatively wider, which is why the row did not
+        /// have to be tightened again.
         ///
         /// Going below three pixels buys almost nothing: the row shrinks by about one percent of
         /// the card's width, while the gap stops reading as a gap. What is left of the airiness in
@@ -427,10 +456,14 @@ namespace Vgs.Core
         /// <summary>
         /// Font scale of the glyph a card button falls back to when its texture is missing
         /// (ADR-0019). The glyph is the mark the button had before it became an icon — "+",
-        /// "T", "F" or "#" — drawn in the button's own colour and without a disc, so the
+        /// "T", "F", "#" or "&gt;" — drawn in the button's own colour and without a disc, so the
         /// fallback is the same bare control rather than a different one.
+        ///
+        /// Follows the button's diameter: it was 0.44 while the button was 0.75 of the standard
+        /// card height, and 0.60 of that height is exactly 80% of the old diameter, so the glyph
+        /// is scaled by the same 0.8 rather than left to overflow a smaller button.
         /// </summary>
-        public const float CardButtonGlyphScale = 0.44f;
+        public const float CardButtonGlyphScale = 0.35f;
 
         // ---- Connection lines ----
 
@@ -461,6 +494,14 @@ namespace Vgs.Core
 
         /// <summary>Hard cap on blocks drawn at once; protects the frame budget on huge grids.</summary>
         public const int MaxRenderedBlocks = 400;
+
+        /// <summary>
+        /// "No entity" — the id a node carries when its block could not be identified. Named
+        /// rather than written as a bare <c>0L</c> because the jump refuses it explicitly
+        /// (ADR-0021): a card can outlive the block it stands for, and zero is how a missing id
+        /// arrives here, not a real id of the world.
+        /// </summary>
+        public const long NoEntityId = 0L;
 
         /// <summary>How many grid blocks we pull from the grid in one refresh.</summary>
         public const int MaxGridBlocksScanned = 2000;
@@ -507,7 +548,7 @@ namespace Vgs.Core
         public const string EditorTitle = "Grid setup";
         public const string CloseButton = "Закрыть";
         public const string Hint =
-            "ЛКМ — выбрать · перетащить · иконка лампы — режим привязки · колокольчик — отслеживание · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
+            "ЛКМ — выбрать · перетащить · стрелка — терминал блока · иконка лампы — привязка · колокольчик — отслеживание · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
@@ -547,6 +588,65 @@ namespace Vgs.Core
 
         public const string BindHintFalse =
             "Привязка к «нет»: нажмите блок-получатель · ПКМ — отмена";
+
+        // ---- Jump to the block's terminal (ADR-0021) ----
+        //
+        // The one card button that is not a gesture on the schema: it closes the editor and
+        // opens the game's terminal on the block whose card was clicked. It therefore has no
+        // mode and no hint — it does something immediately — and it is the first button of the
+        // row, because "go to this block" is what a reader of a card looks for first.
+
+        /// <summary>
+        /// Fallback glyph of the jump button, used only when the icon atlas is unavailable
+        /// (ADR-0019). The button is drawn as a <c>share-from-square</c> icon — a square with an
+        /// arrow leaving it; "&gt;" is the ASCII mark that says the same thing, and it is
+        /// guaranteed to exist in every font the editor may fall back to.
+        /// </summary>
+        public const string JumpGlyph = ">";
+
+        /// <summary>
+        /// The card's block no longer exists. The editor works on a snapshot, so the block can be
+        /// gone between two refreshes; the jump is refused instead of closing the schema onto a
+        /// terminal that would show nothing.
+        /// </summary>
+        public const string WarnJumpBlockGone = "Переход не выполнен: блок исчез";
+
+        /// <summary>
+        /// There is no local character to open a terminal for (spectator, or a session that is
+        /// still loading). Refused rather than attempted: the game's terminal screen expects a
+        /// character and would fail on a null one.
+        /// </summary>
+        public const string WarnJumpNoPlayer = "Переход не выполнен: игрок ещё не в мире";
+
+        /// <summary>
+        /// The game did not accept the request: the terminal screen is not available (no GUI, or
+        /// the interaction was refused). The editor stays open.
+        /// </summary>
+        public const string WarnJumpFailed = "Переход не выполнен: терминал недоступен";
+
+        /// <summary>
+        /// The node resolved to an entity that is not a terminal block. Practically unreachable —
+        /// a node is built only from <c>IMyTerminalBlock</c> — but "the block is gone" would be a
+        /// lie about a block that exists, so the case gets its own sentence.
+        /// </summary>
+        public const string WarnJumpNotTerminal = "Переход не выполнен: у блока нет терминала";
+
+        /// <summary>
+        /// The jump refused because the block is out of the game's interactive reach and no antenna
+        /// on the construct is broadcasting. The game's terminal re-checks the connection every
+        /// frame: within reach it wants the player next to the block, beyond it, a remote session
+        /// carried by an antenna (ADR-0021). With neither, the terminal would open and then hide
+        /// its tabs, so the jump is refused before the screen is disturbed.
+        /// </summary>
+        public const string WarnJumpNoAntenna = "Переход не выполнен: блок далеко, антенна не передаёт";
+
+        /// <summary>
+        /// Hover hint of the jump button (ADR-0021). The jump is the one control on the canvas
+        /// that closes the screen it sits on, so it says what it will do before it is pressed —
+        /// the icon alone ("a square with an arrow leaving it") is a fair description of the
+        /// destination but not of the cost.
+        /// </summary>
+        public const string JumpHint = "Терминал этого блока · редактор закроется";
 
         // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
         //

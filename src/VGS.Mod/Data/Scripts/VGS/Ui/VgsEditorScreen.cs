@@ -25,7 +25,8 @@ namespace Vgs.Ui
     ///
     ///  * <i>idle</i> — left button selects and drags cards, right/middle button pans, wheel
     ///    zooms. Clicking one of the card's right-hand buttons switches to bind or watch mode
-    ///    (ADR-0020); clicking the "x" on a port deletes that port's connections. A group's
+    ///    (ADR-0020), except the first one, which leaves the schema for the block's terminal
+    ///    (ADR-0021); clicking the "x" on a port deletes that port's connections. A group's
     ///    title strip is a drag handle: grabbing it moves every member card by the same offset,
     ///    keeping the cluster's internal layout (ADR-0016).
     ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
@@ -254,6 +255,17 @@ namespace Vgs.Ui
         private Node _hoverButton;
 
         private CardButtonKind _hoverButtonKind;
+
+        /// <summary>
+        /// Reusable buffer for one card's button row while drawing (ADR-0021).
+        ///
+        /// A field rather than a local array because <see cref="OnDraw"/> runs every frame for
+        /// every visible card: allocating five enums per card per frame is exactly the kind of
+        /// garbage R010 forbids. Nothing outside <see cref="DrawCardButtons"/> may rely on its
+        /// contents — it is overwritten by the next card.
+        /// </summary>
+        private readonly CardButtonKind[] _cardButtonRow =
+            new CardButtonKind[PortGeometry.MaxCardButtonCount];
 
         /// <summary>
         /// Node whose port carries the remove button under the pointer, or null. Tracked
@@ -947,20 +959,34 @@ namespace Vgs.Ui
 
                 // The card's button row is resolved before the card itself: every button sits on
                 // the card, and starting a gesture instead of a drag is the whole point of it
-                // (ADR-0020). Which button it was decides which gesture starts — a bell starts a
-                // watch, a lightbulb or a plus starts a bind.
+                // (ADR-0020). Which button it was decides what happens — the jump leaves the
+                // schema for the block's own terminal (ADR-0021), a bell starts a watch, a
+                // lightbulb or a plus starts a bind.
                 CardButtonKind button;
                 Node buttonNode = HitTestCardButton(graphPos, out button);
                 if (buttonNode != null)
                 {
                     PortGroup group;
-                    if (PortGeometry.TryGroupOf(button, out group))
+                    switch (button)
                     {
-                        BeginBind(buttonNode, group);
-                    }
-                    else
-                    {
-                        BeginWatch(buttonNode);
+                        case CardButtonKind.Jump:
+                            TryJumpToTerminal(buttonNode);
+                            break;
+
+                        case CardButtonKind.Watch:
+                            BeginWatch(buttonNode);
+                            break;
+
+                        default:
+                            // Everything else is a bind, and the switch above names the two kinds
+                            // that are not: a new kind of button added to the enum lands here as
+                            // a bind, which is the safe default — it starts a gesture the player
+                            // can cancel rather than doing something irreversible.
+                            if (PortGeometry.TryGroupOf(button, out group))
+                            {
+                                BeginBind(buttonNode, group);
+                            }
+                            break;
                     }
                     return;
                 }
@@ -1521,6 +1547,54 @@ namespace Vgs.Ui
             }
         }
 
+        // ------------------------------------------------------------------ jump to the block
+
+        /// <summary>
+        /// Leaves the schema for the block's own terminal (ADR-0021): switches the game's terminal
+        /// to this block and closes the editor.
+        ///
+        /// <b>Close only on success.</b> This is the one card action that destroys the screen the
+        /// player is looking at, so a refusal — the block was destroyed since the last refresh, or
+        /// there is no local character to open a terminal for — has to leave the schema where it
+        /// was and say why in the bottom bar. Closing first and reporting afterwards would cost
+        /// the player their place over a block that no longer exists.
+        ///
+        /// <b>Switch the terminal before closing.</b> Closing is a transition that finishes over
+        /// the next frames, while the terminal's tab rebuild is immediate; in this order the
+        /// terminal already shows the right block by the time the closing screen uncovers it.
+        ///
+        /// A group is refused rather than attempted: it has no entity, so there is no terminal it
+        /// could stand for. The button is not drawn on a group's frame either
+        /// (<see cref="PortGeometry.HasCardButton"/>), so this is only a guard.
+        /// </summary>
+        private void TryJumpToTerminal(Node node)
+        {
+            if (node == null || node.IsGroup) return;
+
+            string failure;
+            if (!TerminalJump.TryOpen(node.EntityId, out failure))
+            {
+                // Warn both shows the sentence and writes it to the log — one line per event.
+                Warn(failure ?? VgsText.WarnJumpFailed);
+                return;
+            }
+
+            VgsLog.Info("terminal jump to block " + node.EntityId + ", closing the editor");
+
+            // Closing is a separate call into the game, and the terminal has already been switched
+            // by now. A throw here would reach the caller's throttled handler and read as "input
+            // handling failed", which is not what happened — so it is caught here, where the state
+            // is known: the jump succeeded, only the close did not, and the player can press Esc.
+            try
+            {
+                Close();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Error("terminal jump succeeded but the editor could not close", e);
+            }
+        }
+
         // ------------------------------------------------------------------ bind mode
 
         private void BeginBind(Node source, PortGroup group)
@@ -2016,14 +2090,14 @@ namespace Vgs.Ui
         /// <summary>
         /// Topmost node whose card button row is under the pointer, and which of its buttons.
         ///
-        /// One test for the whole row, because the row is one control group (ADR-0020): the
-        /// watch button, the yes/no pair and the single bind button differ only in the gesture
-        /// they start, so resolving them separately would mean three loops over the same nodes
+        /// One test for the whole row, because the row is one control group (ADR-0020): the jump
+        /// button, the watch button, the yes/no pair and the single bind button differ only in
+        /// what they do, so resolving them separately would mean five loops over the same nodes
         /// and an ordering question between them.
         /// </summary>
         private Node HitTestCardButton(Vector2 graphPoint, out CardButtonKind kind)
         {
-            kind = CardButtonKind.BindSingle;
+            kind = CardButtonKind.Jump;
             float aspect = VgsScreenDraw.ClientAspect;
             IList<Node> nodes = _graph.Nodes;
             for (int i = nodes.Count - 1; i >= 0; i--)
@@ -2518,6 +2592,14 @@ namespace Vgs.Ui
                 textLeft = (spanLeft - node.Position.X) * _zoom;
                 textRight = (spanRight - node.Position.X) * _zoom;
             }
+            else if (PortGeometry.CardButtonCount(node) > 0)
+            {
+                // The row fills the card and the span has collapsed: this is the portrait window
+                // the four-button row cannot leave room in (ADR-0021 §Consequences). Drawing the
+                // name anyway would put it *under* the icons, which reads as a rendering fault;
+                // a card that shows its controls and no text is the honest degradation.
+                textRight = textLeft;
+            }
 
             float textWidth = textRight - textLeft;
             if (textWidth < 0f) textWidth = 0f;
@@ -2528,22 +2610,29 @@ namespace Vgs.Ui
             int lines = node.HasStatusLine ? 3 : 2;
             float band = cardSize.Y / lines;
 
-            VgsScreenDraw.Text(node.DisplayName,
-                               screenPos + new Vector2(textLeft, band * 0.10f),
-                               VgsConstants.NodeTitleScale * zoomText, ColText, textWidth);
-
-            VgsScreenDraw.Text(node.SubtypeId,
-                               screenPos + new Vector2(textLeft, band * 1.10f),
-                               VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
-
-            // The mode description: what an event controller actually checks. A third line, in
-            // the watch colour, because it is the block's *state* rather than its identity —
-            // and it is the only place the player can see the threshold without the terminal.
-            if (node.HasStatusLine && !string.IsNullOrEmpty(node.StatusText))
+            // A zero span means the row has filled the card (the portrait window of ADR-0021
+            // §Consequences). The lines are skipped rather than drawn with maxWidth = 0: what a
+            // renderer does with a zero width is not something this project has verified, and
+            // "the name is not drawn" is a claim the ADR makes and the acceptance list checks.
+            if (textWidth > 0f)
             {
-                VgsScreenDraw.Text(node.StatusText,
-                                   screenPos + new Vector2(textLeft, band * 2.10f),
-                                   VgsConstants.NodeStatusScale * zoomText, ColWatch, textWidth);
+                VgsScreenDraw.Text(node.DisplayName,
+                                   screenPos + new Vector2(textLeft, band * 0.10f),
+                                   VgsConstants.NodeTitleScale * zoomText, ColText, textWidth);
+
+                VgsScreenDraw.Text(node.SubtypeId,
+                                   screenPos + new Vector2(textLeft, band * 1.10f),
+                                   VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
+
+                // The mode description: what an event controller actually checks. A third line, in
+                // the watch colour, because it is the block's *state* rather than its identity —
+                // and it is the only place the player can see the threshold without the terminal.
+                if (node.HasStatusLine && !string.IsNullOrEmpty(node.StatusText))
+                {
+                    VgsScreenDraw.Text(node.StatusText,
+                                       screenPos + new Vector2(textLeft, band * 2.10f),
+                                       VgsConstants.NodeStatusScale * zoomText, ColWatch, textWidth);
+                }
             }
 
             DrawPortBars(node, border, clipTopLeft, clipSize);
@@ -2703,12 +2792,13 @@ namespace Vgs.Ui
 
         /// <summary>
         /// Draws the card's button row: one icon per button, in the order the row is defined in
-        /// <see cref="PortGeometry"/> (ADR-0020).
+        /// <see cref="PortGeometry"/> (ADR-0020, ADR-0021).
         ///
         /// <b>One shape for every button.</b> All of them are bare icons of one size — no disc,
-        /// no square, no letter. Which icon it is says which gesture the button starts: a bell
-        /// starts a watch, a filled lightbulb binds the "yes" list, an outlined one the "no"
-        /// list, and a square-plus the single list of a block with one toolbar.
+        /// no square, no letter. Which icon it is says what the button does: the square with an
+        /// arrow leaving it jumps to the block's terminal, a bell starts a watch, a filled
+        /// lightbulb binds the "yes" list, an outlined one the "no" list, and a square-plus the
+        /// single list of a block with one toolbar.
         ///
         /// <b>One colour too.</b> Every button of the row is near-white at rest and warms to
         /// <see cref="ColPlusFillHot"/> under the pointer — the same two states the "+" has
@@ -2719,28 +2809,33 @@ namespace Vgs.Ui
         /// anything. Colour now marks what *happened* — the watch bars and the dashed line are
         /// yellow — while a control's colour marks what the pointer is doing to it.
         ///
-        /// When a texture is missing the button falls back to its old glyph — "+", "T", "F" or
-        /// "#" — in the same colour, so a missing atlas costs the shape of the mark and never
-        /// the control (ADR-0019 §6).
+        /// When a texture is missing the button falls back to its old glyph — "&gt;", "#", "T",
+        /// "F" or "+" — in the same colour, so a missing atlas costs the shape of the mark and
+        /// never the control (ADR-0019 §6).
+        ///
+        /// <b>One pass over the row.</b> The kinds are collected into
+        /// <see cref="_cardButtonRow"/> and each button's rectangle is computed from its position
+        /// in that row, so this runs once per card instead of searching the row once per button.
+        /// The buffer is a field because <see cref="OnDraw"/> runs every frame for every visible
+        /// card and allocating here would break R010.
         /// </summary>
         private void DrawCardButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
         {
-            int count = PortGeometry.CardButtonCount(node);
+            int count = PortGeometry.GetCardButtons(node, _cardButtonRow);
+            float aspect = VgsScreenDraw.ClientAspect;
+
             for (int i = 0; i < count; i++)
             {
-                CardButtonKind kind;
-                if (!PortGeometry.TryCardButtonAt(node, i, out kind)) continue;
-                DrawCardButton(node, kind, clipTopLeft, clipSize);
+                Vector2 topLeft, size;
+                PortGeometry.CardButtonRectAt(node, i, count, aspect, out topLeft, out size);
+                DrawCardButton(node, _cardButtonRow[i], topLeft + size * 0.5f, clipTopLeft, clipSize);
             }
         }
 
         /// <summary>Draws one button of a card's row: its icon, or its glyph when the icon is unavailable.</summary>
-        private void DrawCardButton(Node node, CardButtonKind kind, Vector2 clipTopLeft,
-                                    Vector2 clipSize)
+        private void DrawCardButton(Node node, CardButtonKind kind, Vector2 center,
+                                    Vector2 clipTopLeft, Vector2 clipSize)
         {
-            Vector2 center;
-            if (!PortGeometry.TryCardButton(node, kind, VgsScreenDraw.ClientAspect, out center)) return;
-
             Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
 
             bool hot = ReferenceEquals(node, _hoverButton) && _hoverButtonKind == kind;
@@ -2771,6 +2866,7 @@ namespace Vgs.Ui
         {
             switch (kind)
             {
+                case CardButtonKind.Jump: return VgsIcon.ShareFromSquare;
                 case CardButtonKind.Watch: return VgsIcon.Bell;
                 case CardButtonKind.BindYes: return VgsIcon.LightbulbSolid;
                 case CardButtonKind.BindNo: return VgsIcon.LightbulbRegular;
@@ -2786,6 +2882,7 @@ namespace Vgs.Ui
         {
             switch (kind)
             {
+                case CardButtonKind.Jump: return VgsText.JumpGlyph;
                 case CardButtonKind.Watch: return VgsText.WatchGlyph;
                 case CardButtonKind.BindYes: return VgsText.TrueButtonGlyph;
                 case CardButtonKind.BindNo: return VgsText.FalseButtonGlyph;
@@ -3120,13 +3217,24 @@ namespace Vgs.Ui
         /// Second line of the bottom bar. Bind mode replaces the static hint, because while
         /// binding the only thing the user needs to know is how to finish or cancel — and on
         /// a yes/no toolbar, which of the two lists the connection is going into.
+        ///
+        /// A pointer over the jump button replaces it too (ADR-0021): that button closes the
+        /// screen it sits on, and the cost of pressing it belongs in front of the player before
+        /// the click, not after it.
         /// </summary>
         private string BottomBarHint
         {
             get
             {
                 if (_watchSource != null) return VgsText.WatchHint;
-                if (_bindSource == null) return VgsText.Hint;
+                if (_bindSource == null)
+                {
+                    if (_hoverButton != null && _hoverButtonKind == CardButtonKind.Jump)
+                    {
+                        return VgsText.JumpHint;
+                    }
+                    return VgsText.Hint;
+                }
                 if (_bindGroup == PortGroup.Yes) return VgsText.BindHintTrue;
                 if (_bindGroup == PortGroup.No) return VgsText.BindHintFalse;
                 return VgsText.BindHint;

@@ -7,30 +7,46 @@ using Vgs.Model;
 namespace Vgs.Ui
 {
     /// <summary>
-    /// One control of a card's button row (ADR-0020).
+    /// One control of a card's button row (ADR-0020, ADR-0021).
     ///
     /// The row is the card's whole vocabulary of actions: a button belongs to the *card*, not to
     /// a port, and what it starts depends on the block's shape. Naming the buttons by the gesture
     /// they start — rather than by the glyph they carry — is what lets the icon change (a letter
     /// became a lightbulb) without every call site following it.
+    ///
+    /// The members are listed in <b>row order</b>, which is also the order they are read in: the
+    /// jump button first (ADR-0021), then watch, then the yes/no pair, then the single bind. The
+    /// numeric values are not the row positions — <see cref="PortGeometry.CardButtonIndex"/> owns
+    /// that — so a new button can be inserted anywhere in the list without renumbering.
     /// </summary>
     public enum CardButtonKind
     {
+        /// <summary>
+        /// Closes the editor and opens the game's terminal on this card's block (ADR-0021).
+        ///
+        /// The one button that is not a gesture on the schema: it starts no mode, writes nothing
+        /// and changes no connection. It exists because the schema is where a player *finds* a
+        /// block, while the block's own settings live in the terminal — so the card carries the
+        /// shortest path between the two. Present on every block card and on no group frame: a
+        /// group has no terminal of its own.
+        /// </summary>
+        Jump = 0,
+
         /// <summary>Starts a bind into the single fire group of a one-group toolbar.</summary>
-        BindSingle = 0,
+        BindSingle = 1,
 
         /// <summary>Starts a bind into the "yes" group of a two-group toolbar.</summary>
-        BindYes = 1,
+        BindYes = 2,
 
         /// <summary>Starts a bind into the "no" group of a two-group toolbar.</summary>
-        BindNo = 2,
+        BindNo = 3,
 
         /// <summary>
         /// Starts a watch: the controller will observe the block picked next (ADR-0017). Not a
         /// connection — nothing is written into a toolbar — which is why it is the one button of
         /// the row that is not about firing something.
         /// </summary>
-        Watch = 3,
+        Watch = 4,
     }
 
     /// <summary>
@@ -48,22 +64,23 @@ namespace Vgs.Ui
     /// the same size, one at each end:
     ///
     /// <code>
-    ///   +--------------------------+
-    ///   | Reactor            (T) (F) |  card: name, subtype, and a right-hand button row
-    ///   | LargeBlockReactor          |
-    ///   +--------------------------+
-    ///   | (x) Fuel Changed     (o) |   output bar: dot at the right (lines leave), "x" at the left
-    ///   | (x) Out Of Fuel      (o) |
-    ///   +--------------------------+
-    ///   | (o) On Off           (x) |   input bar: dot at the left (lines arrive), "x" at the right
-    ///   +--------------------------+
+    ///   +-------------------------------+
+    ///   | Event Controller   (>) (#) (T) (F) |  card: name, subtype, and a right-hand button row
+    ///   | EventControllerLarge               |
+    ///   +-------------------------------+
+    ///   | (x) Fuel Changed          (o) |   output bar: dot at the right (lines leave), "x" at the left
+    ///   | (x) Out Of Fuel           (o) |
+    ///   +-------------------------------+
+    ///   | (o) On Off                (x) |   input bar: dot at the left (lines arrive), "x" at the right
+    ///   +-------------------------------+
     /// </code>
     ///
     /// <b>All card buttons live in that row and nowhere else</b> (ADR-0020). Which buttons a card
-    /// has follows from what the block is: a timer gets one bind button, a sensor two (one per
-    /// fire group), an event controller three (the bell, then the two bind buttons). They share
-    /// one size and one vertical centre, so two cards side by side look like two instances of the
-    /// same control vocabulary instead of two different designs.
+    /// has follows from what the block is: every block gets the jump button (ADR-0021), a timer
+    /// then gets one bind button, a sensor two (one per fire group), an event controller four (the
+    /// bell and the two bind buttons after the jump). They share one size and one vertical centre,
+    /// so two cards side by side look like two instances of the same control vocabulary instead of
+    /// two different designs.
     ///
     /// Outputs sit immediately under the card, inputs under them, because the outgoing side
     /// belongs to the block itself while the incoming side is what other blocks do to it.
@@ -321,22 +338,52 @@ namespace Vgs.Ui
 
         // ------------------------------------------------------------------ card button row
 
+        /// <summary>
+        /// The row's fixed order, left to right: <b>jump → watch → "yes" → "no" → single bind</b>
+        /// (ADR-0020, ADR-0021).
+        ///
+        /// A card shows the subsequence of this list that its block supports, so a given button
+        /// keeps its side of the row no matter which other buttons are present, and a button
+        /// added in the middle of the row does not renumber the ones after it. The array is the
+        /// single place that decides the order: count, index and "which button is at position i"
+        /// are all walks over it, which is why adding a button is one entry here plus one branch
+        /// in <see cref="HasCardButton"/>.
+        ///
+        /// Jump is first because it is the button a reader of a card looks for first: it does not
+        /// act on the schema, it leaves it for the block itself (ADR-0021).
+        /// </summary>
+        private static readonly CardButtonKind[] RowOrder =
+        {
+            CardButtonKind.Jump,
+            CardButtonKind.Watch,
+            CardButtonKind.BindYes,
+            CardButtonKind.BindNo,
+            CardButtonKind.BindSingle,
+        };
+
         /// <summary>How many buttons this node's card row shows.</summary>
         public static int CardButtonCount(Node node)
         {
             if (node == null) return 0;
 
-            int count = node.IsEventController ? 1 : 0;
-            if (!node.CanDriveBlocks) return count;
-
-            return count + (HasGroupButtons(node) ? 2 : 1);
+            int count = 0;
+            for (int i = 0; i < RowOrder.Length; i++)
+            {
+                if (HasCardButton(node, RowOrder[i])) count++;
+            }
+            return count;
         }
 
         /// <summary>
         /// True when this node's card carries <paramref name="kind"/>. A button exists only where
-        /// the gesture it starts can actually happen: the watch button only on a controller, the
-        /// bind buttons only on a block that drives others, and the yes/no pair only where the
-        /// toolbar has two lists.
+        /// the gesture it starts can actually happen: the jump button on any block, the watch
+        /// button only on a controller, the bind buttons only on a block that drives others, and
+        /// the yes/no pair only where the toolbar has two lists.
+        ///
+        /// The jump button is the only one whose answer does not depend on the toolbar: it needs a
+        /// block, because it opens that block's terminal, and nothing else. A group is the one
+        /// kind of node without a block behind it, so it is the one kind of node without the
+        /// button.
         /// </summary>
         public static bool HasCardButton(Node node, CardButtonKind kind)
         {
@@ -344,6 +391,9 @@ namespace Vgs.Ui
 
             switch (kind)
             {
+                case CardButtonKind.Jump:
+                    return !node.IsGroup;
+
                 case CardButtonKind.Watch:
                     return node.IsEventController;
 
@@ -361,46 +411,52 @@ namespace Vgs.Ui
 
         /// <summary>
         /// Left-to-right position of a button in its node's row, or -1 when the node does not show
-        /// it. The order is fixed — watch, "yes", "no", single bind — so a given button keeps its
-        /// side of the row no matter which other buttons the card happens to carry.
+        /// it. The order is fixed — jump, watch, "yes", "no", single bind — so a given button keeps
+        /// its side of the row no matter which other buttons the card happens to carry.
         /// </summary>
         public static int CardButtonIndex(Node node, CardButtonKind kind)
         {
-            if (!HasCardButton(node, kind)) return -1;
+            if (node == null) return -1;
 
-            if (kind == CardButtonKind.Watch) return 0;
-
-            int at = node.IsEventController ? 1 : 0;
-            if (kind == CardButtonKind.BindYes) return at;
-            if (kind == CardButtonKind.BindNo) return at + 1;
-            return at;   // BindSingle: the only bind button of a one-group toolbar
+            int at = 0;
+            for (int i = 0; i < RowOrder.Length; i++)
+            {
+                CardButtonKind candidate = RowOrder[i];
+                if (!HasCardButton(node, candidate)) continue;
+                if (candidate == kind) return at;
+                at++;
+            }
+            return -1;
         }
 
         /// <summary>The kind of the button at <paramref name="index"/>, counting from the left.</summary>
         public static bool TryCardButtonAt(Node node, int index, out CardButtonKind kind)
         {
-            kind = CardButtonKind.BindSingle;
-            if (node == null || index < 0 || index >= CardButtonCount(node)) return false;
+            kind = CardButtonKind.Jump;
+            if (node == null || index < 0) return false;
 
-            if (node.IsEventController && index == 0)
+            int at = 0;
+            for (int i = 0; i < RowOrder.Length; i++)
             {
-                kind = CardButtonKind.Watch;
-                return true;
+                CardButtonKind candidate = RowOrder[i];
+                if (!HasCardButton(node, candidate)) continue;
+                if (at == index)
+                {
+                    kind = candidate;
+                    return true;
+                }
+                at++;
             }
-
-            if (!HasGroupButtons(node))
-            {
-                kind = CardButtonKind.BindSingle;
-                return true;
-            }
-
-            kind = index == (node.IsEventController ? 1 : 0)
-                ? CardButtonKind.BindYes
-                : CardButtonKind.BindNo;
-            return true;
+            return false;
         }
 
-        /// <summary>The bind group a card button starts, if it starts one at all.</summary>
+        /// <summary>
+        /// The bind group a card button starts, if it starts one at all.
+        ///
+        /// False means the button is not a bind: today that is the watch button (ADR-0017) and the
+        /// jump button (ADR-0021). The answer is deliberately not "some group" for those — a
+        /// caller that treated the three non-bind buttons alike would start a bind from the bell.
+        /// </summary>
         public static bool TryGroupOf(CardButtonKind kind, out PortGroup group)
         {
             switch (kind)
@@ -421,14 +477,98 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// Writes the node's whole row into <paramref name="into"/>, left to right, and returns how
+        /// many buttons it has.
+        ///
+        /// This is the one-pass form of <see cref="CardButtonCount"/> +
+        /// <see cref="TryCardButtonAt"/>: the draw path needs every button of every visible card on
+        /// every frame, and asking for the count and then for each index walks the order list
+        /// <c>n + 1</c> times per card instead of once. Measured on this machine, 400 controller
+        /// cards (the <see cref="VgsConstants.MaxRenderedBlocks"/> cap), release build: the
+        /// count-then-index form costs 1,27 µs per card, this one with
+        /// <see cref="CardButtonRectAt"/> costs 0,35 µs — 0,14 ms of a frame instead of 0,51 ms.
+        /// The remaining 0,35 µs is the price of keeping the row's order in one place instead of
+        /// duplicating it as a second, faster copy; a cached per-node row would be the same defect
+        /// <see cref="PortGeometry"/> exists to prevent.
+        ///
+        /// <paramref name="into"/> is caller-owned and must have room for
+        /// <see cref="MaxCardButtonCount"/> entries; nothing is allocated here, which is what lets
+        /// the caller reuse one field buffer for every card of every frame (R010).
+        /// </summary>
+        public static int GetCardButtons(Node node, CardButtonKind[] into)
+        {
+            if (node == null || into == null) return 0;
+
+            int at = 0;
+            for (int i = 0; i < RowOrder.Length && at < into.Length; i++)
+            {
+                CardButtonKind candidate = RowOrder[i];
+                if (!HasCardButton(node, candidate)) continue;
+                into[at] = candidate;
+                at++;
+            }
+            return at;
+        }
+
+        /// <summary>
+        /// Upper bound of <see cref="GetCardButtons"/>'s output, so a caller can size its buffer
+        /// once.
+        ///
+        /// <b>Derived from the row, not written down.</b> A constant here would be a second copy of
+        /// the row's length, and the two would part company on the day a sixth button is added:
+        /// <see cref="GetCardButtons"/> would silently truncate the row to the stale bound while
+        /// <see cref="CardButtonCount"/> and <see cref="HitCardButton"/> would keep finding the new
+        /// button — a button that is clickable but never drawn. Deriving it from
+        /// <see cref="RowOrder"/> makes that impossible by construction, and
+        /// <c>offline-check</c> pins the agreement with the enum as well.
+        /// </summary>
+        public static int MaxCardButtonCount
+        {
+            get { return RowOrder.Length; }
+        }
+
+        /// <summary>
+        /// Rectangle of the button at <paramref name="index"/> in a row of <paramref name="count"/>
+        /// buttons, in graph units.
+        ///
+        /// The arithmetic is the whole of the row's layout: the row is right-anchored, so a button's
+        /// centre is <c>count - 1 - index</c> strides left of the card's right border. Passing the
+        /// index and the count in — instead of a <see cref="CardButtonKind"/> — is what lets the draw
+        /// loop place each button without looking up where it sits in the row again.
+        /// </summary>
+        public static void CardButtonRectAt(Node node, int index, int count, float aspectX,
+                                            out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (node == null || count <= 0 || index < 0 || index >= count) return;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float diameter = VgsConstants.CardButtonDiameter;
+            float halfWidth = VgsConstants.CardButtonRadius * aspectX;
+            float stride = halfWidth * 2f + VgsConstants.CardButtonGap * aspectX;
+
+            float right = node.Position.X + VgsConstants.NodeWidth
+                          - VgsConstants.CardButtonMargin * aspectX;
+            int fromRight = count - 1 - index;
+
+            float centreX = right - halfWidth - fromRight * stride;
+            float centreY = node.Position.Y + CardHeight(node) * 0.5f;
+
+            size = new Vector2(diameter * aspectX, diameter);
+            topLeft = new Vector2(centreX - size.X * 0.5f, centreY - size.Y * 0.5f);
+        }
+
+        /// <summary>
         /// Rectangle of one button of a node's card row, in graph units, or false when the node
         /// does not show that button.
         ///
-        /// <b>The row.</b> Every card control — the bind button, the yes/no pair and the
-        /// controller's watch button — sits in one horizontal row along the card's right edge,
-        /// vertically centred on the card (ADR-0020). The row is right-anchored: buttons are
-        /// packed from the card's right border leftwards, so a card with one button keeps it
-        /// exactly where the "+" has always been, and a card with three grows leftwards.
+        /// <b>The row.</b> Every card control — the jump button, the bind button, the yes/no pair
+        /// and the controller's watch button — sits in one horizontal row along the card's right
+        /// edge, vertically centred on the card (ADR-0020, ADR-0021). The row is right-anchored:
+        /// buttons are packed from the card's right border leftwards, so a card with one button
+        /// keeps it exactly where the "+" has always been, and a card with four grows leftwards.
         ///
         /// <b>One size for all of them.</b> The diameter comes from
         /// <see cref="VgsConstants.CardButtonDiameter"/> — a fraction of the *standard* card
@@ -440,6 +580,10 @@ namespace Vgs.Ui
         /// so its horizontal half-extent is <c>radius * aspectX</c>; the gaps and the margin from
         /// the card's border go through the same correction, which is what makes them the same
         /// number of screen pixels on a 16:9 and on a 4:3 window.
+        ///
+        /// This is the by-kind form, for the callers that have a kind in hand (hit-testing, the
+        /// tests). The draw path uses <see cref="GetCardButtons"/> +
+        /// <see cref="CardButtonRectAt"/>, which do not have to search the row at all.
         /// </summary>
         public static bool TryCardButtonRect(Node node, CardButtonKind kind, float aspectX,
                                              out Vector2 topLeft, out Vector2 size)
@@ -450,21 +594,7 @@ namespace Vgs.Ui
             int index = CardButtonIndex(node, kind);
             if (index < 0) return false;
 
-            if (aspectX <= 0f) aspectX = 1f;
-
-            float diameter = VgsConstants.CardButtonDiameter;
-            float halfWidth = VgsConstants.CardButtonRadius * aspectX;
-            float stride = halfWidth * 2f + VgsConstants.CardButtonGap * aspectX;
-
-            float right = node.Position.X + VgsConstants.NodeWidth
-                          - VgsConstants.CardButtonMargin * aspectX;
-            int fromRight = CardButtonCount(node) - 1 - index;
-
-            float centreX = right - halfWidth - fromRight * stride;
-            float centreY = node.Position.Y + CardHeight(node) * 0.5f;
-
-            size = new Vector2(diameter * aspectX, diameter);
-            topLeft = new Vector2(centreX - size.X * 0.5f, centreY - size.Y * 0.5f);
+            CardButtonRectAt(node, index, CardButtonCount(node), aspectX, out topLeft, out size);
             return true;
         }
 

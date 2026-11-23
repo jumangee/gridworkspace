@@ -17,3 +17,4 @@ Xmark           xmark-solid.svg           xmark (Solid): the remove-connection g
 Bell            bell-regular.svg          bell (Regular): the watch-list button of an event controller
 LightbulbSolid  lightbulb-solid.svg       lightbulb (Solid): the bind button of the "true" group
 LightbulbRegular lightbulb-regular.svg    lightbulb (Regular): the bind button of the "false" group
+ShareFromSquare share-from-square-regular.svg share-from-square (Regular): the jump-to-terminal button of a block card

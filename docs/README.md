@@ -32,6 +32,9 @@
   [01-research/api-toolbar.md](01-research/api-toolbar.md).
 - **«Почему все кнопки карточки справа в один ряд, и что за лампы с колокольчиком?»** →
   [ADR-0020](adr/0020-card-button-row.md) и [07-icon-catalog.md](07-icon-catalog.md).
+- **«Почему переход к далёкому блоку требует антенны, даже если блок на том же гриде?»** →
+  [ADR-0021](adr/0021-jump-to-block-terminal.md) §2а и
+  [01-research/api-terminal-jump.md](01-research/api-terminal-jump.md) §7 (`TestConnection`).
 - **«Почему группа на схеме — рамка, и какие действия у неё есть?»** →
   [ADR-0015](adr/0015-block-groups.md) и
   [01-research/api-block-groups.md](01-research/api-block-groups.md).

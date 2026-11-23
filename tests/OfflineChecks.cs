@@ -711,14 +711,15 @@ internal static class OfflineChecks
     }
 
     /// <summary>
-    /// The card's button row (ADR-0020).
+    /// The card's button row (ADR-0020, ADR-0021).
     ///
-    /// Every control that belongs to the *card* — the single bind button, the yes/no pair and a
-    /// controller's watch button — sits in one horizontal row on the card's right edge,
-    /// vertically centred, all at one size. What matters is that each button exists exactly
-    /// where it can be clicked, that the row stays inside the card, that two cards show the same
-    /// button size whatever their toolbars are, and that a click in the gap between two buttons
-    /// lands on the nearer one instead of on whichever was tested first.
+    /// Every control that belongs to the *card* — the jump-to-terminal button, the single bind
+    /// button, the yes/no pair and a controller's watch button — sits in one horizontal row on the
+    /// card's right edge, vertically centred, all at one size. What matters is that each button
+    /// exists exactly where it can be clicked, that the row stays inside the card, that two cards
+    /// show the same button size whatever their toolbars are, that the jump button is present on
+    /// every block and on no group, and that a click in the gap between two buttons lands on the
+    /// nearer one instead of on whichever was tested first.
     /// </summary>
     private static void CardButtonRow()
     {
@@ -739,15 +740,25 @@ internal static class OfflineChecks
 
         // ---- which card carries which buttons ----
 
-        Check(PortGeometry.CardButtonCount(timer) == 1, "a one-group block has one card button");
+        // The jump button is on every block, including one that cannot drive anything and has no
+        // toolbar at all: it opens the block's own terminal, which every terminal block has
+        // (ADR-0021).
+        Check(PortGeometry.HasCardButton(timer, CardButtonKind.Jump),
+              "a timer has the jump button");
+        Check(PortGeometry.HasCardButton(conveyor, CardButtonKind.Jump),
+              "a block with no toolbar still has the jump button");
+
+        Check(PortGeometry.CardButtonCount(timer) == 2,
+              "a one-group block has the jump and the single bind button");
         Check(PortGeometry.HasCardButton(timer, CardButtonKind.BindSingle),
-              "that button is the single bind button");
+              "that second button is the single bind button");
         Check(!PortGeometry.HasCardButton(timer, CardButtonKind.BindYes),
               "a one-group block has no yes button");
         Check(!PortGeometry.HasCardButton(timer, CardButtonKind.Watch),
               "a timer has no watch button");
 
-        Check(PortGeometry.CardButtonCount(sensor) == 2, "a yes/no block has two card buttons");
+        Check(PortGeometry.CardButtonCount(sensor) == 3,
+              "a yes/no block has the jump and the pair");
         Check(PortGeometry.HasCardButton(sensor, CardButtonKind.BindYes), "the yes button exists");
         Check(PortGeometry.HasCardButton(sensor, CardButtonKind.BindNo), "the no button exists");
         Check(!PortGeometry.HasCardButton(sensor, CardButtonKind.BindSingle),
@@ -755,20 +766,43 @@ internal static class OfflineChecks
         Check(!PortGeometry.HasCardButton(sensor, CardButtonKind.Watch),
               "a sensor is not a controller, so it has no watch button");
 
-        Check(PortGeometry.CardButtonCount(controller) == 3,
-              "a controller shows the watch button and the pair");
+        Check(PortGeometry.CardButtonCount(controller) == 4,
+              "a controller shows the jump, the watch button and the pair");
         Check(PortGeometry.HasCardButton(controller, CardButtonKind.Watch),
               "the controller has a watch button");
 
-        Check(PortGeometry.CardButtonCount(conveyor) == 0,
-              "a block without a toolbar has no card buttons");
-        CardButtonKind none;
-        Check(!PortGeometry.HitCardButton(conveyor, conveyor.Position, aspect, out none),
-              "nothing on a card without buttons is clickable");
+        Check(PortGeometry.CardButtonCount(conveyor) == 1,
+              "a block without a toolbar has the jump button and nothing else");
+
+        // A group is a frame, not a block: it has no terminal, so the jump would have nowhere to
+        // go. This is the one card-like thing that must not show the button.
+        var group = new Node("Grp", "any");
+        group.Position = new Vector2(0.5f, 0.5f);
+        Check(!PortGeometry.HasCardButton(group, CardButtonKind.Jump),
+              "a group frame has no jump button — a group has no terminal");
+        Check(PortGeometry.CardButtonCount(group) == 0, "a group frame has no buttons at all");
+
+        // ---- the row's order ----
+
+        // Jump first, then the rest: the button that leaves the schema is the one a reader of a
+        // card looks for first, and putting it in front keeps every later button where ADR-0020
+        // put it.
+        Check(PortGeometry.CardButtonIndex(timer, CardButtonKind.Jump) == 0,
+              "the jump button is the first of the row");
+        Check(PortGeometry.CardButtonIndex(timer, CardButtonKind.BindSingle) == 1,
+              "the single bind button follows the jump");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.Jump) == 0,
+              "the jump button is the first of a controller's row too");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.Watch) == 1,
+              "the watch button is the second of the row");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.BindYes) == 2,
+              "the yes button is the third");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.BindNo) == 3,
+              "the no button is the fourth");
 
         // ---- one row, one size, on the right ----
 
-        Node[] nodes = { timer, sensor, controller };
+        Node[] nodes = { timer, sensor, controller, conveyor };
         for (int n = 0; n < nodes.Length; n++)
         {
             Node node = nodes[n];
@@ -861,6 +895,159 @@ internal static class OfflineChecks
         CheckClose(controllerSize.X, timerSize.X,
                    "and the same width, so the pair reads as one control on every card");
 
+        // ---- the row as data: one pass, and the two ways of asking agree ----
+        //
+        // The draw path asks for the whole row at once (`GetCardButtons`) and then places each
+        // button by its position (`CardButtonRectAt`); everything else asks by kind
+        // (`CardButtonIndex` / `TryCardButtonAt` / `TryCardButtonRect`). Two ways of asking the
+        // same question is exactly how a button ends up drawn in one place and clicked in
+        // another, so they are compared here rather than trusted.
+
+        var rowBuffer = new CardButtonKind[PortGeometry.MaxCardButtonCount];
+
+        // The buffer a caller sizes once is derived from the row itself, but the *enum* could still
+        // grow a member that no card ever shows — and then a future button would be silently
+        // truncated by the buffer while hit-testing kept finding it. Pinning the two together is
+        // what turns that into a red gate instead of an invisible, clickable button.
+        Check(PortGeometry.MaxCardButtonCount
+              == Enum.GetValues(typeof(CardButtonKind)).Length,
+              "MaxCardButtonCount covers every CardButtonKind the enum declares");
+        Check(PortGeometry.MaxCardButtonCount >= 4,
+              "the row can hold the widest card (jump, watch, yes, no)");
+
+        // Every kind of button maps to a bind group or to none, and the mapping is the one the
+        // click dispatcher depends on: a swapped Yes/No would pass every other check here.
+        PortGroup mapped;
+        Check(PortGeometry.TryGroupOf(CardButtonKind.BindYes, out mapped) && mapped == PortGroup.Yes,
+              "the yes button binds the yes group");
+        Check(PortGeometry.TryGroupOf(CardButtonKind.BindNo, out mapped) && mapped == PortGroup.No,
+              "the no button binds the no group");
+        Check(PortGeometry.TryGroupOf(CardButtonKind.BindSingle, out mapped)
+              && mapped == PortGroup.Single,
+              "the single bind button binds the single group");
+        Check(!PortGeometry.TryGroupOf(CardButtonKind.Jump, out mapped),
+              "the jump button binds nothing — it leaves the schema");
+        Check(!PortGeometry.TryGroupOf(CardButtonKind.Watch, out mapped),
+              "the watch button binds nothing — it starts a watch");
+
+        // ---- the row is null-safe: it is called from the draw path, where a throw kills the frame
+
+        CardButtonKind nullKind;
+        Check(PortGeometry.CardButtonCount(null) == 0, "a null node has no buttons");
+        Check(!PortGeometry.HasCardButton(null, CardButtonKind.Jump), "a null node has no jump button");
+        Check(PortGeometry.CardButtonIndex(null, CardButtonKind.Jump) == -1, "a null node has no index");
+        Check(!PortGeometry.TryCardButtonAt(null, 0, out nullKind), "a null node has no button at 0");
+        Check(PortGeometry.GetCardButtons(null, rowBuffer) == 0, "a null node fills no buffer");
+        Check(PortGeometry.GetCardButtons(timer, null) == 0, "a null buffer is refused, not written");
+        Vector2 nullTopLeft, nullSize;
+        PortGeometry.CardButtonRectAt(null, 0, 1, aspect, out nullTopLeft, out nullSize);
+        CheckClose(nullSize.X, 0f, "a null node's button rectangle is empty (width)");
+        CheckClose(nullSize.Y, 0f, "a null node's button rectangle is empty (height)");
+
+        // Out-of-range positions are refused, not clamped onto a neighbour.
+        CardButtonKind outOfRange;
+        Check(!PortGeometry.TryCardButtonAt(null, -1, out outOfRange),
+              "position -1 on a null node is not a button");
+        PortGeometry.CardButtonRectAt(controller, -1, 4, aspect, out nullTopLeft, out nullSize);
+        CheckClose(nullSize.Y, 0f, "a negative position gives an empty rectangle");
+        PortGeometry.CardButtonRectAt(controller, 4, 4, aspect, out nullTopLeft, out nullSize);
+        CheckClose(nullSize.Y, 0f, "a position past the row gives an empty rectangle");
+        PortGeometry.CardButtonRectAt(controller, 0, 0, aspect, out nullTopLeft, out nullSize);
+        CheckClose(nullSize.Y, 0f, "a zero-length row gives an empty rectangle");
+
+        // A group has no buttons at all, so nothing on its frame is clickable.
+        CardButtonKind groupHit;
+        Check(!PortGeometry.HitCardButton(group, group.Position, aspect, out groupHit),
+              "nothing on a group's frame is a card button");
+        Vector2 groupRowTopLeft, groupRowSize;
+        Check(!PortGeometry.TryCardButtonRow(group, aspect, out groupRowTopLeft, out groupRowSize),
+              "a group's frame has no button row");
+
+        // A stale node — a block that was destroyed but whose card is still on the canvas until the
+        // next refresh — still carries the jump button. That is what makes the "block is gone"
+        // refusal reachable instead of the button vanishing mid-click.
+        var stale = new Node(0L, "LargeBlockTimerBlock", "gone", Vector3I.Zero);
+        Check(PortGeometry.HasCardButton(stale, CardButtonKind.Jump),
+              "a card whose block id is zero still shows the jump button");
+
+        Node[] rowNodes = { timer, sensor, controller, conveyor, group };
+        for (int n = 0; n < rowNodes.Length; n++)
+        {
+            Node node = rowNodes[n];
+            int count = PortGeometry.GetCardButtons(node, rowBuffer);
+
+            Check(count == PortGeometry.CardButtonCount(node),
+                  "GetCardButtons and CardButtonCount agree (" + node.SubtypeId + ")");
+            Check(count <= PortGeometry.MaxCardButtonCount,
+                  "the row fits the buffer a caller can size once (" + node.SubtypeId + ")");
+
+            // Every position of the row has the kind the by-index and by-kind lookups report, and
+            // each kind appears exactly once.
+            for (int i = 0; i < count; i++)
+            {
+                CardButtonKind fromBuffer = rowBuffer[i];
+
+                CardButtonKind fromIndex;
+                Check(PortGeometry.TryCardButtonAt(node, i, out fromIndex),
+                      "position " + i + " exists by index (" + node.SubtypeId + ")");
+                Check(fromBuffer == fromIndex,
+                      "GetCardButtons and TryCardButtonAt agree at " + i + " (" + node.SubtypeId + ")");
+                Check(PortGeometry.CardButtonIndex(node, fromBuffer) == i,
+                      "CardButtonIndex inverts TryCardButtonAt at " + i + " (" + node.SubtypeId + ")");
+
+                // The two ways of placing a button give the same rectangle.
+                Vector2 byKind, byKindSize, byPos, byPosSize;
+                Check(PortGeometry.TryCardButtonRect(node, fromBuffer, aspect, out byKind, out byKindSize),
+                      "by-kind rectangle at " + i + " (" + node.SubtypeId + ")");
+                PortGeometry.CardButtonRectAt(node, i, count, aspect, out byPos, out byPosSize);
+                CheckClose(byKind.X, byPos.X, "both placements agree in X at " + i + " (" + node.SubtypeId + ")");
+                CheckClose(byKind.Y, byPos.Y, "both placements agree in Y at " + i + " (" + node.SubtypeId + ")");
+                CheckClose(byKindSize.X, byPosSize.X, "both placements agree in width at " + i + " (" + node.SubtypeId + ")");
+                CheckClose(byKindSize.Y, byPosSize.Y, "both placements agree in height at " + i + " (" + node.SubtypeId + ")");
+            }
+
+            // A kind that is not in the row has no index and no rectangle. The list of kinds is
+            // written out rather than derived from the enum's numeric values: those values are
+            // deliberately not row positions (see the enum's own comment), and iterating them by
+            // number would quietly weaken this check the day they are renumbered.
+            CardButtonKind[] allKinds =
+            {
+                CardButtonKind.Jump, CardButtonKind.BindSingle, CardButtonKind.BindYes,
+                CardButtonKind.BindNo, CardButtonKind.Watch,
+            };
+            CardButtonKind absent = CardButtonKind.Jump;
+            bool anyAbsent = false;
+            for (int k = 0; k < allKinds.Length; k++)
+            {
+                CardButtonKind candidate = allKinds[k];
+                bool present = false;
+                for (int i = 0; i < count; i++) if (rowBuffer[i] == candidate) present = true;
+                Check(PortGeometry.HasCardButton(node, candidate) == present,
+                      "HasCardButton agrees with the row it produces (" + candidate + ", "
+                      + node.SubtypeId + ")");
+                if (!present)
+                {
+                    absent = candidate;
+                    anyAbsent = true;
+                }
+            }
+            if (anyAbsent)
+            {
+                Check(PortGeometry.CardButtonIndex(node, absent) == -1,
+                      "a button the card does not carry has no index (" + node.SubtypeId + ")");
+                Vector2 t, s;
+                Check(!PortGeometry.TryCardButtonRect(node, absent, aspect, out t, out s),
+                      "a button the card does not carry has no rectangle (" + node.SubtypeId + ")");
+            }
+
+            // Out-of-range positions are refused, not clamped onto a neighbour.
+            CardButtonKind pastRow;
+            Check(!PortGeometry.TryCardButtonAt(node, -1, out pastRow),
+                  "position -1 is not a button (" + node.SubtypeId + ")");
+            Check(!PortGeometry.TryCardButtonAt(node, count, out pastRow),
+                  "the position one past the row is not a button (" + node.SubtypeId + ")");
+        }
+
         // ---- the row leaves room for the name ----
 
         for (int n = 0; n < nodes.Length; n++)
@@ -880,7 +1067,7 @@ internal static class OfflineChecks
 
             // The name starts inside the card and has to reach the row with a gap to spare. The
             // floor is 30% of the card's width: a card whose text span collapsed would show
-            // buttons and no name, and the three-button card is the one that could do it — so
+            // buttons and no name, and the four-button card is the one that could do it — so
             // this is the assertion that keeps the row from growing without bound.
             float spanLeft, spanRight;
             Check(PortGeometry.TryCardTextSpan(node, aspect, out spanLeft, out spanRight),
@@ -896,62 +1083,90 @@ internal static class OfflineChecks
                        "the text span starts at the card's inner padding");
         }
 
-        // ---- the budget for one more button ----
+        // ---- the budget for the fourth button (ADR-0021) ----
         //
-        // The row was tightened because a fourth button is expected. No node has four buttons
-        // today, so this cannot be asserted through a node: it is computed from the constants and
-        // is a guard, not a description. It fails the moment a diameter, a gap or a padding grows
-        // enough to squeeze the name on a four-button card — before that card exists to look at.
+        // The controller's row is the widest one the editor can produce: jump, watch, "yes",
+        // "no". It is asserted through the real node, not through a hypothetical count, because
+        // that card exists — and it is the one the button diameter was reduced for.
         //
         // The aspect matters more than it looks. A button is round on screen, so its horizontal
         // extent is radius × aspect: the *wider* the window, the *narrower* the row relative to
-        // the card. A square window is therefore the worst case by a wide margin — at aspect 1
-        // the four-button row takes 73% of the card against 41% at 16:9 — so the two shapes the
-        // editor is actually used in are asserted at the real floor, and the square one at a
-        // degradation floor. Treating aspect 1 as "the neutral case" here would have been wrong:
-        // it is the tightest case, not the typical one.
+        // the card. A window taller than it is wide is therefore the worst case by a wide
+        // margin, and it is the shape the previous diameter could not pay for: at 0.75 of the
+        // card height the four-button row filled the card at aspect 1.21 and left the card at
+        // 1.33; at 0.60 those limits move to 1.46 and 1.62 (ADR-0021).
         {
-            const int planned = 4;
-            float rowWidth = planned * VgsConstants.CardButtonDiameter
-                             + (planned - 1) * VgsConstants.CardButtonGap;
+            // Everything below is derived from the constants, so a change to the diameter, the
+            // gaps or the card's width moves the limits and the assertions with them.
+            int widest = PortGeometry.CardButtonCount(controller);
+            Check(widest == 4, "the controller's row is the widest one: four buttons");
+
+            float rowWidth = widest * VgsConstants.CardButtonDiameter
+                             + (widest - 1) * VgsConstants.CardButtonGap;
             float textLeft = VgsConstants.NodeWidth * PortGeometry.CardTextPaddingRatio;
+            float horizontalOverhead = VgsConstants.CardButtonMargin
+                                       + rowWidth
+                                       + VgsConstants.CardButtonTextGap;
 
-            float[] usableAspects = { 0.5625f, 0.75f };   // 16:9 and 4:3
-            for (int i = 0; i < usableAspects.Length; i++)
-            {
-                float a = usableAspects[i];
-                float textRight = VgsConstants.NodeWidth - VgsConstants.CardButtonMargin * a
-                                  - rowWidth * a - VgsConstants.CardButtonTextGap * a;
-                Check(textRight - textLeft > VgsConstants.NodeWidth * 0.3f,
-                      "a four-button row still leaves the name 30% of the card at aspect " + a);
-            }
+            // Aspect at which the row exactly fills the card: the name is gone but every button
+            // is still inside its card. Above this the leftmost button would leave the card.
+            float fillsCard = (VgsConstants.NodeWidth - textLeft) / horizontalOverhead;
+            // Aspect at which the name still keeps its 30% floor.
+            float keepsName = (VgsConstants.NodeWidth - textLeft - VgsConstants.NodeWidth * 0.3f)
+                              / horizontalOverhead;
 
-            // A square window is rare but legal; there the row is allowed to crowd the name, but
-            // not to erase it.
+            // The three shapes the editor is used in keep the name, and the fourth — a square
+            // window, which is legal but rare — keeps it too, exactly at the floor.
+            float[] nameAspects = { 0.5625f, 0.625f, 0.75f, 1f };   // 16:9, 16:10, 4:3, square
+            for (int i = 0; i < nameAspects.Length; i++)
             {
-                const float a = 1f;
-                float textRight = VgsConstants.NodeWidth - VgsConstants.CardButtonMargin * a
-                                  - rowWidth * a - VgsConstants.CardButtonTextGap * a;
-                Check(textRight - textLeft > VgsConstants.NodeWidth * 0.1f,
-                      "a four-button row still leaves some of the name in a square window");
-            }
-
-            // The row must also stay inside the card at every aspect the editor tolerates. This is
-            // a hard invariant and it holds today; it is the assertion that will fail first if a
-            // fourth button ever arrives without the row being re-budgeted, because the button
-            // extent — and therefore the row — grows with the aspect.
-            float[] toleratedAspects = { 0.5625f, 0.75f, 1f, 1.6f };
-            for (int i = 0; i < toleratedAspects.Length; i++)
-            {
-                float a = toleratedAspects[i];
+                float a = nameAspects[i];
                 Vector2 t, s;
-                Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.BindNo, a,
-                                                     out t, out s),
-                      "no button rectangle at aspect " + a);
-                Check(t.X + s.X <= controller.Position.X + VgsConstants.NodeWidth + 1e-5f,
-                      "the row stays inside the card at aspect " + a);
+                float spanLeft, spanRight;
+                Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.Jump, a, out t, out s),
+                      "jump button rectangle at aspect " + a);
                 Check(t.X >= controller.Position.X - 1e-5f,
-                      "the row does not leave the card on the left at aspect " + a);
+                      "the four-button row does not leave the card on the left at aspect " + a);
+                Check(PortGeometry.TryCardTextSpan(controller, a, out spanLeft, out spanRight),
+                      "the four-button row still leaves a name at aspect " + a);
+                Check(spanRight - spanLeft >= VgsConstants.NodeWidth * 0.3f - 1e-5f,
+                      "the four-button row leaves the name 30% of the card at aspect " + a);
+            }
+
+            // The limits themselves are part of the decision, so they are asserted rather than
+            // left as prose: a future change to the button size that quietly narrows them would
+            // otherwise only show up as a squeezed name in a window nobody tests in.
+            Check(fillsCard >= 1.45f,
+                  "a four-button row still fits inside the card up to aspect 1.45 (is " + fillsCard + ")");
+            Check(keepsName >= 0.95f,
+                  "a four-button row keeps the name up to aspect 0.95 (is " + keepsName + ")");
+
+            // Portrait windows are legal and the row must not fall out of the card there either:
+            // 1.6 is the shape the editor already tolerated with three buttons, and the reduced
+            // diameter is what keeps four buttons inside it.
+            {
+                const float a = 1.6f;
+                Vector2 leftTopLeft, leftSize, rightTopLeft, rightSize;
+                Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.Jump, a,
+                                                     out leftTopLeft, out leftSize),
+                      "jump button rectangle at aspect 1.6");
+                Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.BindNo, a,
+                                                     out rightTopLeft, out rightSize),
+                      "no button rectangle at aspect 1.6");
+
+                // The leftmost button is the one that would leave the card, so it is the one the
+                // assertion is about; the rightmost is checked too, because it is the row's anchor.
+                Check(leftTopLeft.X >= controller.Position.X - 1e-5f,
+                      "the four-button row does not leave the card on the left at aspect 1.6");
+                Check(rightTopLeft.X + rightSize.X
+                      <= controller.Position.X + VgsConstants.NodeWidth + 1e-5f,
+                      "the rightmost button is still inside the card at aspect 1.6");
+
+                // The name is gone at this shape — that is the documented cost, not an accident
+                // (ADR-0021 §Consequences): the card shows its four controls and no text.
+                float spanL, spanR;
+                Check(!PortGeometry.TryCardTextSpan(controller, a, out spanL, out spanR),
+                      "at aspect 1.6 the four-button card has no room left for a name");
             }
 
             // Buttons have to stay visibly separate without the gaps eating the row: a gap of at
@@ -1024,20 +1239,39 @@ internal static class OfflineChecks
               && hit == CardButtonKind.BindYes,
               "a click nearer the yes button reports the yes button");
 
-        // The watch button is the leftmost of the controller's row, and it is the point a watch
-        // line starts from — the port does not exist until a block is attached.
-        Vector2 watchCentre, controllerYes;
+        // The watch button follows the jump button in the controller's row, and it is the point a
+        // watch line starts from — the port does not exist until a block is attached.
+        Vector2 watchCentre, controllerYes, controllerJump;
         Check(PortGeometry.TryWatchButton(controller, aspect, out watchCentre),
               "the controller's watch button has a centre");
         Check(PortGeometry.HitCardButton(controller, watchCentre, aspect, out hit)
               && hit == CardButtonKind.Watch,
               "clicking the bell reports the watch button");
-        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.Watch) == 0,
-              "the watch button is the first (leftmost) of the row");
+        Check(PortGeometry.CardButtonIndex(controller, CardButtonKind.Watch) == 1,
+              "the watch button is the second of the row, right after the jump button");
         Check(PortGeometry.TryCardButton(controller, CardButtonKind.BindYes, aspect, out controllerYes),
               "the controller's yes button has a centre");
+        Check(PortGeometry.TryCardButton(controller, CardButtonKind.Jump, aspect, out controllerJump),
+              "the controller's jump button has a centre");
+        Check(controllerJump.X < watchCentre.X,
+              "the jump button is left of the bell, so the row reads jump → watch → yes → no");
         Check(watchCentre.X < controllerYes.X,
               "the watch button is left of the bind pair, so the row reads watch → yes → no");
+
+        // The jump button is the first control of every block card, so it is the leftmost — and it
+        // is the one button whose click does not start a mode (ADR-0021).
+        Vector2 jumpCentre;
+        Check(PortGeometry.TryCardButton(timer, CardButtonKind.Jump, aspect, out jumpCentre),
+              "the timer's jump button has a centre");
+        Check(PortGeometry.HitCardButton(timer, jumpCentre, aspect, out hit)
+              && hit == CardButtonKind.Jump,
+              "clicking the arrow reports the jump button");
+        Check(jumpCentre.X < timerCentre.X, "the jump button is left of the single bind button");
+        PortGroup jumpGroup;
+        Check(!PortGeometry.TryGroupOf(CardButtonKind.Jump, out jumpGroup),
+              "the jump button starts no bind group — it leaves the schema instead");
+        Check(!PortGeometry.TryGroupOf(CardButtonKind.Watch, out jumpGroup),
+              "the watch button starts no bind group either");
 
         // ---- aspect independence ----
 
@@ -2178,8 +2412,8 @@ internal static class OfflineChecks
         float below = controller.Position.Y + cardHeight - (anchorTopLeft.Y + anchorSize.Y);
         CheckClose(above, below, "the watch button is vertically centred on the card");
 
-        // It is on the right: the row is right-anchored, so the watch button — the leftmost of a
-        // three-button row — still sits well inside the card, past the start of the name. The
+        // It is on the right: the row is right-anchored, so the watch button — the second of a
+        // four-button row — still sits well inside the card, past the start of the name. The
         // old "#" was pinned to the left border instead, which is the placement this row ends.
         Check(anchorTopLeft.X > controller.Position.X + VgsConstants.NodeWidth * 0.3f,
               "the watch button sits inside the card's right-hand row, not on the left border");
@@ -2219,8 +2453,19 @@ internal static class OfflineChecks
               "a block that is not a controller has no watch button");
         Check(!PortGeometry.TryWatchButton(watched, aspect, out anchorCentre),
               "there is no watch button to start a watch line from");
+
+        // It does carry the jump button, though — every block does (ADR-0021) — so the only dead
+        // part of its card is the body, where the name is.
+        Check(PortGeometry.HasCardButton(watched, CardButtonKind.Jump),
+              "a plain block still has the jump button");
+        Vector2 watchedJump;
+        Check(PortGeometry.TryCardButton(watched, CardButtonKind.Jump, aspect, out watchedJump),
+              "the plain block's jump button has a centre");
+        Check(PortGeometry.HitCardButton(watched, watchedJump, aspect, out hitKind)
+              && hitKind == CardButtonKind.Jump,
+              "the plain block's jump button is clickable");
         Check(!PortGeometry.HitCardButton(watched, watched.Position, aspect, out hitKind),
-              "nothing is clickable on a card without buttons");
+              "the body of a card is not a button");
 
         // ...and its card keeps the plain height: only a controller grows by the extra line.
         CheckClose(PortGeometry.CardHeight(watched), VgsConstants.NodeHeight,

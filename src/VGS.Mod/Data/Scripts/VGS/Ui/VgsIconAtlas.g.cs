@@ -25,6 +25,8 @@ namespace Vgs.Ui
         LightbulbSolid = 4,
         /// <summary>lightbulb (Regular): the bind button of the "false" group</summary>
         LightbulbRegular = 5,
+        /// <summary>share-from-square (Regular): the jump-to-terminal button of a block card</summary>
+        ShareFromSquare = 6,
     }
 
     /// <summary>
@@ -49,7 +51,7 @@ namespace Vgs.Ui
         public const int TextureSize = 256;
 
         /// <summary>Number of icons the build produced.</summary>
-        public const int Count = 6;
+        public const int Count = 7;
 
         /// <summary>
         /// SubtypeName of <paramref name="icon"/> in Data\GuiTextures.sbc, and therefore the
@@ -66,6 +68,7 @@ namespace Vgs.Ui
                 case VgsIcon.Bell: return "VGS_Bell";
                 case VgsIcon.LightbulbSolid: return "VGS_LightbulbSolid";
                 case VgsIcon.LightbulbRegular: return "VGS_LightbulbRegular";
+                case VgsIcon.ShareFromSquare: return "VGS_ShareFromSquare";
                 default: return "";
             }
         }
@@ -103,6 +106,7 @@ namespace Vgs.Ui
                 case VgsIcon.Bell: return 1.066667f;
                 case VgsIcon.LightbulbSolid: return 1.066667f;
                 case VgsIcon.LightbulbRegular: return 1.066667f;
+                case VgsIcon.ShareFromSquare: return 1.11672f;
                 default: return 1f;
             }
         }

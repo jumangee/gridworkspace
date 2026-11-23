@@ -32,6 +32,10 @@
         <SubtypeName>VGS_LightbulbRegular</SubtypeName>
         <Path>Textures\VGS\Icons\LightbulbRegular.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_ShareFromSquare</SubtypeName>
+        <Path>Textures\VGS\Icons\ShareFromSquare.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>
