@@ -18,3 +18,4 @@ Bell            bell-regular.svg          bell (Regular): the watch-list button 
 LightbulbSolid  lightbulb-solid.svg       lightbulb (Solid): the bind button of the "true" group
 LightbulbRegular lightbulb-regular.svg    lightbulb (Regular): the bind button of the "false" group
 ShareFromSquare share-from-square-regular.svg share-from-square (Regular): the jump-to-terminal button of a block card
+Sliders         sliders-solid.svg          sliders (Solid): the modes button of the bottom bar

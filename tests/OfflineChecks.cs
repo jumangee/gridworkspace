@@ -193,6 +193,15 @@ internal static class OfflineChecks
         Console.WriteLine("=== icon placement and clipping (ADR-0019) ===");
         IconPlacementChecks();
 
+        Console.WriteLine("=== view state format (ADR-0022) ===");
+        ViewStateFormat();
+
+        Console.WriteLine("=== block search rule (ADR-0023) ===");
+        BlockSearchRule();
+
+        Console.WriteLine("=== text field editing (ADR-0024) ===");
+        TextFieldEditing();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -3082,5 +3091,361 @@ internal static class OfflineChecks
               "a layout Y becomes a window pixel");
         Check(canvasPixels.Width > 0 && canvasPixels.Height > 0,
               "a non-empty layout rectangle becomes a non-empty pixel rectangle");
+    }
+
+    // ------------------------------------------------------------------ view state (ADR-0022)
+    //
+    // The camera, the zoom and the "show invisible" toggle are written on the grid and read back
+    // on the next open. The round trip is the part that can silently open the schema at the wrong
+    // place, and it is the only part that can be exercised without the game.
+    private static void ViewStateFormat()
+    {
+        var camera = new Vector2(-0.26f, 1.75f);
+
+        string text = GridViewFormat.Format(camera, 1.37f, true);
+
+        Vector2 parsedCamera;
+        float parsedZoom;
+        bool parsedHidden;
+
+        Check(GridViewFormat.TryParse(text, out parsedCamera, out parsedZoom, out parsedHidden),
+              "a formatted view state parses back");
+        CheckClose(parsedCamera.X, camera.X, "the camera X of a round trip is unchanged");
+        CheckClose(parsedCamera.Y, camera.Y, "the camera Y of a round trip is unchanged");
+        CheckClose(parsedZoom, 1.37f, "the zoom of a round trip is unchanged");
+        Check(parsedHidden, "the show-invisible flag of a round trip is unchanged");
+
+        // The same round trip with the flag off, so a formatter that always wrote "1" would be
+        // caught: the check above alone cannot tell "wrote 1" from "always reads 1".
+        string off = GridViewFormat.Format(camera, 1f, false);
+        Check(GridViewFormat.TryParse(off, out parsedCamera, out parsedZoom, out parsedHidden),
+              "a view state with the flag off parses back");
+        Check(!parsedHidden, "the show-invisible flag reads back as off");
+
+        // Invariant culture: on a locale with a decimal comma the format would otherwise contain
+        // commas, and the value would be unreadable on the next open.
+        Check(text.IndexOf(',') < 0,
+              "the view format uses no comma, so a decimal comma locale cannot corrupt it");
+        Check(text.Split(' ').Length == GridViewFormat.FieldCount,
+              "the view format writes exactly four space-separated fields");
+
+        // ---- a three-field value from an older build keeps the camera ----
+        //
+        // Forward compatibility by field count rather than by a format version: a world saved
+        // before the toggle existed must keep its camera, and get the flag's default.
+        Check(GridViewFormat.TryParse("0.5 -0.25 2", out parsedCamera, out parsedZoom, out parsedHidden),
+              "a three-field value from an older build still parses");
+        CheckClose(parsedCamera.X, 0.5f, "an older value keeps its camera X");
+        CheckClose(parsedZoom, 2f, "an older value keeps its zoom");
+        Check(!parsedHidden, "an older value defaults the toggle to off");
+
+        // ---- rejections ----
+        //
+        // Each of these must fall back to the default view rather than producing a garbage camera.
+        Check(!GridViewFormat.TryParse(null, out parsedCamera, out parsedZoom, out parsedHidden),
+              "null is not a view state");
+        Check(!GridViewFormat.TryParse("", out parsedCamera, out parsedZoom, out parsedHidden),
+              "an empty string is not a view state");
+        Check(!GridViewFormat.TryParse("0.5 0.5", out parsedCamera, out parsedZoom, out parsedHidden),
+              "two fields are not a view state: there is no zoom");
+        Check(!GridViewFormat.TryParse("0.5 0.5 1 1 1", out parsedCamera, out parsedZoom, out parsedHidden),
+              "five fields are not a view state");
+        Check(!GridViewFormat.TryParse("0.5  0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "an empty field is not a view state");
+        Check(!GridViewFormat.TryParse("a b c d", out parsedCamera, out parsedZoom, out parsedHidden),
+              "non-numeric fields are not a view state");
+        Check(!GridViewFormat.TryParse("0,5 0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "a decimal comma is not our format");
+        Check(!GridViewFormat.TryParse("NaN 0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "NaN is not a view state");
+        Check(!GridViewFormat.TryParse("0.5 Infinity 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "infinity is not a view state");
+
+        // A zoom of zero or less is refused rather than clamped here: the clamp belongs to the
+        // editor's own zoom limits, and a stored zero would divide by zero in ScreenToGraph.
+        Check(!GridViewFormat.TryParse("0.5 0.5 0 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "a zero zoom is not a view state");
+        Check(!GridViewFormat.TryParse("0.5 0.5 -1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+              "a negative zoom is not a view state");
+
+        // A rejected parse must not leak a half-built camera: the caller writes the out parameters
+        // straight into the screen when it succeeds.
+        Vector2 rejectedCamera = new Vector2(7f, 7f);
+        float rejectedZoom = 7f;
+        bool rejectedHidden = true;
+        Check(!GridViewFormat.TryParse("bogus", out rejectedCamera, out rejectedZoom, out rejectedHidden),
+              "a bogus view state is rejected");
+        Check(rejectedCamera == Vector2.Zero, "a rejected parse leaves the camera at zero");
+        Check(rejectedZoom == 0f, "a rejected parse leaves the zoom at zero");
+        Check(!rejectedHidden, "a rejected parse leaves the toggle off");
+    }
+
+    // ------------------------------------------------------------------ block search (ADR-0023)
+    //
+    // The rule is the game's terminal filter: every space-separated term must be a substring of
+    // the block's name or of its type, case-insensitively. A second, subtly different rule would
+    // teach the player two behaviours for one gesture.
+    private static void BlockSearchRule()
+    {
+        var terms = new List<string>();
+
+        // ---- an empty query matches everything ----
+        BlockSearch.SplitTerms("", terms);
+        Check(terms.Count == 0, "an empty query has no terms");
+        Check(BlockSearch.Matches(terms, "Timer", "Timer Block"),
+              "an empty query matches every block");
+        BlockSearch.SplitTerms("   ", terms);
+        Check(terms.Count == 0, "a query of spaces has no terms either");
+        Check(BlockSearch.Matches(terms, "Timer", "Timer Block"),
+              "a query of spaces matches every block");
+        BlockSearch.SplitTerms(null, terms);
+        Check(terms.Count == 0, "a null query has no terms and does not crash");
+
+        // ---- one term, substring, either field ----
+        BlockSearch.SplitTerms("tim", terms);
+        Check(terms.Count == 1 && terms[0] == "tim", "a query is split into its terms");
+        Check(BlockSearch.Matches(terms, "Timer 1", "Timer Block"),
+              "a term matches the block's name");
+        Check(BlockSearch.Matches(terms, "Startup", "Timer Block"),
+              "a term matches the block's displayed type");
+        Check(!BlockSearch.Matches(terms, "Sensor", "Sensor Block"),
+              "a term that is in neither field does not match");
+
+        // Case-insensitivity is the game's behaviour and must survive the split. Terms are stored
+        // as typed, so this also pins that the comparison, not the storage, folds case.
+        BlockSearch.SplitTerms("TIMER", terms);
+        Check(terms.Count == 1 && terms[0] == "TIMER",
+              "terms are stored as typed, so case is folded once, at comparison");
+        Check(BlockSearch.Matches(terms, "my timer", "Timer Block"),
+              "matching is case-insensitive");
+
+        // The displayed type is what the terminal searches — not the engine subtype. A query in
+        // the player's language must match the type even when the subtype shares no characters
+        // with it, which is the whole reason Node carries TypeDisplayName (ADR-0023).
+        // The name deliberately contains none of the query, so only the type field can match.
+        BlockSearch.SplitTerms("таймер", terms);
+        Check(BlockSearch.Matches(terms, "Блок 1", "Таймер"),
+              "a query in the player's language matches the localized type");
+        Check(!BlockSearch.Matches(terms, "Блок 1", "LargeBlockTimer"),
+              "the engine subtype is not what a localized query is matched against");
+
+        // ---- several terms are ANDed, not ORed ----
+        //
+        // This is the half of the rule that is easy to get wrong: the game hides a block unless
+        // *every* term is found. An OR would leave a block visible on a term it does not contain.
+        BlockSearch.SplitTerms("timer block", terms);
+        Check(terms.Count == 2, "a query with a space has two terms");
+        Check(BlockSearch.Matches(terms, "Timer 1", "Timer Block"),
+              "every term may match a different field");
+        Check(!BlockSearch.Matches(terms, "Timer 1", "Small Timer"),
+              "one unmatched term is enough to reject the block");
+
+        // ---- a block with no name at all ----
+        //
+        // A block whose name could not be read falls back to its subtype, and the search must not
+        // throw on a null name.
+        BlockSearch.SplitTerms("timer", terms);
+        Check(BlockSearch.Matches(terms, null, "Timer Block"),
+              "a null name is searched by type alone");
+        Check(!BlockSearch.Matches(terms, null, null),
+              "a block with neither name nor type matches nothing");
+
+        // ---- spaces collapse ----
+        //
+        // The game splits on every space, and an empty term is a substring of everything, so a
+        // double space must not reject every block.
+        BlockSearch.SplitTerms("  timer  ", terms);
+        Check(terms.Count == 1 && terms[0] == "timer",
+              "runs of spaces produce no empty terms");
+        Check(BlockSearch.Matches(terms, "Timer 1", "Timer Block"),
+              "a query with extra spaces still matches");
+    }
+
+    // ------------------------------------------------------------------ text field (ADR-0024)
+    //
+    // Caret and selection are the part of the search field that can be wrong in ways nobody sees
+    // until it corrupts what the player typed: an insertion at the wrong index, a selection whose
+    // ends crossed, a backspace that eats the character after the caret. All of it is pure data,
+    // so all of it is asserted here.
+    private static void TextFieldEditing()
+    {
+        // ---- insertion and the caret ----
+        var editor = new TextEditor(10);
+        Check(editor.Text == string.Empty && editor.Caret == 0 && !editor.HasSelection,
+              "a fresh editor is empty with the caret at the start");
+
+        editor.Insert('a');
+        editor.Insert('b');
+        editor.Insert('c');
+        Check(editor.Text == "abc", "characters are inserted in order");
+        Check(editor.Caret == 3, "the caret follows the insertion");
+
+        // Inserting in the middle is the case a naive "append" gets wrong.
+        editor.MoveTo(1, false);
+        editor.Insert('X');
+        Check(editor.Text == "aXbc", "a character is inserted at the caret, not at the end");
+        Check(editor.Caret == 2, "the caret moves past what was inserted");
+
+        // ---- the length limit ----
+        var limited = new TextEditor(3);
+        limited.Insert("abcdef");
+        Check(limited.Text == "abc", "inserting past the limit is cut to the room left");
+        Check(limited.Caret == 3, "the caret stops at the limit");
+        Check(!limited.Insert('z'), "an insert with no room reports that nothing changed");
+
+        // A selection frees room even at the limit: replacing three characters with three works.
+        limited.SelectAll();
+        Check(limited.Insert("xy"), "replacing a selection at the limit is allowed");
+        Check(limited.Text == "xy", "the selection is replaced, not appended");
+
+        // ---- backspace and delete ----
+        var edit2 = new TextEditor(10);
+        edit2.Insert("abcd");
+
+        edit2.MoveTo(2, false);
+        Check(edit2.DeleteBackward(), "backspace removes a character");
+        Check(edit2.Text == "acd", "backspace removes the character BEFORE the caret");
+        Check(edit2.Caret == 1, "the caret moves back with the deletion");
+
+        Check(edit2.DeleteForward(), "delete removes a character");
+        Check(edit2.Text == "ad", "delete removes the character AFTER the caret");
+        Check(edit2.Caret == 1, "the caret stays put on a forward delete");
+
+        edit2.MoveTo(0, false);
+        Check(!edit2.DeleteBackward(), "backspace at the start does nothing");
+        edit2.MoveTo(edit2.Length, false);
+        Check(!edit2.DeleteForward(), "delete at the end does nothing");
+
+        // ---- selection: anchor and caret, both directions ----
+        var sel = new TextEditor(10);
+        sel.Insert("hello");
+
+        sel.MoveTo(1, false);
+        sel.MoveTo(4, true);
+        Check(sel.HasSelection, "moving with extend selects");
+        Check(sel.SelectionStart == 1 && sel.SelectionEnd == 4,
+              "a forward selection reports its ends in order");
+        Check(sel.SelectedText == "ell", "the selected text is the span between the ends");
+
+        // A backward selection is the case that a "start + length" model gets wrong: the caret
+        // ends up BEFORE the anchor, and the span must still be reported low-to-high.
+        var back = new TextEditor(10);
+        back.Insert("hello");
+        back.MoveTo(4, false);
+        back.MoveTo(1, true);
+        Check(back.Caret == 1 && back.Anchor == 4,
+              "the caret is the moving end and the anchor the fixed one");
+        Check(back.SelectionStart == 1 && back.SelectionEnd == 4,
+              "a backward selection still reports start before end");
+        Check(back.SelectedText == "ell",
+              "a backward selection selects the same span as the forward one");
+
+        // Without extend, a held selection collapses to the edge the caret moves towards.
+        sel.MoveHorizontal(1, false);
+        Check(!sel.HasSelection, "an unshifted arrow collapses the selection");
+        Check(sel.Caret == 4, "the caret lands on the edge it moved towards");
+
+        // With extend it grows instead: from a collapsed caret at 4, shift+left selects 3..4.
+        sel.MoveHorizontal(-1, true);
+        Check(sel.HasSelection, "shift+arrow extends the selection");
+        Check(sel.Caret == 3 && sel.Anchor == 4, "shift+left moves only the caret");
+
+        // Typing over a selection replaces it — the whole point of selecting.
+        sel.SelectAll();
+        sel.Insert("bye");
+        Check(sel.Text == "bye", "typing over a selection replaces it");
+        Check(!sel.HasSelection, "the selection is consumed by the replacement");
+
+        // ---- deleting a selection ----
+        var del = new TextEditor(10);
+        del.Insert("abcdef");
+        del.MoveTo(1, false);
+        del.MoveTo(4, true);
+        Check(del.DeleteBackward(), "backspace deletes a selection");
+        Check(del.Text == "aef", "the whole selection is removed, not one character");
+        Check(del.Caret == 1, "the caret sits where the selection started");
+
+        // ---- a rejected edit leaves the text untouched ----
+        //
+        // The caller uses the false return to decide whether anything changed; if a refused edit
+        // had already mutated the text, the field would drift on a keystroke that "did nothing".
+        var refused = new TextEditor(3);
+        refused.Insert("abc");
+        string beforeRefusal = refused.Text;
+        int caretBeforeRefusal = refused.Caret;
+        Check(!refused.Insert('z'), "an insert at the limit is refused");
+        Check(refused.Text == beforeRefusal, "a refused insert leaves the text unchanged");
+        Check(refused.Caret == caretBeforeRefusal, "a refused insert leaves the caret unchanged");
+
+        refused.MoveTo(0, false);
+        Check(!refused.DeleteBackward(), "a refused delete reports false");
+        Check(refused.Text == beforeRefusal, "a refused delete leaves the text unchanged");
+
+        // ---- collapsing a selection going LEFT ----
+        //
+        // The right-hand case is asserted above; the left one is a different branch of the same
+        // rule and the one a naive `caret ± 1` gets wrong.
+        var left = new TextEditor(10);
+        left.Insert("abcdef");
+        left.MoveTo(1, false);
+        left.MoveTo(4, true);
+        left.MoveHorizontal(-1, false);
+        Check(!left.HasSelection, "an unshifted left arrow collapses the selection too");
+        Check(left.Caret == 1, "collapsing left lands on the selection's start");
+
+        // ---- a paste longer than the room left, with a selection ----
+        //
+        // The room is computed from the text *without* the selection, so replacing frees exactly
+        // the selection's length. "abcde" minus "bcd" leaves "ae" (2 chars) in a 5-char field, so
+        // 3 characters fit and the paste is cut to "XYZ" — the ends must survive intact.
+        var tight = new TextEditor(5);
+        tight.Insert("abcde");
+        tight.MoveTo(1, false);
+        tight.MoveTo(4, true);
+        tight.Insert("XYZWVU");
+        Check(tight.Text == "aXYZe", "a paste is cut to the room the selection freed");
+        Check(tight.Caret == 4, "the caret lands right after the pasted text");
+
+        // ---- clamping ----
+        var clamp = new TextEditor(10);
+        clamp.Insert("ab");
+        clamp.MoveTo(-5, false);
+        Check(clamp.Caret == 0, "a caret index before the text is clamped to the start");
+        clamp.MoveTo(99, false);
+        Check(clamp.Caret == 2, "a caret index past the text is clamped to the end");
+
+        // ---- multi-character insert (a paste) ----
+        //
+        // The limit is deliberately larger than the strings so this checks placement, not
+        // truncation: truncation has its own checks above.
+        var paste = new TextEditor(32);
+        paste.Insert("abc");
+        paste.MoveTo(1, false);
+        paste.Insert("-pasted-");
+        Check(paste.Text == "a-pasted-bc", "a paste inserts at the caret, not at the end");
+        Check(paste.Caret == 9, "the caret lands after the pasted text");
+
+        // A paste over a selection replaces it, like typing does.
+        paste.SelectAll();
+        paste.Insert("z");
+        Check(paste.Text == "z", "a paste over a selection replaces it");
+
+        // ---- SelectAll ----
+        var all = new TextEditor(10);
+        all.Insert("xyz");
+        all.SelectAll();
+        Check(all.SelectionStart == 0 && all.SelectionEnd == 3,
+              "select-all covers the whole text");
+        Check(all.SelectedText == "xyz", "select-all selects everything, in order");
+
+        // ---- SetText and Clear ----
+        var set = new TextEditor(5);
+        set.SetText("abcdefg");
+        Check(set.Text == "abcde", "SetText respects the limit");
+        Check(set.Caret == 5, "SetText parks the caret at the end");
+        set.Clear();
+        Check(set.Text == string.Empty && set.Caret == 0, "Clear empties the field");
+        set.SetText(null);
+        Check(set.Text == string.Empty, "SetText(null) is an empty field, not a crash");
     }
 }

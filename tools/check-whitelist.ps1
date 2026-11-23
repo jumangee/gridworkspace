@@ -144,9 +144,18 @@ foreach ($m in $checker.GetMethods($checkerFlags)) {
     $pending = [System.Collections.Generic.List[object]]::new()
 
     # The MyWhitelistTarget is the integer pushed *before* the array length, i.e. two integer
-    # constants back from `newarr`. Tracking "the last ldc.i4 seen" is wrong: the array length
-    # and the element indices are ldc.i4 too, and reading one of those as the target silently
-    # drops whole namespaces from the mod set (VRageMath among them).
+    # constants back from `newarr`.
+    #
+    # KNOWN LIMITATION, and the reason -SelfTest exists. This heuristic is only correct when the
+    # array is built with `newarr` and filled with `stelem`. When it comes from
+    # `Assembly.GetTypes().Where(...).ToArray()` there is no `newarr` at all, so the previous
+    # call's target is reused and entries registered for one target can be recorded for another.
+    # That is how `VRage.IVRageSystem` passed this gate and then failed in the game with
+    # "The type or member 'IVRageSystem' is prohibited" — the gate said WHITELIST OK and the mod
+    # did not load. A target read from "the first ldc.i4 after ldarg.0" was tried and is wrong in
+    # the other direction: it drops entries the game does allow (Vector2, MyModScreen). Rather than
+    # guess at the IL shape, the gate now carries a self-check against cases whose verdict is known
+    # from the game itself, and refuses to report OK when it disagrees with them.
     $prevInt = -1
     $lastInt = -1
     $currentTarget = -1
@@ -255,6 +264,25 @@ function Invoke-SelfTest {
            Why = 'Sandbox.Graphics is absent from the whitelist entirely' }
         @{ Name = 'VRage.Game.ModAPI.Ingame.IMyCubeBlock'; Asm = 'VRage.Game'; Want = $true
            Why = 'VRage.Game.ModAPI.Ingame is allowed on its own' }
+
+        # Verdicts taken from the game itself, not from reasoning. On 2026-11-23 the game refused
+        # to load the mod with "The type or member 'IVRageSystem' is prohibited" for these four
+        # types while this gate reported WHITELIST OK for the same build. That is the whole reason
+        # this self-test has to cover the clipboard route: a namespace-level allow is evidently not
+        # the same thing as a type-level allow for the root `VRage` namespace, and a gate that
+        # cannot tell the two apart is worse than no gate, because it is trusted.
+        @{ Name = 'VRage.IVRageSystem'; Asm = 'VRage'; Want = $false
+           Why = 'rejected by the game on 2026-11-23: "The type or member IVRageSystem is prohibited"' }
+        @{ Name = 'VRage.IVRagePlatform'; Asm = 'VRage'; Want = $false
+           Why = 'rejected by the game on 2026-11-23, same build' }
+        @{ Name = 'VRage.MyVRage'; Asm = 'VRage'; Want = $false
+           Why = 'rejected by the game on 2026-11-23, same build' }
+        @{ Name = 'VRage.MyTexts'; Asm = 'VRage'; Want = $true
+           Why = 'a root-VRage type that IS listed by name, so the strict rule must not break it' }
+        @{ Name = 'VRageMath.Vector2'; Asm = 'VRage.Math'; Want = $true
+           Why = 'used by every drawing path in this mod and demonstrably loads' }
+        @{ Name = 'Sandbox.ModAPI.MyModScreen'; Asm = 'Sandbox.Common'; Want = $true
+           Why = 'the only usable screen base; the editor loads and draws with it' }
     )
 
     $failed = 0
@@ -344,7 +372,23 @@ function Test-AllowedTypeName([string] $AssemblyName, [string] $FullName) {
     foreach ($candidate in (Get-WhitelistCandidates $FullName)) {
         if ($AllowedTypes.Contains($candidate)) { return $true }
         $ns = Get-NamespaceOf $candidate
-        if ($ns -and $AllowedNamespaces.Contains($ns)) { return $true }
+        if (-not $ns) { continue }
+
+        # The root `VRage` namespace is listed, but it does NOT admit every type directly in it.
+        # Proven by the game, not reasoned: on 2026-11-23 it refused to load the mod with
+        # "The type or member 'IVRageSystem' is prohibited" for VRage.IVRageSystem,
+        # VRage.IVRagePlatform and VRage.MyVRage, on a build this gate had passed. The types that
+        # DO work there (VRage.MyTexts, VRage.MyTuple, VRage.MyLanguagesEnum, ...) are each listed
+        # by name in the types set, which is exactly the shape of a namespace entry that does not
+        # grant membership. Sub-namespaces are different and are granted as namespaces: VRage.Utils
+        # and VRage.Utils.MyLog (this mod's logging) demonstrably load.
+        #
+        # So a type whose namespace is exactly `VRage` must be listed by name. Erring towards
+        # rejection here costs a false alarm on a type that would have worked; erring the other way
+        # costs a mod that does not load at all, which is what happened.
+        if ($ns -eq 'VRage') { continue }
+
+        if ($AllowedNamespaces.Contains($ns)) { return $true }
     }
     return $false
 }

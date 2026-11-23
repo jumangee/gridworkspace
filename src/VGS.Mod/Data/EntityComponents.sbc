@@ -15,9 +15,14 @@
   invisible until the player reloads the world — the layout and the "Show in VGS" flags would
   simply be gone. Deleting this file therefore looks harmless and destroys player data.
 
-  The keys must match VgsConstants.LayoutStorageKey, VgsConstants.VisibilityStorageKey and
-  VgsConstants.WatchStorageKey. They are fixed forever: changing one loses that piece of state
-  in every existing world.
+  The keys must match VgsConstants.LayoutStorageKey, VgsConstants.VisibilityStorageKey,
+  VgsConstants.WatchStorageKey and VgsConstants.ViewStorageKey. They are fixed forever: changing
+  one loses that piece of state in every existing world.
+
+  The first three are written on blocks; the fourth is written on the grid itself (ADR-0022) —
+  the camera and the zoom describe how the construct is being looked at, so they are shared by
+  every cockpit of that grid. The mechanism is the same: an entity's MyModStorageComponent is
+  serialised with the entity, and only registered keys survive.
 
   The SubtypeId is the mod's name, so two mods claiming the same GUID produce a
   "Duplicate ModStorageComponent GUID" warning in the log instead of silently overwriting
@@ -33,6 +38,7 @@
                 <guid>0d3c1b7a-6a51-4c39-9d2e-7f8a1c4b5e60</guid>
                 <guid>b1e4a2c8-77d3-4a0f-8c61-2f9e5b0d3a47</guid>
                 <guid>4a7d2e19-8c63-4b0f-a51d-6e9f3c2b8d74</guid>
+                <guid>7c4b9e21-5f8d-4a63-b0e7-3d19c8a6f240</guid>
             </RegisteredStorageGuids>
         </EntityComponent>
     </EntityComponents>

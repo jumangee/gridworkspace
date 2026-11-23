@@ -56,8 +56,13 @@ namespace Vgs.Game
         /// <summary>
         /// Creates a graph for the given grid, or an empty graph when the grid is
         /// unavailable. The caller owns the result.
+        ///
+        /// <paramref name="includeHidden"/> is the editor's "show invisible" mode (ADR-0023):
+        /// when it is on, a block whose "Show in VGS" flag is off is part of the graph as well.
+        /// The flag is not touched — the mode only decides what the schema draws, so turning it
+        /// back off hides those cards again and nothing in the world has changed.
         /// </summary>
-        public static GridGraph Build(IMyCubeGrid grid)
+        public static GridGraph Build(IMyCubeGrid grid, bool includeHidden)
         {
             long gridId = 0;
             if (grid != null)
@@ -69,7 +74,7 @@ namespace Vgs.Game
             var graph = new GridGraph(gridId);
             if (grid == null) return graph;
 
-            Refresh(graph, grid);
+            Refresh(graph, grid, includeHidden);
             return graph;
         }
 
@@ -79,7 +84,7 @@ namespace Vgs.Game
         /// blocks' toolbars. Positions and edges of surviving nodes are preserved, which is
         /// what makes the editor feel stable while the ship is being edited.
         /// </summary>
-        public static void Refresh(GridGraph graph, IMyCubeGrid grid)
+        public static void Refresh(GridGraph graph, IMyCubeGrid grid, bool includeHidden)
         {
             if (graph == null || grid == null) return;
 
@@ -107,11 +112,12 @@ namespace Vgs.Game
                     if (terminal == null) continue;
 
                     // A block the player turned off in the terminal is not part of the schema
-                    // (ADR-0013). It is deliberately not added to `live`: an existing node for
-                    // it is then dropped by the removal pass below, which also drops its edges.
-                    // Nothing is written to the block's toolbar, so the wiring keeps working in
-                    // the game and comes back the moment the block is shown again.
-                    if (!NodeStateStore.IsShown(terminal)) continue;
+                    // (ADR-0013), unless the "show invisible" mode is on (ADR-0023). It is
+                    // deliberately not added to `live`: an existing node for it is then dropped
+                    // by the removal pass below, which also drops its edges. Nothing is written
+                    // to the block's toolbar, so the wiring keeps working in the game and comes
+                    // back the moment the block is shown again.
+                    if (!includeHidden && !NodeStateStore.IsShown(terminal)) continue;
 
                     live.Add(terminal.EntityId);
 
@@ -179,6 +185,10 @@ namespace Vgs.Game
             BlockPortCatalog.FillActions(node, actions);
             BlockPortCatalog.FillEvents(node);
 
+            // The localized type name, for the search field (ADR-0023). Read here, with
+            // everything else the node needs from the world, so no draw path ever touches it.
+            node.TypeDisplayName = SafeTypeDisplayName(block);
+
             // A controller's mode description and watch list are read here, once, together with
             // everything else the node needs from the world (ADR-0017).
             RefreshControllerState(node, block);
@@ -193,6 +203,11 @@ namespace Vgs.Game
         private static void UpdateNode(Node node, IMyTerminalBlock block)
         {
             node.DisplayName = SafeName(block);
+
+            // The type line is refreshed with the name: the player can rename a block at any
+            // time, and the localized type can change with the game's language. The editor's
+            // search reads it (ADR-0023), so it has to follow the world like the name does.
+            node.TypeDisplayName = SafeTypeDisplayName(block);
 
             // Only rebuild ports when the action set actually changed; rebuilding every
             // refresh would drop the user's port-level selections and churn allocations.
@@ -426,7 +441,7 @@ namespace Vgs.Game
                 try { name = group.Name; }
                 catch (Exception e)
                 {
-                    VgsLog.Throttled("read-group", "could not read a block group name", e, 600);
+                    VgsLog.Throttled("read-group.name", "could not read a block group name", e, 600);
                     continue;
                 }
                 if (string.IsNullOrEmpty(name)) continue;
@@ -446,7 +461,7 @@ namespace Vgs.Game
                 IMyBlockGroup group = groups[g];
                 if (group == null) continue;
                 try { undetermined.Add(group.Name); }
-                catch (Exception e) { VgsLog.Throttled("read-group", "could not read a block group name", e, 600); }
+                catch (Exception e) { VgsLog.Throttled("read-group.limit", "could not read a block group name past the scan limit", e, 600); }
             }
 
             if (groups.Count > count)
@@ -509,7 +524,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("read-group", "could not read a block group", e, 600);
+                VgsLog.Throttled("read-group.grid", "could not read a block group", e, 600);
                 return GroupOutcome.Undetermined;
             }
 
@@ -614,7 +629,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("getactions", "GetActions failed for a group member", e, 300);
+                VgsLog.Throttled("getactions.member", "GetActions failed for a group member", e, 300);
             }
         }
 
@@ -785,7 +800,7 @@ namespace Vgs.Game
                 // A block whose action list cannot be read still belongs on the canvas: the
                 // node keeps its subtype, so the user can see it and place it even though it
                 // offers no inputs.
-                VgsLog.Throttled("getactions", "GetActions failed", e, 300);
+                VgsLog.Throttled("getactions.block", "GetActions failed", e, 300);
                 return false;
             }
         }
@@ -818,6 +833,35 @@ namespace Vgs.Game
             {
                 // Falls through to the subtype, which is always available.
                 VgsLog.Throttled("name", "could not read block name", e, 300);
+            }
+            return SafeSubtype(block);
+        }
+
+        /// <summary>
+        /// The block's type as the player sees it — the localized definition name, which is what
+        /// the terminal's block list shows and searches (ADR-0023).
+        ///
+        /// <b>Why not <see cref="SafeSubtype"/>.</b> The subtype is the engine id
+        /// ("LargeBlockTimer"): a player never types it, and it is the same string in every
+        /// language. The terminal searches the *display* name, so the editor has to as well, or
+        /// the two searches disagree on exactly the queries a player is most likely to type —
+        /// "timer", "таймер".
+        ///
+        /// Falls back to the subtype when the game cannot answer: a block that is still loading
+        /// its definition, or one whose definition was removed with a mod. An empty string would
+        /// silently remove the type from the search, which is a worse failure than searching the
+        /// engine id.
+        /// </summary>
+        private static string SafeTypeDisplayName(IMyTerminalBlock block)
+        {
+            try
+            {
+                string name = block.DefinitionDisplayNameText;
+                if (!string.IsNullOrEmpty(name)) return name;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("typedefname", "could not read block type name", e, 300);
             }
             return SafeSubtype(block);
         }

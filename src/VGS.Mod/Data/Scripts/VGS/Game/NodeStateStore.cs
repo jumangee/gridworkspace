@@ -121,7 +121,7 @@ namespace Vgs.Game
                 var block = MyAPIGateway.Entities.GetEntityById(node.EntityId) as IMyTerminalBlock;
                 if (block == null)
                 {
-                    VgsLog.Throttled("nodestate", "block gone, position not saved", 300);
+                    VgsLog.Throttled("nodestate.gone", "block gone, position not saved", 300);
                     return false;
                 }
 
@@ -130,7 +130,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("nodestate", "could not save node position", e, 300);
+                VgsLog.Throttled("nodestate.position", "could not save node position", e, 300);
                 return false;
             }
         }
@@ -173,7 +173,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("nodestate", "could not save watch list", e, 300);
+                VgsLog.Throttled("nodestate.watch", "could not save watch list", e, 300);
                 return false;
             }
         }
@@ -197,7 +197,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("nodestate", "could not read block storage", e, 300);
+                VgsLog.Throttled("nodestate.storage", "could not read block storage", e, 300);
                 return false;
             }
         }
@@ -223,7 +223,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("nodestate", "could not read block state", e, 300);
+                VgsLog.Throttled("nodestate.read", "could not read block state", e, 300);
                 return false;
             }
         }
@@ -256,7 +256,7 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                VgsLog.Throttled("nodestate", "could not write block state", e, 300);
+                VgsLog.Throttled("nodestate.write", "could not write block state", e, 300);
                 return false;
             }
         }

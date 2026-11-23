@@ -104,6 +104,18 @@ namespace Vgs.Ui
             get { return _clientAspect; }
         }
 
+        /// <summary>
+        /// Client-area width in pixels; 0 before <see cref="SyncScreenSpace"/> has run.
+        ///
+        /// Exposed for callers that cache a measurement across frames (the header's title width,
+        /// for instance): it is the only input to a measured width that can change without the
+        /// font changing, so it is what such a cache has to be keyed by.
+        /// </summary>
+        public static float ClientWidth
+        {
+            get { return _clientWidthPixels; }
+        }
+
         /// <summary>True once <see cref="EnsureResources"/> found a usable font and brush.</summary>
         public static bool ResourcesReady
         {
@@ -369,6 +381,16 @@ namespace Vgs.Ui
         /// Draws a one-pixel-ish frame around a client-area rectangle. There is no border
         /// primitive in the screen-space API, so it is four filled rectangles.
         ///
+        /// <b>The vertical bars stop at the inner edges of the horizontal ones.</b> That is not
+        /// cosmetic: they used to span the full height, so their bottom edge and the bottom bar's
+        /// bottom edge were the same nominal coordinate — and the two quads are rasterised
+        /// separately, so the tall one could reach a pixel lower than the flat one. The result was
+        /// two little "feet" sticking out under a field's bottom edge, plus the fill leaking one
+        /// row below it (measured in the reported screenshot: border row 68, sprouts at row 69 in
+        /// columns 122-123 and 773-774). Insetting the verticals puts their ends *inside* the
+        /// horizontal bars' band, where the same colour is already painted, so no rounding can
+        /// show.
+        ///
         /// The coordinates are passed through unchanged on purpose: <see cref="Rect"/> converts
         /// them, and converting here as well would apply the transform twice.
         /// </summary>
@@ -376,10 +398,69 @@ namespace Vgs.Ui
         {
             if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
 
+            // A frame thinner than its own thickness in either direction is drawn as a solid bar:
+            // there is no interior left, and four overlapping rectangles would be a guess.
+            if (size.X <= thickness * 2f || size.Y <= thickness * 2f)
+            {
+                Rect(position, size, color);
+                return;
+            }
+
             Rect(position, new Vector2(size.X, thickness), color);
             Rect(new Vector2(position.X, position.Y + size.Y - thickness), new Vector2(size.X, thickness), color);
-            Rect(position, new Vector2(thickness, size.Y), color);
-            Rect(new Vector2(position.X + size.X - thickness, position.Y), new Vector2(thickness, size.Y), color);
+
+            float innerHeight = size.Y - thickness * 2f;
+            Rect(new Vector2(position.X, position.Y + thickness),
+                 new Vector2(thickness, innerHeight), color);
+            Rect(new Vector2(position.X + size.X - thickness, position.Y + thickness),
+                 new Vector2(thickness, innerHeight), color);
+        }
+
+        /// <summary>
+        /// A filled panel with a frame, drawn so that neither the fill nor the frame can show past
+        /// the other.
+        ///
+        /// <b>Why this exists next to <see cref="Rect"/> plus <see cref="Border"/>.</b> A fill and
+        /// a frame are two quads on the same nominal rectangle, rasterised independently: at a
+        /// fractional position the fill can cover one row past the frame's bottom edge, which reads
+        /// as a stray line under a control (measured on the search field: the fill painted row 69
+        /// while the frame ended at row 68).
+        ///
+        /// <b>The fill is inset by half the frame's thickness, not by all of it.</b> That is the
+        /// one value that is wrong in neither direction:
+        ///
+        ///  * inset by less than the thickness, the fill's edge always lands *under* the frame,
+        ///    which is painted afterwards — so a rounding error in the fill is covered rather than
+        ///    visible;
+        ///  * inset by the full thickness, a fill that rounds the other way would leave a
+        ///    one-pixel gap of the underlying surface between the fill and the frame — a thin dark
+        ///    line inside the control, which is the same defect wearing a different hat.
+        ///
+        /// Half the thickness keeps the fill's outer edge at least half a frame away from the
+        /// control's real edge, so it cannot escape, while still reaching under the frame so no
+        /// gap can open. The border is drawn last, so its inner edge stays crisp.
+        /// </summary>
+        public static void Panel(Vector2 position, Vector2 size, Color fill, Color border,
+                                 float thickness)
+        {
+            if (size.X <= 0f || size.Y <= 0f) return;
+
+            if (thickness <= 0f)
+            {
+                Rect(position, size, fill);
+                return;
+            }
+
+            float inset = thickness * 0.5f;
+            float inner = inset * 2f;
+
+            if (size.X > inner && size.Y > inner)
+            {
+                Rect(new Vector2(position.X + inset, position.Y + inset),
+                     new Vector2(size.X - inner, size.Y - inner), fill);
+            }
+
+            Border(position, size, border, thickness);
         }
 
         /// <summary>
@@ -387,18 +468,30 @@ namespace Vgs.Ui
         /// an unclipped frame paints over the header and the bottom bar — those are drawn
         /// afterwards and would cover the overdraw, but relying on draw order to hide geometry
         /// breaks the moment something is drawn later than them.
+        ///
+        /// The vertical bars are inset exactly as in <see cref="Border"/>, for the reason given
+        /// there.
         /// </summary>
         public static void BorderClipped(Vector2 position, Vector2 size, Vector2 clipTopLeft,
                                         Vector2 clipSize, Color color, float thickness)
         {
             if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
 
+            if (size.X <= thickness * 2f || size.Y <= thickness * 2f)
+            {
+                RectClipped(position, size, clipTopLeft, clipSize, color);
+                return;
+            }
+
             RectClipped(position, new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
             RectClipped(new Vector2(position.X, position.Y + size.Y - thickness),
                         new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
-            RectClipped(position, new Vector2(thickness, size.Y), clipTopLeft, clipSize, color);
-            RectClipped(new Vector2(position.X + size.X - thickness, position.Y),
-                        new Vector2(thickness, size.Y), clipTopLeft, clipSize, color);
+
+            float innerHeight = size.Y - thickness * 2f;
+            RectClipped(new Vector2(position.X, position.Y + thickness),
+                        new Vector2(thickness, innerHeight), clipTopLeft, clipSize, color);
+            RectClipped(new Vector2(position.X + size.X - thickness, position.Y + thickness),
+                        new Vector2(thickness, innerHeight), clipTopLeft, clipSize, color);
         }
 
         /// <summary>

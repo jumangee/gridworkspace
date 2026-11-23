@@ -30,6 +30,12 @@
 | [0019](adr/0019-icons-atlas.md) | Иконки: отдельная PNG-текстура на иконку, `DrawPixels` в целых пикселях окна, иконка на любом зуме, откат на геометрию только при отсутствии текстуры |
 | [0020](adr/0020-card-button-row.md) | Ряд кнопок карточки: все контролы карточки справа, в одну строку, одного размера, голые иконки; «T»/«F» → `lightbulb` Solid/Regular, «#» → `bell` Regular; каталог иконок со шлюзом |
 | [0021](adr/0021-jump-to-block-terminal.md) | Четвёртая кнопка карточки (пятый вид) — переход в терминал блока (`share-from-square` Regular), первая в ряду; `Vgs.Game.TerminalJump` через `IMyGui`; диаметр кнопок 0,75 → 0,60 |
+| [0022](adr/0022-view-state-lives-on-the-grid.md) | Состояние вида (камера, масштаб, режим «показывать скрытые») — на **гриде**, одним значением `"x y zoom hidden"`; открыть схему с другого кокпита того же грида — та же картина |
+| [0023](adr/0023-workbench-bar-modes-and-search.md) | Компоновка окна: «Workbench» и статистика в шапке; нижняя панель — кнопка режимов с подменю «Show/hide invisible» и строка поиска блоков по правилу терминала; надпись «Показано X из Y» и постоянная подсказка убраны |
+| [0024](adr/0024-text-field-caret-selection-clipboard.md) | Своё текстовое поле: каретка, выделение (якорь + каретка), Ctrl+A/C/X/V; движковое поле запрещено вайтлистом; рамка чинится устранением совпадения краёв (`Panel`) |
+| [0025](adr/0025-clipboard-read-via-platform.md) | ~~Буфер обмена читается через `VRage.MyVRage.Platform.System.Clipboard`~~ — **вывод неверен**, игра отвергает эти типы как `is prohibited`; мод не загрузился. Заменён ADR-0027 | superseded by 0027 |
+| [0026](adr/0026-clocks-in-the-mod.md) | Часы: `VgsSession.Frame` замирает на паузе, поэтому экран считает свои кадры в `OnUpdate`, статические помощники — попытки; `VgsLog.Throttled` на попытках; `UpdateOnPause` отклонён |
+| [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
 | [0003](adr/0003-layering.md) | Слои; `Ui` не читает мир при рисовании |
@@ -59,12 +65,16 @@
         │
         ├──► Vgs.Game ──── VgsTerminalControls   регистрирует кнопку в кокпите
         │                  GridGraphBuilder      читает грид → GridGraph
+        │                  GridViewStore         состояние вида грида (камера, зум, режим)
+        │                  TextClipboard         буфер обмена (системный + свой запасной)
         │                  TerminalJump          открывает терминал игры на блоке
         │                  EventControllerProbe  список отслеживания контроллера
         │                  EventControllerKeeper проигрывает список после загрузки
         │                  (единственное место, где трогаются живые сущности)
         │
-        ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
+        ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockPortCatalog,
+        │                  ToolbarPlanner, NodeStateFormat, GridViewFormat, BlockSearch,
+        │                  TextEditor
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
         └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
@@ -104,13 +114,11 @@ classDiagram
 
     class VgsSession {
         <<static>>
-        +int Frame
         +bool IsReady
         +bool IsDedicated
         +bool HasLocalPlayer
         +MySessionComponentBase Component
         ~Bind(component)
-        ~AdvanceFrame()
         ~Reset()
     }
 
@@ -122,8 +130,8 @@ classDiagram
         +Warn(message)
         +Error(message)
         +Error(message, exception)
-        +Throttled(tag, message, intervalFrames)
-        +Throttled(tag, prefix, exception, intervalFrames)
+        +Throttled(tag, message, intervalAttempts)
+        +Throttled(tag, prefix, exception, intervalAttempts)
         +Debug(message)
         ~Reset()
     }
@@ -137,14 +145,18 @@ classDiagram
         +float MinZoom
         +float MaxZoom
         +int MaxRenderedBlocks
+        +int ViewSaveIntervalFrames
+        +float SearchDimOpacity
     }
 
     class VgsText {
         <<static>>
         +string ButtonTitle
         +string CloseButton
-        +string StatusFormat
-        +string CullingFormat
+        +string EditorTitle
+        +string StatsFormat
+        +string SearchPlaceholder
+        +string ModesShowHidden
     }
 
     class VgsTerminalControls {
@@ -163,8 +175,8 @@ classDiagram
 
     class GridGraphBuilder {
         <<static>>
-        +Build(IMyCubeGrid) GridGraph
-        +Refresh(GridGraph, IMyCubeGrid)
+        +Build(IMyCubeGrid, bool includeHidden) GridGraph
+        +Refresh(GridGraph, IMyCubeGrid, bool includeHidden)
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
         -TryReadActions(IMyTerminalBlock, List~string~) bool
@@ -177,6 +189,58 @@ classDiagram
         -ReconcileToolbarEdges(GridGraph)
         -SyncCells(GridGraph, Node, IMyToolbar, ref int)
         -ResolveToolbar(long, int) IMyToolbar
+    }
+
+    class GridViewStore {
+        <<static>>
+        +TryRead(IMyCubeGrid, out Vector2, out float, out bool) bool
+        +Save(IMyCubeGrid, Vector2, float, bool) bool
+        -TryReadValue(IMyCubeGrid, out string) bool
+    }
+
+    class GridViewFormat {
+        <<static>>
+        +int FieldCount
+        +Format(Vector2, float, bool) string
+        +TryParse(string, out Vector2, out float, out bool) bool
+    }
+
+    class BlockSearch {
+        <<static>>
+        +char TermSeparator
+        +SplitTerms(string, List~string~)
+        +Matches(IList~string~, string, string) bool
+    }
+
+    class TextEditor {
+        -int _maxLength
+        -string _text
+        -int _caret
+        -int _anchor
+        +string Text
+        +int Length
+        +int Caret
+        +int Anchor
+        +bool HasSelection
+        +int SelectionStart
+        +int SelectionEnd
+        +string SelectedText
+        +SetText(string)
+        +Clear()
+        +Insert(char) bool
+        +Insert(string) bool
+        +DeleteBackward() bool
+        +DeleteForward() bool
+        +MoveHorizontal(int, bool)
+        +MoveTo(int, bool)
+        +SelectAll()
+    }
+
+    class TextClipboard {
+        <<static>>
+        +string PasteText
+        +Copy(string)
+        +Release()
     }
 
     class NodeStateStore {
@@ -314,6 +378,11 @@ classDiagram
         -IMyCubeGrid _grid
         -Vector2 _camera
         -float _zoom
+        -bool _showHidden
+        -Vector2 _savedCamera
+        -float _savedZoom
+        -bool _savedShowHidden
+        -int _lastViewSaveFrame
         -Node _draggedNode
         -Node _selected
         -Node _draggedGroup
@@ -339,6 +408,14 @@ classDiagram
         -string _statusText
         -string _warningText
         -bool _closeHot
+        -bool _modesMenuOpen
+        -bool _modesHot
+        -bool _modesRowHot
+        -bool _searchHot
+        -bool _searchClearHot
+        -TextEditor _searchEditor
+        -List~string~ _searchTerms
+        -int _screenFrame
         +OpenFor(IMyCockpit)$
         +CloseIfOpen()$
         #OnOpened()
@@ -369,19 +446,41 @@ classDiagram
         -DescribeWriteFailure(WriteResult, Node, Node, Port) string
         -Warn(string) void
         -ValidateInteractionState() void
+        -DropNodeReferences() void
+        -RebuildGraph() void
+        -RememberSavedView() void
+        -SaveView() void
+        -SaveViewIfChanged() void
+        -HandleSearchKeyboard() void
+        -HandleBarInput(Vector2) bool
+        -ToggleShowHidden() void
+        -SetSearchQuery(string) void
+        -ClearSearch() void
+        -AppendSearchChar(char) void
+        -BackspaceSearch() void
+        -IsDimmed(Node) bool
+        -AlphaOf(Node) float
+        -MaxAlpha(Node, Node) float
+        -Fade(Color, float) Color$
+        -JumpToFirstMatch() void
         -ScreenToGraph(Vector2, Vector2) Vector2
         -HitTest(Vector2) Node
         -HitTestCardButton(Vector2, out CardButtonKind) Node
         -HitTestWatchRemoveButton(Vector2, out WatchTarget) Node
         -HitTestRemoveButton(Vector2, out Port) Node
         -GetMenuRect(out Vector2, out Vector2) void
+        -GetModesButtonRect(out Vector2, out Vector2) void$
+        -GetSearchFieldRect(out Vector2, out Vector2) void$
+        -TrySearchClearRect(out Vector2, out Vector2) bool$
+        -GetModesMenuRect(out Vector2, out Vector2) void$
+        -GetModesRowRect(out Vector2, out Vector2) void$
         -DrawGroupFrames(Vector2, Vector2) void
         -DrawGroupPorts(Vector2, Vector2) void
         -DrawNodes(Vector2, Vector2) void
         -DrawNode(Node, Vector2, Vector2, Vector2) void
-        -DrawPortBars(Node, Color, Vector2, Vector2) void
-        -DrawPortBar(Node, Port, Color, Vector2, Vector2) void
-        -DrawWatchBars(Node, Color, Vector2, Vector2) void
+        -DrawPortBars(Node, Color, float, Vector2, Vector2) void
+        -DrawPortBar(Node, Port, Color, float, Vector2, Vector2) void
+        -DrawWatchBars(Node, Color, float, Vector2, Vector2) void
         -DrawWatchLines(Vector2, Vector2) void
         -DrawPendingWatchLine(Vector2, Vector2) void
         -DrawDashedRoute(Vector2, Vector2, Color, float, float, Vector2, Vector2) void
@@ -390,11 +489,13 @@ classDiagram
         -DrawEdges(Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
-        -DrawCardButtons(Node, Vector2, Vector2) void
-        -DrawCardButton(Node, CardButtonKind, Vector2, Vector2) void
+        -DrawModesButton() void
+        -DrawModesMenu() void
+        -DrawSearchField() void
+        -DrawCardButtons(Node, float, Vector2, Vector2) void
+        -DrawCardButton(Node, CardButtonKind, Vector2, float, Vector2, Vector2) void
         +IconOf(CardButtonKind) VgsIcon
         +GlyphOf(CardButtonKind) string
-        +RestingColor(CardButtonKind) Color
         -TryJumpToTerminal(Node) void
         -GetStatusText() string
         -ResolveGridName()
@@ -469,6 +570,7 @@ classDiagram
         <<static>>
         +bool ResourcesReady
         +float ClientAspect
+        +float ClientWidth
         +EnsureResources()
         +Release()
         +SyncScreenSpace()
@@ -666,13 +768,16 @@ classDiagram
     VgsTerminalControls --> VgsSession
 
     VgsEditorScreen --> GridGraph
-    VgsEditorScreen --> GridGraphBuilder : Refresh
+    VgsEditorScreen --> GridGraphBuilder : Build и Refresh
     VgsEditorScreen --> ToolbarWriter : запись и очистка связи
     VgsEditorScreen --> NodeStateStore : сохранение позиции
+    VgsEditorScreen --> GridViewStore : камера, масштаб, режим
+    VgsEditorScreen --> BlockSearch : правило фильтра карточек
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
     VgsEditorScreen --> EdgeRouting : маршрут линии
     VgsEditorScreen --> IMyCubeGrid
+    VgsEditorScreen --> IMyInput : TextInput и клавиши поиска (ADR-0023)
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
     VgsEditorScreen --> TerminalJump : переход в терминал блока (ADR-0021)
 
@@ -702,6 +807,10 @@ classDiagram
     NodeStateStore --> NodeStateFormat : формат позиции
     NodeStateStore --> IMyTerminalBlock
     VgsTerminalControls --> NodeStateStore : флаг «Show in VGS»
+
+    GridViewStore --> GridViewFormat : формат состояния вида
+    GridViewStore --> IMyCubeGrid
+    GridViewFormat ..> VgsConstants : границы формата
 
     ToolbarProbe --> ToolbarLayout
     ToolbarProbe --> IMyToolbarProvider
@@ -738,7 +847,7 @@ classDiagram
 
     ToolbarWriter --> MyToolbarItemInfo : BlockAction / GroupAction
 
-    VgsLog --> VgsSession : Frame
+    VgsEditorScreen ..> VgsLog : Throttled (tags)
     VgsEditorScreen --> VgsText
     VgsEditorScreen --> VgsConstants
 ```
@@ -803,6 +912,9 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
+| `GridViewFormat.cs` | формат состояния вида: «`x y zoom hidden`» ↔ камера, масштаб и режим «показывать скрытые»; три поля принимаются как значение старой сборки |
+| `BlockSearch.cs` | правило фильтрации карточек: AND по термам, подстрока в имени или отображаемом типе, без учёта регистра — то же, что делает список блоков терминала |
+| `TextEditor.cs` | состояние однострочного поля: текст, каретка, якорь выделения и все правила правки (вставка, удаление, стрелки, Home/End, SelectAll) — ADR-0024 |
 
 Слой **не содержит** ссылок на `Sandbox.*` и `VRage.Game.ModAPI`. Это не стилистика:
 это единственная часть проекта, которую можно проверить без запуска игры, а запуск игры —
@@ -850,6 +962,8 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
 | `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
+| `GridViewStore.cs` | камера, масштаб и режим «показывать скрытые» в `MyModStorageComponent` **грида** (ADR-0022): состояние общее для всех кокпитов конструкта |
+| `TextClipboard.cs` | буфер обмена поля поиска — **только собственный**: системный буфер моду недоступен (ADR-0027), поэтому файл не ссылается ни на один тип игры и сломать загрузку не может |
 | `EventControllerProbe.cs` | что проверяет event controller, кому из блоков он это разрешает и запись его списка |
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 | `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
@@ -861,6 +975,13 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 руками. Блок, у которого выключен флаг «Show in VGS», в граф не попадает вовсе — поэтому
 его узел снимается тем же проходом удаления, а связи к нему и от него исчезают из картинки,
 оставаясь при этом в тулбарах и работая в игре ([ADR-0013](adr/0013-show-in-vgs-flag.md)).
+
+У того же фильтра есть второй режим: `Build`/`Refresh` принимают `includeHidden`, и при
+включённом режиме «показывать скрытые» (ADR-0023) блок с выключенным флагом попадает в граф
+наравне с остальными. Флаг на блоке при этом не трогается — режим меняет только то, что
+видно. Смена режима пересобирает граф целиком, потому что «в схеме ли блок» решается здесь,
+где блок и читается; экран перед этим сбрасывает все ссылки указателя на узлы, так как
+пересборка заменяет объекты `Node`, а не обновляет их.
 
 `Refresh` делает **два прохода по миру, а не один**: сначала блоки, потом группы
 (`ReadGroups` → `SyncGroups`). Порядок обязателен — группа существует только при видимом
@@ -889,6 +1010,15 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 каждому блоку мира и менял сейв. Формат значения вынесен в `Vgs.Model.NodeStateFormat`, чтобы
 его можно было проверить офлайн — это единственная часть сохранения, которая может тихо
 испортить раскладку.
+
+`GridViewStore` — тот же механизм, но **носитель другой**: камера, масштаб и режим
+«показывать скрытые» лежат в `MyModStorageComponent` **грида**
+([ADR-0022](adr/0022-view-state-lives-on-the-grid.md)). Это не непоследовательность, а
+требование продукта: состояние описывает, как смотрят на конструкт, поэтому открытие схемы с
+другого кокпита того же грида обязано дать ту же картину; на блоке оно размножилось бы по
+числу кокпитов. Формат (`"x y zoom hidden"`) вынесен в `Vgs.Model.GridViewFormat` по той же
+причине, что и формат позиции: испорченный разбор открывает схему не там, где работал игрок.
+Запись — троттлингом по изменению и один раз в `OnClosed`; чтение не создаёт компонент.
 
 `ToolbarProbe` и `ToolbarWriter` — единственные места, где мод трогает тулбар. Первый
 отвечает на вопрос «может ли этот блок управлять другими» (компонент `IMyToolbarProvider` +
@@ -947,7 +1077,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 
 | Файл | Ответственность |
 |---|---|
-| `VgsEditorScreen.cs` | экран: камера, ввод, четыре режима указателя, меню действий, кэш строк |
+| `VgsEditorScreen.cs` | экран: камера, ввод (указатель и клавиатура), четыре режима указателя, меню действий, шапка со статистикой, нижняя панель (режимы и поиск), кэш строк |
 | `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind` |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; разбиение отрезка на штрихи для пунктира |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
@@ -959,6 +1089,77 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 (`OnOpened`/`OnUpdate`/`OnHandleInput`/`OnDraw`/`OnClosed`). `VgsScreenDraw` изолирует
 `MyScreenSpace*`, держит текстуру-кисть и переводит координаты: если завтра понадобится
 другая реализация отрисовки, меняется один файл.
+
+#### Компоновка окна ([ADR-0023](adr/0023-workbench-bar-modes-and-search.md))
+
+Три полосы, и у каждой одна работа:
+
+```
+шапка          Workbench  // blocks: N · groups: N · links: N · zoom: N%   <имя грида справа>
+холст          карточки, порты, линии (отсекается по экрану, но молча)
+нижняя панель  ┌ подсказка/отказ — одна строка над контролами
+               └ [sliders] [Search blocks ........... x]                     [Закрыть]
+```
+
+Точнее, снизу вверх: полоса подсказки (одна строка, 0.5 кегля) занимает верх нижней панели, а
+кнопка режимов, поле поиска и «Закрыть» стоят одной строкой, отцентрованной в панели так же,
+как «Закрыть». Холст — всё, что выше шапки и ниже панели.
+
+- **Шапка** несёт имя окна (`Workbench`) и счётчики — оба на одной базовой линии; ширина
+  заголовка измеряется один раз и кэшируется по клиентской ширине, потому что текстового
+  потока в API нет и вторую строку приходится ставить руками, а мерить шрифт каждый кадр
+  незачем.
+- **Нижняя панель** — управление, а не описание: кнопка режимов, поле поиска, «Закрыть».
+  Единственная строка текста над ними: подсказка к тому, что под указателем, объяснение
+  отказа, состояние привязки/отслеживания — или ничего.
+- **Кнопка режимов** открывает меню **над собой** (внизу места нет) с одним
+  переключателем «Show/hide invisible». Включение показывает блоки с выключенным «Show in
+  VGS», не меняя флаг на блоке.
+- **Поиск** фильтрует карточки правилом терминала (`Model/BlockSearch`): AND по термам,
+  подстрока в **имени блока или в его отображаемом типе**. Несовпавшая карточка рисуется с
+  альфой `VgsConstants.SearchDimOpacity` вместе со своими полосами и подписями; линия гаснет,
+  только если затемнены **оба** её конца. Таблица `_searchTerms` — разбор термов —
+  пересобирается на изменение запроса, а не на кадр (R010). Enter ставит камеру на первое
+  совпадение; нет совпадения — ничего не происходит.
+- **Два поля — это поля терминала, а не подтип.** Терминал ищет по имени и по *локализованному
+  названию типа* («Timer Block», «Таймер»), которое берёт из тултипа строки списка. Поэтому
+  `Node` несёт `TypeDisplayName`, прочитанный у блока при построении графа
+  (`IMyCubeBlock.DefinitionDisplayNameText`), а не `SubtypeId`: подтип — идентификатор движка
+  («LargeBlockTimer»), которого игрок не набирает и которого нет в его языке.
+- **Клавиатура**: поле всегда является целью ввода; символы читаются из `IMyInput.TextInput`
+  раз в кадр (игра подменяет буфер при чтении, поэтому каждый символ приходит ровно однажды —
+  [`01-research/api-terminal-search.md`](01-research/api-terminal-search.md) §2). Поверх этого —
+  своё текстовое поле (ADR-0024): каретка с миганием, выделение (якорь + каретка),
+  стрелки/Home/End/Shift, Ctrl+A/C/X/V. Раскладка каретки и выделения считается **при
+  изменении**, а не каждый кадр: это вызовы метрик шрифта.
+
+#### Текстовое поле (ADR-0024)
+
+Движковое поле взять нельзя: `Sandbox.Graphics.GUI.MyGuiControlTextbox` живёт в
+`Sandbox.Graphics`, которого нет в вайтлисте (проверено `check-whitelist.ps1 -Dump`), — ссылка
+компилируется и отклоняется игрой при загрузке. Поэтому поле своё, но его **логика** вынесена в
+`Vgs.Model.TextEditor`, где проверяется офлайн.
+
+```
+клавиши/клик ──► VgsEditorScreen ──► TextEditor (текст, каретка, якорь)
+                      │                    │
+                      │                    └─► OnSearchTextChanged ──► BlockSearch.SplitTerms
+                      ├─► TextClipboard (Ctrl+C/X/V)
+                      └─► EnsureFieldLayout ──► метрики шрифта (только при изменении)
+                                │
+                                └─► DrawSearchField: заливка, выделение, текст, каретка
+```
+
+Буфер обмена моду **недоступен**, и это проверено отказом загрузки, а не рассуждением:
+`VRage.MyVRage.Platform.System.Clipboard` выглядит легально (всё в разрешённом пространстве имён
+`VRage`), но игра отвергает `IVRageSystem`, `IVRagePlatform` и `MyVRage` как `is prohibited`, и мод
+не грузится целиком. Прямые пути (`VRage.Platform.Windows.Forms`, `Sandbox.Graphics`) закрыты
+своими пространствами имён. Поэтому `TextClipboard` держит строку в памяти и **не ссылается ни на
+один тип игры** — ломаться нечему ([ADR-0027](adr/0027-clipboard-is-own-buffer-only.md)).
+
+Общее правило, выведенное из этого: **разрешение типа не выводится из разрешения пространства
+имён для корневого `VRage`** — типы там перечислены поимённо. Подпространства (`VRage.Utils`)
+ведут себя иначе и разрешены как пространства.
 
 `PortGeometry` существует потому, что прямоугольник рисуется и проверяется на попадание в
 двух разных местах. Две копии этой арифметики расходятся, и тогда порт рисуется в одном
@@ -973,12 +1174,12 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 `PortGeometry.TryGroupFrame` — чистая функция от карточек участников: наименьший
 прямоугольник, содержащий их и их стаки портов, плюс отступ и полоса имени.
 
-### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md))
+### Иконки контролов ([ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md), [ADR-0023](adr/0023-workbench-bar-modes-and-search.md))
 
 Восемь контролов — точка порта, **пять** кнопок карточки (переход в терминал, привязка, «да»,
-«нет», отслеживание) и «x» удаления на полосе порта — рисуются иконками Font Awesome из текстур
-`Textures/VGS/Icons/<Id>.png`, по файлу на иконку. Разделение ответственности здесь такое же,
-как у геометрии:
+«нет», отслеживание), «x» удаления на полосе порта и кнопка режимов в нижней панели —
+рисуются иконками Font Awesome из текстур `Textures/VGS/Icons/<Id>.png`, по файлу на иконку.
+Разделение ответственности здесь такое же, как у геометрии:
 
 ```
 tools/build-icon-atlas.ps1 ──► Icons/*.png + GuiTextures.sbc + VgsIconAtlas.g.cs + docs/icons/*.png

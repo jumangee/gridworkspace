@@ -36,6 +36,10 @@
         <SubtypeName>VGS_ShareFromSquare</SubtypeName>
         <Path>Textures\VGS\Icons\ShareFromSquare.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_Sliders</SubtypeName>
+        <Path>Textures\VGS\Icons\Sliders.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>

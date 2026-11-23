@@ -445,6 +445,19 @@ namespace Vgs.Model
         public string DisplayName; // review:allow R009 written only by the refresh pass
 
         /// <summary>
+        /// The block's <b>type</b> as the player sees it — the localized definition name, e.g.
+        /// "Timer Block" or "Таймер" (ADR-0023). Empty for a group.
+        ///
+        /// It exists for one reason: the terminal's block search looks in the block's name
+        /// <em>and in its type</em> (`MyTerminalControlPanel.blockSearch_TextChanged`, verified
+        /// by IL — see <c>docs/01-research/api-terminal-search.md</c> §1), and the editor's search
+        /// has to match it. <see cref="SubtypeId"/> is not a substitute: it is the engine id
+        /// ("LargeBlockTimer"), which a player never types and which does not exist in the
+        /// player's language at all. Refreshed with the name.
+        /// </summary>
+        public string TypeDisplayName; // review:allow R009 written only by the refresh pass
+
+        /// <summary>
         /// Entity ids of the members of a group that are drawn on the canvas, in the order the
         /// game returned them. Empty for a block.
         ///
@@ -655,6 +668,7 @@ namespace Vgs.Model
             GroupName = null;
             SubtypeId = subtypeId;
             DisplayName = displayName;
+            TypeDisplayName = null;
             GridPosition = gridPosition;
             Toolbar = toolbar ?? ToolbarLayout.None;
             IsEventController = isEventController;
@@ -676,6 +690,7 @@ namespace Vgs.Model
             GroupName = groupName;
             SubtypeId = string.Empty;
             DisplayName = displayName;
+            TypeDisplayName = null;
             GridPosition = Vector3I.Zero;
             Toolbar = ToolbarLayout.None;
 

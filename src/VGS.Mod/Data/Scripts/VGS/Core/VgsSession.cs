@@ -23,13 +23,10 @@ namespace Vgs.Core
     {
         private static MySessionComponentBase _component;
 
-        /// <summary>Monotonic frame counter, incremented once per UpdateAfterSimulation.</summary>
-        public static int Frame { get; private set; }
-
-        /// <summary>True once <see cref="Init"/> has run and the session is usable.</summary>
+        /// <summary>True once <see cref="Bind"/> has run and the session is usable.</summary>
         public static bool IsReady { get; private set; }
 
-        /// <summary>The mod's session component, or null before Init.</summary>
+        /// <summary>The mod's session component, or null before <see cref="Bind"/>.</summary>
         public static MySessionComponentBase Component
         {
             get { return _component; }
@@ -64,19 +61,12 @@ namespace Vgs.Core
         {
             _component = component;
             IsReady = component != null;
-            if (component == null) Frame = 0;
-        }
-
-        internal static void AdvanceFrame()
-        {
-            Frame++;
         }
 
         internal static void Reset()
         {
             _component = null;
             IsReady = false;
-            Frame = 0;
         }
     }
 }

@@ -66,6 +66,19 @@ namespace Vgs.Core
         /// <remarks>Do not regenerate: changing it loses every watch list in every existing world.</remarks>
         public static readonly Guid WatchStorageKey = new Guid("4a7d2e19-8c63-4b0f-a51d-6e9f3c2b8d74");
 
+        /// <summary>
+        /// Storage key of the editor's view state — where the camera was, at what zoom, and
+        /// whether blocks hidden from the schema were being shown (ADR-0022).
+        ///
+        /// <b>This one lives on the grid, not on a block.</b> The state describes how the
+        /// *construct* is being looked at, so opening the schema from a second cockpit of the
+        /// same grid must restore the same view; storing it per block would give every cockpit
+        /// its own camera. The value is <c>"x y zoom hidden"</c>, parsed by
+        /// <see cref="Vgs.Model.GridViewFormat"/>.
+        /// </summary>
+        /// <remarks>Do not regenerate: changing it loses every saved view in every existing world.</remarks>
+        public static readonly Guid ViewStorageKey = new Guid("7c4b9e21-5f8d-4a63-b0e7-3d19c8a6f240");
+
         /// <summary>Network message id for future client/server sync. Must be unique per mod.</summary>
         public const ushort NetworkChannelId = 48123;
 
@@ -76,6 +89,25 @@ namespace Vgs.Core
 
         /// <summary>Height of the header strip holding the title and the grid name.</summary>
         public const float HeaderHeight = 0.055f;
+
+        /// <summary>Left (and right) margin of the header's contents.</summary>
+        public const float HeaderLeftMargin = 0.02f;
+
+        /// <summary>Font scale of the header's title, "Workbench".</summary>
+        public const float HeaderTitleScale = 0.9f;
+
+        /// <summary>
+        /// Top of the header's title text, in the layout's normalized units. Kept as a constant
+        /// rather than derived from a measured line height: the header is one line at a fixed
+        /// scale, and the value is the one the title has always been drawn at.
+        /// </summary>
+        public const float HeaderTitleTop = 0.014f;
+
+        /// <summary>Font scale of the grid's name at the right end of the header.</summary>
+        public const float HeaderGridNameScale = 0.6f;
+
+        /// <summary>Top of the grid's name, slightly lower than the title so the two align optically.</summary>
+        public const float HeaderGridNameTop = 0.018f;
 
         // ---- Close button, in normalized units, anchored to the bottom-right corner ----
 
@@ -516,6 +548,112 @@ namespace Vgs.Core
 
         /// <summary>How long a failure message stays on the bottom bar, in frames.</summary>
         public const int WarningFrames = 360;
+
+        /// <summary>
+        /// How often the view state is written to the grid while the camera or the zoom is being
+        /// changed (ADR-0022). Two seconds at 60 fps.
+        ///
+        /// Panning and zooming change the camera on every frame, so writing on every change would
+        /// be sixty string allocations and dictionary writes a second. Writing only on close is
+        /// the other extreme: leaving to the main menu or a crash never reaches <c>OnClosed</c>,
+        /// which is exactly when the player would notice the view was forgotten. A throttled
+        /// write plus one on close covers both.
+        /// </summary>
+        public const int ViewSaveIntervalFrames = 120;
+
+        // ---- Bottom bar: modes menu and block search (ADR-0023) ----
+        //
+        // The bar used to carry a statistics line and a one-line help text. The statistics moved
+        // to the header, the help line is gone, and what is left is two controls the player uses
+        // while looking at the schema — the modes menu and the block search — plus Close.
+
+        /// <summary>Height of one control of the bottom bar (the modes button, the search field).</summary>
+        public const float BarControlHeight = 0.034f;
+
+        /// <summary>Left margin of the bottom bar's controls.</summary>
+        public const float BarLeftMargin = 0.02f;
+
+        /// <summary>Width of the square modes button.</summary>
+        public const float ModesButtonWidth = 0.05f;
+
+        /// <summary>Gap between two controls of the bottom bar.</summary>
+        public const float BarControlGap = 0.008f;
+
+        /// <summary>Width of the block search field.</summary>
+        public const float SearchFieldWidth = 0.34f;
+
+        /// <summary>
+        /// Horizontal padding inside the search field: before the text, and between the text and
+        /// the clear button. One value for both ends, so the text looks centred in the space it
+        /// actually has.
+        /// </summary>
+        public const float SearchFieldPadding = 0.008f;
+
+        /// <summary>Font scale of the search field's text, in the layout's normalized units.</summary>
+        public const float SearchTextScale = 0.62f;
+
+        /// <summary>
+        /// Font scale of the bottom bar's hint line. Smaller than the search field's text: the
+        /// hint is a sentence read once, while the query is a value the player is typing.
+        /// </summary>
+        public const float HintTextScale = 0.5f;
+
+        /// <summary>
+        /// Width of the text caret, in pixels at the reference height. Two, not one: a single
+        /// pixel at 1080p disappears against a bright glyph on some panels, and the caret is the
+        /// only thing that tells the player the field is ready to receive typing (ADR-0024).
+        /// </summary>
+        public const float CaretWidth = 2f;
+
+        /// <summary>
+        /// Frames between caret blinks — half of the on/off cycle. At 60 fps this is a 500 ms
+        /// period, the cadence every text field in the world uses.
+        ///
+        /// Counted in frames rather than seconds because the editor screen already counts its own
+        /// frames in <c>OnUpdate</c>, and a timer added to a draw path would be a second clock.
+        /// It is deliberately **not** <c>VgsSession.Frame</c>: that counter only advances from
+        /// `UpdateAfterSimulation`, which a paused session skips, and the editor pauses the game —
+        /// so a caret driven by it never blinked (ADR-0026).
+        /// </summary>
+        public const int CaretBlinkFrames = 30;
+
+        /// <summary>
+        /// Opacity of the selection highlight behind the query text. A wash rather than a solid
+        /// block: the text has to stay readable on top of it.
+        /// </summary>
+        public const float SelectionFillOpacity = 0.30f;
+
+        /// <summary>
+        /// Longest query the search field accepts, in characters. A cap rather than a scrollbar:
+        /// the field is one line wide and a query longer than a block name cannot match anything
+        /// the field would not already match.
+        /// </summary>
+        public const int SearchMaxLength = 48;
+
+        /// <summary>
+        /// Opacity a card (and its ports, lines and buttons) falls to when the search query
+        /// excludes it. Ten percent: still visible as a ghost, so the player keeps the context of
+        /// the whole schema, but clearly not a hit.
+        /// </summary>
+        public const float SearchDimOpacity = 0.10f;
+
+        /// <summary>Width of the modes popup menu.</summary>
+        public const float ModesMenuWidth = 0.24f;
+
+        /// <summary>Height of one row of the modes popup menu.</summary>
+        public const float ModesMenuRowHeight = 0.028f;
+
+        /// <summary>Vertical padding of the modes popup menu above and below its rows.</summary>
+        public const float ModesMenuPadding = 0.006f;
+
+        /// <summary>Gap between the modes button and the popup it opens.</summary>
+        public const float ModesMenuGap = 0.006f;
+
+        /// <summary>Side of the checkbox square inside a modes menu row.</summary>
+        public const float ModesMenuCheckSize = 0.017f;
+
+        /// <summary>Font scale of a modes menu row's label.</summary>
+        public const float ModesMenuLabelScale = 0.6f;
     }
 
     /// <summary>
@@ -545,14 +683,68 @@ namespace Vgs.Core
         public const string ShowInVgsOff = "Off";
 
         // Editor chrome
-        public const string EditorTitle = "Grid setup";
+        public const string EditorTitle = "Workbench";
+
+        /// <summary>
+        /// Header line, drawn right after <see cref="EditorTitle"/>: the window's name and the
+        /// counts of what is on the canvas, in one string (ADR-0023).
+        ///
+        /// It used to be the first line of the bottom bar, in Russian. It moved to the header and
+        /// into English because the header is the part of the editor that reads as a tool's title
+        /// bar; the "//" is the separator the mock-up used. Format arguments: blocks, groups,
+        /// links, zoom in percent.
+        /// </summary>
+        public const string StatsFormat = " // blocks: {0} · groups: {1} · links: {2} · zoom: {3}%";
+
         public const string CloseButton = "Закрыть";
-        public const string Hint =
-            "ЛКМ — выбрать · перетащить · стрелка — терминал блока · иконка лампы — привязка · колокольчик — отслеживание · «x» на порте — удалить связь · ПКМ — отмена · колесо — масштаб · Esc — закрыть";
+
         public const string EmptyGrid = "На этом гриде нет блоков для отображения";
         public const string Loading = "Чтение блоков грида…";
         public const string NoGrid = "Не удалось определить грид";
         public const string GridFallbackName = "Grid";
+
+        // ---- Bottom bar: modes menu and block search (ADR-0023) ----
+        //
+        // Two controls that act on what the schema *shows*, not on the wiring: the modes menu
+        // toggles whether blocks hidden from the schema are drawn, and the search field dims
+        // everything the query does not match.
+
+        /// <summary>Placeholder of the search field while it is empty. English, like the header.</summary>
+        public const string SearchPlaceholder = "Search blocks";
+
+        /// <summary>
+        /// Fallback glyph of the modes button, used only when the icon atlas is unavailable
+        /// (ADR-0019). The button is drawn as the <c>sliders</c> icon; "=" is the ASCII mark
+        /// closest to three sliders and exists in every font the editor may fall back to.
+        /// </summary>
+        public const string ModesGlyph = "=";
+
+        /// <summary>
+        /// The single row of the modes menu. It is a toggle, not a command: the check mark says
+        /// whether blocks with "Show in VGS" turned off are drawn as well.
+        /// </summary>
+        public const string ModesShowHidden = "Show/hide invisible";
+
+        /// <summary>
+        /// Hover hint of the modes button, shown in the bottom bar's second line. Same role as
+        /// <see cref="JumpHint"/>: an icon alone does not say what pressing it will do, and this
+        /// one changes what the whole canvas shows.
+        /// </summary>
+        public const string ModesHint = "Режимы просмотра: показывать скрытые блоки";
+
+        /// <summary>
+        /// Hover hint of the search field. Names the keys that are not discoverable from the field
+        /// itself: Enter, the clear button, and the selection/clipboard shortcuts (ADR-0024).
+        ///
+        /// It says the clipboard is the field's own. The platform gives a mod no access to the
+        /// system clipboard (ADR-0027, measured by a failed load), so a player who expects to
+        /// paste a block name from Notepad must be told here rather than left to conclude the
+        /// feature is broken.
+        /// </summary>
+        public const string SearchHint =
+            "Поиск блоков · Enter — к первому совпадению · «x» — сбросить · "
+            + "Ctrl+A / C / X / V — выделить, копировать, вырезать, вставить "
+            + "(буфер — только внутри поля)";
 
         // Bind mode: the bind button turns the pointer into a live line from a source port
         // until the user picks a target or cancels with the right mouse button.
@@ -805,13 +997,6 @@ namespace Vgs.Core
         /// </summary>
         public const string WarnRemoveRefusedFormat =
             "Связь не удалена: игра не разрешила изменить тулбар блока «{0}»";
-
-        // Status bar. Format arguments are documented at each use site: keeping the pattern
-        // here means the wording is translated in one place, and the caller can cache the
-        // formatted result instead of rebuilding it every frame.
-        public const string StatusFormat =
-            "Блоков: {0}   ·   Групп: {1}   ·   Связей: {2}   ·   Масштаб: {3}%";
-        public const string CullingFormat = "Показано {0} из {1} блоков — увеличьте масштаб";
 
         // Errors
         public const string ErrOpenScreen = "Не удалось открыть редактор";

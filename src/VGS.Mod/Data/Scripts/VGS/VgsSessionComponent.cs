@@ -74,8 +74,6 @@ namespace Vgs
         {
             if (!_initialised) return;
 
-            VgsSession.AdvanceFrame();
-
             try
             {
                 // The keeper replays an event controller's saved watch list into the live block
@@ -138,6 +136,17 @@ namespace Vgs
             catch (Exception e)
             {
                 VgsLog.Error("failed to uninstall the event controller keeper", e);
+            }
+
+            try
+            {
+                // The editor's paste buffer is session state: leaving it behind would hand the
+                // next world whatever was copied in the previous one (ADR-0024).
+                TextClipboard.Release();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Error("failed to release the text clipboard buffer", e);
             }
 
             try

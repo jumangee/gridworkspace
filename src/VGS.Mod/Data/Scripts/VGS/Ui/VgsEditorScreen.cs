@@ -49,10 +49,16 @@ namespace Vgs.Ui
     /// actually uses — the safe-GUI rectangle, a centred 4:3 box — so no code here deals with
     /// that difference (ADR-0009).
     ///
+    /// <b>The view is remembered, and it belongs to the grid.</b> Camera, zoom and the "show
+    /// invisible" toggle are read from the grid's own storage when the screen opens and written
+    /// back while they change and when it closes (ADR-0022, <see cref="GridViewStore"/>). They
+    /// live on the construct, not on the cockpit the screen was opened from, so a second cockpit
+    /// of the same ship shows the same view.
+    ///
     /// <b>No per-frame world access, no per-frame allocation.</b> Block data is read once
     /// into a <see cref="GridGraph"/>; drawing only reads that snapshot. Text that changes
-    /// rarely (status line, culling notice, menu title) is formatted when it changes and
-    /// reused — <see cref="OnDraw"/> runs every frame.
+    /// rarely (the header statistics, the search terms, menu captions) is formatted when it
+    /// changes and reused — <see cref="OnDraw"/> runs every frame.
     ///
     /// <b>Every override is guarded.</b> These methods are called by the game; an exception
     /// escaping one of them breaks the session, not just this screen.
@@ -144,7 +150,14 @@ namespace Vgs.Ui
         /// </summary>
         private static VgsEditorScreen _openEditor;
 
-        private readonly GridGraph _graph;
+        /// <summary>
+        /// The graph the screen draws. Not readonly: the "show invisible" mode (ADR-0023) decides
+        /// whether blocks with the "Show in VGS" flag off are part of the graph at all, so
+        /// switching the mode rebuilds it. Everything that holds a node across that rebuild is
+        /// re-validated by <see cref="ValidateInteractionState"/>.
+        /// </summary>
+        private GridGraph _graph;
+
         private readonly IMyCubeGrid _grid;
 
         // Camera: _camera is the graph-space point shown at the canvas top-left corner.
@@ -327,10 +340,6 @@ namespace Vgs.Ui
         private int _statusKeyEdges = -1;
         private int _statusKeyZoom = -1;
 
-        private string _cullText;
-        private int _cullKeyDrawn = -1;
-        private int _cullKeyTotal = -1;
-
         /// <summary>Menu title, formatted once when the menu opens. Draw only reads it.</summary>
         private string _menuTitle;
 
@@ -348,9 +357,149 @@ namespace Vgs.Ui
         /// <summary>True while the pointer is over the Close button; drives its highlight.</summary>
         private bool _closeHot;
 
-        private VgsEditorScreen(GridGraph graph, IMyCubeGrid grid)
+        // ------------------------------------------------------------------ view state (ADR-0022)
+
+        /// <summary>
+        /// Camera and zoom last written to the grid, and the frame of that write.
+        ///
+        /// Kept so the throttled save in <see cref="OnUpdate"/> can tell "nothing changed" from
+        /// "the player is still panning": comparing against the last written value costs two
+        /// float comparisons and saves a string allocation plus a dictionary write every frame.
+        /// </summary>
+        private Vector2 _savedCamera;
+        private float _savedZoom = -1f;
+        private bool _savedShowHidden;
+        private int _lastViewSaveFrame;
+
+        // ------------------------------------------------------------------ modes and search (ADR-0023)
+
+        /// <summary>
+        /// True while blocks whose "Show in VGS" flag is off are drawn as well. Part of the view
+        /// state, so it is saved with the camera and comes back with it (ADR-0022).
+        /// </summary>
+        private bool _showHidden;
+
+        /// <summary>True while the modes popup is open.</summary>
+        private bool _modesMenuOpen;
+
+        /// <summary>True while the pointer is over the modes button; drives its highlight.</summary>
+        private bool _modesHot;
+
+        /// <summary>True while the pointer is over the modes menu's only row.</summary>
+        private bool _modesRowHot;
+
+        /// <summary>True while the pointer is over the search field.</summary>
+        private bool _searchHot;
+
+        /// <summary>True while the pointer is over the search field's clear button.</summary>
+        private bool _searchClearHot;
+
+        /// <summary>
+        /// The search field's editing state: the query, the caret and the selection (ADR-0024).
+        ///
+        /// The state lives in <see cref="TextEditor"/> rather than in three fields here because
+        /// "where the caret is" and "what is selected" have to agree at every keystroke, and the
+        /// rules for that are the part worth testing without the game.
+        /// </summary>
+        private readonly TextEditor _searchEditor = new TextEditor(VgsConstants.SearchMaxLength);
+
+        /// <summary>
+        /// The query split into terms, rebuilt only when the editor's text changes.
+        /// <see cref="BlockSearch.Matches"/> runs for every drawn card on every frame, so
+        /// splitting there would allocate a string per card per frame (R010).
+        /// </summary>
+        private readonly List<string> _searchTerms = new List<string>(4);
+
+        /// <summary>
+        /// Where the caret and the selection edges sit horizontally, in client-area units relative
+        /// to the field's text origin, and the horizontal scroll that keeps the caret visible.
+        ///
+        /// Measured when the text, the caret or the field's width changes and reused across frames:
+        /// the draw path runs every frame, while these numbers only move when the player types,
+        /// clicks or holds an arrow key. Measuring them per frame would call into the font metrics
+        /// for a caret that has not moved.
+        ///
+        /// <see cref="_fieldLayoutValid"/> false means "recompute on the next draw".
+        /// </summary>
+        private bool _fieldLayoutValid;
+        private float _fieldCaretX;
+        private float _fieldSelectionStartX;
+        private float _fieldSelectionEndX;
+        private float _fieldScrollX;
+
+        /// <summary>Width the layout was computed for; a change (the "x" appearing) invalidates it.</summary>
+        private float _fieldAreaWidth = -1f;
+
+        /// <summary>
+        /// The part of the query that is actually painted, and the index it starts at.
+        ///
+        /// The screen-space API has no scissor a mod may safely use here, so the left end of an
+        /// overflowed query is handled by not drawing it at all: the visible tail is sliced once
+        /// when the layout changes and reused every frame. Slicing in the draw path would allocate
+        /// a string per frame for as long as the query was too long.
+        ///
+        /// The field is the full query reference when nothing is scrolled off, so the common case
+        /// allocates nothing at all.
+        /// </summary>
+        private string _fieldDisplayText;
+        private int _fieldFirstVisible;
+
+        /// <summary>
+        /// X of the first painted character, in the same units as the other cached positions.
+        ///
+        /// Cached rather than measured in the draw path: the painted string's origin is a function
+        /// of the scroll, which only moves when the player edits.
+        /// </summary>
+        private float _fieldFirstVisibleX;
+
+        /// <summary>
+        /// The caret is drawn on alternating halves of <see cref="VgsConstants.CaretBlinkFrames"/>,
+        /// and the phase restarts whenever the player edits: a caret that keeps blinking through a
+        /// keystroke can be invisible exactly when the player looks for it after typing.
+        /// </summary>
+        private int _caretBlinkBaseFrame;
+
+        /// <summary>
+        /// The screen's own frame counter, advanced once per <see cref="OnUpdate"/>.
+        ///
+        /// <b>Not <c>VgsSession.Frame</c>, and this is the whole point.</b> The editor pauses the
+        /// game (<c>PausesGameInSinglePlayer = true</c>), and a paused session reaches
+        /// <c>UpdateComponents</c> only through <c>UpdateComponentsWhilePaused</c>, which calls
+        /// <c>UpdateAfterSimulation</c> on a component only when its <c>UpdateOnPause</c> is set.
+        /// This mod's session component does not set it, so the session frame counter stands still
+        /// for as long as the editor is open — verified by IL, see
+        /// <c>docs/01-research/api-terminal-search.md</c> §2.5. Everything on this screen that
+        /// counts time (caret blink, warning expiry, the refresh throttle, the view-save throttle)
+        /// read that frozen counter, so none of them advanced: the caret never blinked and could
+        /// start invisible, warnings never expired, and blocks built with the editor open never
+        /// appeared.
+        ///
+        /// The screen's own counter is the fix, because <c>OnUpdate</c> is called by the mod screen
+        /// host without any pause gate — a GUI screen keeps updating while the world is paused,
+        /// which is how the pause menu works at all.
+        /// </summary>
+        private int _screenFrame;
+
+        /// <summary>
+        /// Line heights of the bottom bar's text scales, measured once each.
+        ///
+        /// Each control centres its text vertically, which needs the height of a line, and
+        /// measuring per frame would call into the font metrics for a value that only changes
+        /// with the resolution — and the editor is a modal screen, so it does not.
+        ///
+        /// Three fields, not one: the search field, the modes menu's label and the hint line are
+        /// drawn at three different scales, so one cache would hand the first measured height to
+        /// the other two and mis-centre them. A negative value means "not measured yet", which is
+        /// why these cannot be simple value caches with a 0 default.
+        /// </summary>
+        private float _searchLineHeight = -1f;
+        private float _modesLineHeight = -1f;
+        private float _hintLineHeight = -1f;
+
+        private VgsEditorScreen(GridGraph graph, IMyCubeGrid grid, Vector2 camera, float zoom,
+                                bool showHidden)
             : base(
-                name: "VGS.GridSetup",
+                name: "VGS.Workbench",
                 position: new Vector2(0.5f, 0.5f),
                 size: new Vector2(1f, 1f),
                 // No host background on purpose: MyGuiScreenBase paints it inside the safe-GUI
@@ -362,6 +511,9 @@ namespace Vgs.Ui
         {
             _graph = graph;
             _grid = grid;
+            _camera = camera;
+            _zoom = zoom;
+            _showHidden = showHidden;
 
             // The editor is a full-screen modal: Esc closes it, the pointer is visible, and in
             // single player the world pauses behind it.
@@ -370,9 +522,6 @@ namespace Vgs.Ui
             DrawMouseCursor = true;
             EnabledBackgroundFade = true;
             PausesGameInSinglePlayer = true;
-
-            // Start with the graph roughly centred.
-            _camera = new Vector2(-0.08f, -0.05f);
         }
 
         /// <summary>
@@ -408,14 +557,31 @@ namespace Vgs.Ui
                 return;
             }
 
-            GridGraph graph = GridGraphBuilder.Build(grid);
+            // The view the player left this construct in (ADR-0022). Read here, on the open path,
+            // and not from the draw path: it is a live grid read, and the default view is used
+            // when nothing is stored or the stored value does not parse.
+            Vector2 camera = new Vector2(-0.08f, -0.05f);
+            float zoom = 1f;
+            bool showHidden = false;
+
+            Vector2 savedCamera;
+            float savedZoom;
+            bool savedShowHidden;
+            if (GridViewStore.TryRead(grid, out savedCamera, out savedZoom, out savedShowHidden))
+            {
+                camera = savedCamera;
+                zoom = savedZoom;
+                showHidden = savedShowHidden;
+            }
+
+            GridGraph graph = GridGraphBuilder.Build(grid, showHidden);
 
             // Group frames are derived from the cards of their members, so they are laid out
             // once the graph is complete — before the first frame is drawn, and outside any
             // draw path (ADR-0015).
             PortGeometry.LayoutGroupFrames(graph);
 
-            var screen = new VgsEditorScreen(graph, grid);
+            var screen = new VgsEditorScreen(graph, grid, camera, zoom, showHidden);
 
             VgsScreenDraw.EnsureResources();
             if (!VgsScreenDraw.ResourcesReady)
@@ -429,7 +595,8 @@ namespace Vgs.Ui
 
             _openEditor = screen;
             screen.Open();
-            VgsLog.Info("editor opened for grid " + grid.EntityId + " (" + graph.NodeCount + " blocks)");
+            VgsLog.Info("editor opened for grid " + grid.EntityId + " (" + graph.NodeCount + " blocks, "
+                        + (showHidden ? "invisible blocks shown" : "invisible blocks hidden") + ")");
         }
 
         private static void Notify(string message)
@@ -490,7 +657,12 @@ namespace Vgs.Ui
                 // through before its first frame, so one read here covers every frame after it.
                 ResolveGridName();
 
-                _lastRefreshFrame = VgsSession.Frame;
+                _lastRefreshFrame = _screenFrame;
+
+                // The view is already what the screen was constructed with; recording it as
+                // "written" is what stops the throttled save in OnUpdate from writing an
+                // identical value on the first frame.
+                RememberSavedView();
             }
             catch (Exception e)
             {
@@ -531,6 +703,23 @@ namespace Vgs.Ui
                     return false;
                 }
 
+                // The modes popup is the shallowest thing on the screen, so Esc closes it before
+                // it closes the editor.
+                if (_modesMenuOpen)
+                {
+                    _modesMenuOpen = false;
+                    return false;
+                }
+
+                // A search is a view of the schema, not a mode with a gesture to cancel: Esc
+                // clears the query first, so the player can always get back to the full picture
+                // without closing and reopening the editor.
+                if (SearchHasText)
+                {
+                    ClearSearch();
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception e)
@@ -546,30 +735,44 @@ namespace Vgs.Ui
             {
                 if (ReferenceEquals(_openEditor, this)) _openEditor = null;
 
-                _draggedNode = null;
-                _draggedGroup = null;
-                _selected = null;
-                _bindSource = null;
-                _bindPort = null;
-                _watchSource = null;
-                _watchErrorUntilFrame = 0;
+                // The last chance to remember the view. Skipped while unloading: the session is
+                // being torn down and touching a live grid there is not worth a camera position
+                // — the throttled save in OnUpdate has already written the latest one.
+                if (!isUnloading) SaveView();
+
+                // Selection, drag, hover and both gestures in one call: they are the same set of
+                // references the rebuild drops, and a second hand-written list here is a list that
+                // goes stale the moment a field is added.
+                DropNodeReferences();
                 _menuTarget = null;
                 _menuRows.Clear();
                 _menuLabels.Clear();
                 _menuTitle = null;
                 _statusText = null;
-                _cullText = null;
+                _titleWidth = -1f;
+                _titleWidthClientWidth = -1f;
+                _gridNameWidth = -1f;
+                _gridNameWidthFor = null;
+                _gridNameWidthClientWidth = -1f;
                 _gridNameCache = null;
-                _hoverNode = null;
-                _hoverButton = null;
-                _hoverRemoveNode = null;
-                _hoverRemovePort = null;
-                _hoverWatchRemoveNode = null;
-                _hoverWatchRemoveTarget = null;
                 _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
                 _removeBuffer.Clear();
+                _searchTerms.Clear();
+                _searchEditor.Clear();
+                _fieldLayoutValid = false;
+                _fieldAreaWidth = -1f;
+                _fieldCaretX = 0f;
+                _fieldSelectionStartX = 0f;
+                _fieldSelectionEndX = 0f;
+                _fieldScrollX = 0f;
+                _fieldDisplayText = null;
+                _fieldFirstVisible = 0;
+                _searchLineHeight = -1f;
+                _modesLineHeight = -1f;
+                _hintLineHeight = -1f;
+                _modesMenuOpen = false;
                 _portLabelHeight = 0f;
                 _portLabelHeightZoom = -1f;
 
@@ -602,6 +805,98 @@ namespace Vgs.Ui
             topLeft = new Vector2(
                 1f - VgsConstants.CloseButtonRightMargin - size.X,
                 1f - VgsConstants.BottomBarHeight * 0.5f - size.Y * 0.5f);
+        }
+
+        /// <summary>
+        /// Vertical position of the bottom bar's control row.
+        ///
+        /// <b>Centred in the bar, on the Close button's own centre line.</b> Close is centred in
+        /// the bar, so a controls row that was bottom-aligned instead would sit about twenty
+        /// pixels lower at 1080p — two rows of chrome in one bar, which reads as a layout mistake
+        /// rather than as a choice. Centring them together is also what makes the bar behave at
+        /// any height: the row keeps its distance from both edges.
+        ///
+        /// The hint line then lives in the strip above the row, where it cannot collide with it
+        /// whatever the font's line height turns out to be.
+        /// </summary>
+        private static float BarControlTop
+        {
+            get { return 1f - VgsConstants.BottomBarHeight * 0.5f - VgsConstants.BarControlHeight * 0.5f; }
+        }
+
+        /// <summary>Rectangle of the modes button: the leftmost control of the bottom bar.</summary>
+        private static void GetModesButtonRect(out Vector2 topLeft, out Vector2 size)
+        {
+            size = new Vector2(VgsConstants.ModesButtonWidth, VgsConstants.BarControlHeight);
+            topLeft = new Vector2(VgsConstants.BarLeftMargin, BarControlTop);
+        }
+
+        /// <summary>Rectangle of the block search field, immediately right of the modes button.</summary>
+        private static void GetSearchFieldRect(out Vector2 topLeft, out Vector2 size)
+        {
+            Vector2 buttonTopLeft, buttonSize;
+            GetModesButtonRect(out buttonTopLeft, out buttonSize);
+
+            size = new Vector2(VgsConstants.SearchFieldWidth, VgsConstants.BarControlHeight);
+            topLeft = new Vector2(buttonTopLeft.X + buttonSize.X + VgsConstants.BarControlGap, BarControlTop);
+        }
+
+        /// <summary>
+        /// Rectangle of the search field's clear button, or false when it cannot be laid out.
+        ///
+        /// <b>One rectangle, not a centre plus a radius.</b> The draw pass needs the mark's centre
+        /// and the input pass needs a box to hit-test, and deriving them from the same rectangle
+        /// is what keeps them from drifting apart — the mark is small, so an error of one radius
+        /// puts half of the visible "x" outside its own click target. That is a defect this
+        /// editor had in an earlier revision of this very control, and the fix is that the
+        /// arithmetic exists once.
+        ///
+        /// Whether the button is *drawn* depends on the query, which the caller decides: the
+        /// geometry itself is a property of the field alone.
+        /// </summary>
+        private static bool TrySearchClearRect(out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            Vector2 fieldTopLeft, fieldSize;
+            GetSearchFieldRect(out fieldTopLeft, out fieldSize);
+
+            // The button's diameter is the field's height less the padding on both sides, so it
+            // can never overflow the field at any resolution.
+            float diameter = fieldSize.Y - VgsConstants.SearchFieldPadding * 2f;
+            if (diameter <= 0f) return false;
+
+            size = new Vector2(diameter, diameter);
+            topLeft = new Vector2(fieldTopLeft.X + fieldSize.X - VgsConstants.SearchFieldPadding - diameter,
+                                  fieldTopLeft.Y + (fieldSize.Y - diameter) * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Rectangle of the modes popup. Anchored above the modes button and left-aligned with it,
+        /// because the button sits in the bottom bar and a menu hanging below would be off-screen.
+        /// </summary>
+        private static void GetModesMenuRect(out Vector2 topLeft, out Vector2 size)
+        {
+            Vector2 buttonTopLeft, buttonSize;
+            GetModesButtonRect(out buttonTopLeft, out buttonSize);
+
+            size = new Vector2(VgsConstants.ModesMenuWidth,
+                               VgsConstants.ModesMenuRowHeight + VgsConstants.ModesMenuPadding * 2f);
+
+            topLeft = new Vector2(buttonTopLeft.X,
+                                  buttonTopLeft.Y - size.Y - VgsConstants.ModesMenuGap);
+        }
+
+        /// <summary>Rectangle of the modes menu's single row.</summary>
+        private static void GetModesRowRect(out Vector2 topLeft, out Vector2 size)
+        {
+            Vector2 menuTopLeft, menuSize;
+            GetModesMenuRect(out menuTopLeft, out menuSize);
+
+            size = new Vector2(menuSize.X, VgsConstants.ModesMenuRowHeight);
+            topLeft = new Vector2(menuTopLeft.X, menuTopLeft.Y + VgsConstants.ModesMenuPadding);
         }
 
         /// <summary>
@@ -668,15 +963,25 @@ namespace Vgs.Ui
 
         protected override void OnUpdate(bool hasFocus)
         {
+            // Advanced before anything else, and outside the focus check: the caret must keep
+            // blinking and warnings must keep expiring even on a frame where the host reports no
+            // focus. It cannot throw, so it needs no guard of its own.
+            _screenFrame++;
+
             try
             {
                 if (!hasFocus) return;
 
-                if (VgsSession.Frame - _lastRefreshFrame >= RefreshIntervalFrames)
+                if (_screenFrame - _lastRefreshFrame >= RefreshIntervalFrames)
                 {
-                    _lastRefreshFrame = VgsSession.Frame;
+                    _lastRefreshFrame = _screenFrame;
                     RefreshFromGrid();
                 }
+
+                // The camera and the zoom change on pointer events, not on a timer, so the save
+                // cannot live in the input pass: panning would write on every frame. It runs here
+                // instead, throttled, and writes only when the value really changed (ADR-0022).
+                SaveViewIfChanged();
             }
             catch (Exception e)
             {
@@ -702,7 +1007,7 @@ namespace Vgs.Ui
                     return;
                 }
 
-                GridGraphBuilder.Refresh(_graph, _grid);
+                GridGraphBuilder.Refresh(_graph, _grid, _showHidden);
 
                 // The refresh moves cards (LayoutUnplaced) and rebuilds the groups, so the
                 // frames have to be recomputed before the next draw reads them.
@@ -713,6 +1018,366 @@ namespace Vgs.Ui
             catch (Exception e)
             {
                 VgsLog.Error("editor refresh failed", e);
+            }
+        }
+
+        /// <summary>
+        /// Rebuilds the graph after the "show invisible" mode changed (ADR-0023).
+        ///
+        /// A rebuild rather than a flag on the nodes: whether a block is part of the schema is
+        /// decided while the graph is built (<see cref="GridGraphBuilder"/>), because that is
+        /// where the block is read. The cost is one walk of the grid on a click, which is the
+        /// same walk the periodic refresh does anyway.
+        ///
+        /// Saved card positions are read again from the blocks, so nothing the player placed
+        /// moves; a block that was hidden until now has no saved position and is laid out by the
+        /// deterministic pass, exactly as it would be on the first open.
+        ///
+        /// <b>Every node reference is dropped first.</b> A rebuild replaces every
+        /// <see cref="Node"/> object, including the groups — and unlike a refresh, it does not
+        /// update the existing ones in place. <see cref="ValidateInteractionState"/> alone is not
+        /// enough here: it asks the graph by name for a group, so a stale group object with a
+        /// name that still exists would be declared alive, and the drag or selection holding it
+        /// would then act on a node that is no longer drawn.
+        /// </summary>
+        private void RebuildGraph()
+        {
+            if (_grid == null) return;
+
+            DropNodeReferences();
+
+            _graph = GridGraphBuilder.Build(_grid, _showHidden);
+            PortGeometry.LayoutGroupFrames(_graph);
+
+            VgsLog.Info("schema rebuilt: " + _graph.NodeCount + " blocks, invisible "
+                        + (_showHidden ? "shown" : "hidden"));
+        }
+
+        /// <summary>
+        /// Drops every reference the pointer holds into the current graph: selection, drag,
+        /// hover and the two gestures that aim at a node.
+        ///
+        /// Cancelling the gestures rather than re-aiming them is deliberate: after a rebuild
+        /// there is no node to re-aim at, and a bind that silently pointed at a block the player
+        /// can no longer see would write a connection to it.
+        /// </summary>
+        private void DropNodeReferences()
+        {
+            CancelBind();
+            CancelWatch();
+
+            _selected = null;
+            _draggedNode = null;
+            _draggedGroup = null;
+            _dragging = false;
+            _watchErrorUntilFrame = 0;
+            ClearHoverHighlights();
+        }
+
+        /// <summary>
+        /// Drops every "the pointer is over this" highlight.
+        ///
+        /// Needed whenever the canvas stops receiving pointer input while staying on screen: a
+        /// rebuild replaces the nodes, and the modes popup covers the canvas. In both cases the
+        /// hover fields would otherwise freeze on whatever was under the pointer at that moment,
+        /// and the card would keep its hover border — drawn every frame, because
+        /// <see cref="DrawNode"/> reads the field — for as long as the state lasted.
+        /// </summary>
+        private void ClearHoverHighlights()
+        {
+            _hoverNode = null;
+            _hoverButton = null;
+            _hoverRemoveNode = null;
+            _hoverRemovePort = null;
+            _hoverWatchRemoveNode = null;
+            _hoverWatchRemoveTarget = null;
+            _searchHot = false;
+            _searchClearHot = false;
+        }
+
+        // ------------------------------------------------------------------ view state (ADR-0022)
+
+        /// <summary>
+        /// Records the view currently on screen as "already saved", so the throttled save does
+        /// not write a value identical to what the grid already holds.
+        /// </summary>
+        private void RememberSavedView()
+        {
+            _savedCamera = _camera;
+            _savedZoom = _zoom;
+            _savedShowHidden = _showHidden;
+            _lastViewSaveFrame = _screenFrame;
+        }
+
+        /// <summary>True when the camera, the zoom or the mode differs from what was last written.</summary>
+        private bool ViewChanged
+        {
+            get
+            {
+                return _savedZoom != _zoom
+                       || _savedShowHidden != _showHidden
+                       || _savedCamera != _camera;
+            }
+        }
+
+        /// <summary>
+        /// Writes the view to the grid and records it as written. Returns whether the write went
+        /// through; a refusal is a normal outcome (the grid may be mid-teardown).
+        /// </summary>
+        private bool SaveView()
+        {
+            if (_grid == null) return false;
+            if (!GridViewStore.Save(_grid, _camera, _zoom, _showHidden)) return false;
+
+            RememberSavedView();
+            return true;
+        }
+
+        /// <summary>
+        /// Writes the view when it changed and the throttle interval has passed. Called from
+        /// <see cref="OnUpdate"/> once per frame, so it must be free when nothing changed.
+        ///
+        /// <b>The throttle is advanced on the attempt, not on the success.</b> A failed write
+        /// leaves <see cref="_savedCamera"/> untouched — so "changed" stays true — and if the
+        /// interval were only reset by a successful write, a grid that refuses the write would
+        /// make this method format a string and try a dictionary write on every single frame for
+        /// as long as the refusal lasted. Retrying at the normal cadence is enough: the value is
+        /// a camera position, and the next attempt is two seconds away.
+        /// </summary>
+        private void SaveViewIfChanged()
+        {
+            if (!ViewChanged) return;
+            if (_screenFrame - _lastViewSaveFrame < VgsConstants.ViewSaveIntervalFrames) return;
+
+            _lastViewSaveFrame = _screenFrame;
+            SaveView();
+        }
+
+        // ------------------------------------------------------------------ block search (ADR-0023)
+
+        /// <summary>True while a query is being filtered by.</summary>
+        private bool SearchActive
+        {
+            get { return _searchTerms.Count > 0; }
+        }
+
+        /// <summary>The query as typed. Never null.</summary>
+        private string SearchText
+        {
+            get { return _searchEditor.Text; }
+        }
+
+        /// <summary>True while the search field holds any text, which is when "x" is drawn.</summary>
+        private bool SearchHasText
+        {
+            get { return _searchEditor.Length > 0; }
+        }
+
+        /// <summary>
+        /// Re-splits the terms after the editor's text changed, and invalidates the caret layout.
+        ///
+        /// One place for both, because they are the same event: the text is what decides the
+        /// filter and where the caret is drawn. Called on every edit, never from the draw path —
+        /// <see cref="BlockSearch.SplitTerms"/> allocates one string per term, and the layout
+        /// measures the text.
+        /// </summary>
+        private void OnSearchTextChanged()
+        {
+            BlockSearch.SplitTerms(_searchEditor.Text, _searchTerms);
+            _fieldLayoutValid = false;
+        }
+
+        /// <summary>Drops the query, which brings every card back to full opacity.</summary>
+        private void ClearSearch()
+        {
+            _searchEditor.Clear();
+            OnSearchTextChanged();
+            ResetCaretBlink();
+        }
+
+        /// <summary>
+        /// Inserts one typed character at the caret. Control characters are dropped: the game
+        /// hands over the raw character stream, which includes the carriage return of Enter, the
+        /// backspace and whatever a Ctrl shortcut produces (ADR-0024).
+        /// </summary>
+        private void AppendSearchChar(char c)
+        {
+            if (char.IsControl(c)) return;
+
+            if (!_searchEditor.Insert(c)) return;
+
+            // The blink restarts so the caret is visible right after a keystroke — otherwise the
+            // character appears with no visible insertion point for up to half a period.
+            ResetCaretBlink();
+            OnSearchTextChanged();
+        }
+
+        /// <summary>Restarts the caret's blink cycle at the current frame.</summary>
+        private void ResetCaretBlink()
+        {
+            _caretBlinkBaseFrame = _screenFrame;
+        }
+
+        /// <summary>
+        /// Copies the selection (or the whole query when nothing is selected) to the clipboard.
+        /// With <paramref name="cut"/> it also removes what it copied.
+        ///
+        /// With no selection a copy takes the whole query — what a player expects from a one-line
+        /// field — but a *cut* with no selection does nothing. Cutting everything when the player
+        /// only pressed Ctrl+X in passing would empty the field they were still reading; the
+        /// standard behaviour of every text field is the safer one here.
+        /// </summary>
+        private void CopySearchText(bool cut)
+        {
+            if (!_searchEditor.HasSelection && cut) return;
+
+            string text = _searchEditor.HasSelection
+                ? _searchEditor.SelectedText
+                : _searchEditor.Text;
+            if (string.IsNullOrEmpty(text)) return;
+
+            TextClipboard.Copy(text);
+
+            if (!cut) return;
+
+            _searchEditor.DeleteForward();
+
+            ResetCaretBlink();
+            OnSearchTextChanged();
+        }
+
+        /// <summary>
+        /// Pastes the editor's own clipboard at the caret.
+        ///
+        /// The buffer is this session's own last copy or cut. The operating system's clipboard is
+        /// not reachable from a mod — measured, not assumed: the game refuses to load
+        /// `IVRageSystem`/`IVRagePlatform`/`MyVRage` as "is prohibited" (ADR-0027). So a paste can
+        /// only reproduce text this field itself produced.
+        ///
+        /// Nothing is shown when the buffer is empty: the player pressed a key that does nothing,
+        /// which needs no explanation on a bar whose only free line belongs to failures.
+        /// </summary>
+        private void PasteSearchText()
+        {
+            string text = TextClipboard.PasteText;
+            if (string.IsNullOrEmpty(text)) return;
+            if (!_searchEditor.Insert(text)) return;
+
+            ResetCaretBlink();
+            OnSearchTextChanged();
+        }
+
+        /// <summary>
+        /// True when the card must be drawn at <see cref="VgsConstants.SearchDimOpacity"/>.
+        ///
+        /// The two fields are the ones the terminal searches: the block's name and its
+        /// <em>displayed type</em> (ADR-0023). A group is dimmed only when none of its drawn
+        /// members match: the frame is a backdrop for its members, so it has to follow them
+        /// rather than the query — a frame that disappeared while one of its cards stayed would
+        /// break the picture apart.
+        /// </summary>
+        private bool IsDimmed(Node node)
+        {
+            if (!SearchActive || node == null) return false;
+
+            if (!node.IsGroup)
+            {
+                return !Matches(node);
+            }
+
+            for (int i = 0; i < node.Members.Count; i++)
+            {
+                Node member = _graph.GetNode(node.Members[i]);
+                if (member == null) continue;
+                if (Matches(member)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// True when one node matches the current query: every term must occur in its name or in
+        /// its displayed type.
+        ///
+        /// A single place for the two-field call, so the draw path, the group walk and the Enter
+        /// jump cannot end up searching slightly different things — the classic way a search
+        /// starts disagreeing with itself.
+        /// </summary>
+        private bool Matches(Node node)
+        {
+            if (node == null) return false;
+            return BlockSearch.Matches(_searchTerms, node.DisplayName, node.TypeDisplayName);
+        }
+
+        /// <summary>Alpha multiplier for one node's drawing: 1 for a match, the dim value otherwise.</summary>
+        private float AlphaOf(Node node)
+        {
+            return IsDimmed(node) ? VgsConstants.SearchDimOpacity : 1f;
+        }
+
+        /// <summary>
+        /// Alpha of a line between two nodes: the <b>higher</b> of the two.
+        ///
+        /// A line stays visible while <em>at least one</em> of its ends matches the query, because
+        /// the whole point of finding a block is seeing what it is wired to: ghosting the wires of
+        /// the card the player just found would hide the one thing they searched for. Only a line
+        /// whose both ends are excluded becomes a ghost itself (ADR-0023 §4, and the rejected
+        /// alternative there is exactly this mistake).
+        /// </summary>
+        private float MaxAlpha(Node a, Node b)
+        {
+            float first = AlphaOf(a);
+            float second = AlphaOf(b);
+            return second > first ? second : first;
+        }
+
+        /// <summary>
+        /// Applies <see cref="AlphaOf"/> to a colour. A struct copy, so this is safe in the draw
+        /// path: nothing is allocated and no cached colour is mutated.
+        /// </summary>
+        private static Color Fade(Color color, float alpha)
+        {
+            if (alpha >= 1f) return color;
+
+            float a = (color.A / 255f) * alpha;
+            if (a < 0f) a = 0f;
+            return new Color(color, a);
+        }
+
+        /// <summary>
+        /// Moves the camera so the first card matching the query is centred on the canvas.
+        ///
+        /// "First" is the graph's own order, which is stable for a given construct — the same
+        /// order the cards are drawn in. Nothing happens when nothing matches: the player is
+        /// mid-query and the picture must not jump away from them.
+        ///
+        /// A card whose centre cannot be computed is <em>skipped</em>, not treated as the end of
+        /// the walk: one degenerate node must not make Enter a no-op while a perfectly good
+        /// match sits further down the list.
+        /// </summary>
+        private void JumpToFirstMatch()
+        {
+            if (!SearchActive) return;
+
+            Vector2 canvasTopLeft, canvasSize;
+            GetCanvasRect(out canvasTopLeft, out canvasSize);
+
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                Node node = nodes[i];
+                if (!Matches(node)) continue;
+
+                Vector2 centre;
+                if (!PortGeometry.TryCardCentre(node, out centre)) continue;
+
+                // Aim the camera so the card's centre lands at the centre of the canvas:
+                // screen = (graph - camera) * zoom + canvasTopLeft, and the screen point we want
+                // is the canvas centre, so camera = graph - canvasSize / (2 * zoom).
+                _camera = centre - (canvasSize * 0.5f) / _zoom;
+                _selected = node;
+
+                VgsLog.Debug("search '" + SearchText + "' jumped to block " + node.EntityId);
+                return;
             }
         }
 
@@ -839,6 +1504,11 @@ namespace Vgs.Ui
 
                 if (MyAPIGateway.Input == null) return;
 
+                // Typing is handled before the pointer, and before the "no cursor" early return:
+                // the search field is the editor's only keyboard target, and it must keep working
+                // when the pointer happens to be outside the window.
+                HandleSearchKeyboard();
+
                 Vector2 mouse;
                 _mouseValid = VgsScreenDraw.TryCursor(out mouse);
                 if (!_mouseValid) return;
@@ -846,6 +1516,11 @@ namespace Vgs.Ui
                 _mouse = mouse;
 
                 if (HandleCloseButton(mouse)) return;
+
+                // The bottom bar's controls are hit-tested before every mode: they belong to the
+                // chrome, and a click on the search field must not also pan the canvas or pick a
+                // binding target.
+                if (HandleBarInput(mouse)) return;
 
                 if (_menuTarget != null) { HandleMenuInput(mouse); return; }
                 if (_bindSource != null) { HandleBindInput(mouse); return; }
@@ -858,6 +1533,289 @@ namespace Vgs.Ui
                 VgsLog.Throttled("screeninput", "input handling failed", e, 300);
             }
         }
+
+        /// <summary>
+        /// Feeds the typed characters, the editing keys and the clipboard shortcuts into the
+        /// search field (ADR-0023, ADR-0024).
+        ///
+        /// <b>The field is always the keyboard target.</b> The editor has no other text input and
+        /// no keyboard shortcut but Esc, so there is nothing to take focus from it and no focus
+        /// ring to explain. A click on the canvas does not blur it, which is what makes "type
+        /// anywhere to filter" work.
+        ///
+        /// <b>The character stream is per frame.</b> The game hands over the characters typed
+        /// since the last input update and swaps its buffer, so reading
+        /// <see cref="VRage.ModAPI.IMyInput.TextInput"/> once per frame consumes each character
+        /// exactly once (verified by IL, see <c>docs/01-research/api-terminal-search.md</c>).
+        ///
+        /// <b>Order matters.</b> Control keys are resolved before the character stream, because
+        /// Ctrl+C also produces a character (0x03) and Backspace produces 0x08: both would be
+        /// dropped by the control-character filter anyway, but resolving the shortcut first is what
+        /// makes the *one* intent produce the *one* effect. And the stream is consumed last and
+        /// unconditionally — every character must be read out of the buffer each frame whether or
+        /// not some other key was handled, or the game would carry it into the next frame.
+        /// </summary>
+        private void HandleSearchKeyboard()
+        {
+            VRage.ModAPI.IMyInput input = MyAPIGateway.Input;
+            if (input == null) return;
+
+            // While the modes popup is open it owns the keyboard: typing must not edit the query
+            // behind it, and Ctrl+V must not paste into a field the player cannot see past the
+            // menu. This follows the same rule the canvas already follows (ADR-0023 §4: nothing
+            // behind the popup takes input) and the Esc order — each step cancels exactly what the
+            // player started last, and the menu is what was started last.
+            //
+            // The character stream is still drained, and that is the whole reason this is a
+            // branch and not an early return: an undrained character is carried into the next
+            // frame, so it would appear in the field the moment the menu closed — the keystroke
+            // would seem to arrive late rather than to be ignored.
+            if (_modesMenuOpen)
+            {
+                VRage.Collections.ListReader<char> swallowed = input.TextInput;
+                if (swallowed.Count > 0)
+                {
+                    VgsLog.Debug("modes menu swallowed " + swallowed.Count +
+                                 " typed character(s)");
+                }
+                return;
+            }
+
+            bool control = input.IsAnyCtrlKeyPressed();
+            bool shift = input.IsAnyShiftKeyPressed();
+
+            // ---- clipboard ----
+            if (control)
+            {
+                if (input.IsNewKeyPressed(VRage.Input.MyKeys.C)) CopySearchText(false);
+                if (input.IsNewKeyPressed(VRage.Input.MyKeys.X)) CopySearchText(true);
+                if (input.IsNewKeyPressed(VRage.Input.MyKeys.V)) PasteSearchText();
+                if (input.IsNewKeyPressed(VRage.Input.MyKeys.A)) SelectAllSearchText();
+            }
+
+            // ---- caret movement and deletion ----
+            //
+            // Shift extends the selection, a bare arrow collapses it: the rule lives in
+            // TextEditor.MoveHorizontal, so these four lines only carry the intent.
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Left))
+            {
+                _searchEditor.MoveHorizontal(-1, shift);
+                ResetCaretBlink();
+                _fieldLayoutValid = false;
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Right))
+            {
+                _searchEditor.MoveHorizontal(1, shift);
+                ResetCaretBlink();
+                _fieldLayoutValid = false;
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Home))
+            {
+                _searchEditor.MoveTo(0, shift);
+                ResetCaretBlink();
+                _fieldLayoutValid = false;
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.End))
+            {
+                _searchEditor.MoveTo(_searchEditor.Length, shift);
+                ResetCaretBlink();
+                _fieldLayoutValid = false;
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Delete))
+            {
+                if (_searchEditor.DeleteForward())
+                {
+                    ResetCaretBlink();
+                    OnSearchTextChanged();
+                }
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Back))
+            {
+                if (_searchEditor.DeleteBackward())
+                {
+                    ResetCaretBlink();
+                    OnSearchTextChanged();
+                }
+            }
+
+            if (input.IsNewKeyPressed(VRage.Input.MyKeys.Enter))
+            {
+                JumpToFirstMatch();
+            }
+
+            // The stream is always drained, even when a shortcut above already acted on it.
+            VRage.Collections.ListReader<char> typed = input.TextInput;
+            for (int i = 0; i < typed.Count; i++)
+            {
+                AppendSearchChar(typed[i]);
+            }
+        }
+
+        /// <summary>Selects the whole query (Ctrl+A).</summary>
+        private void SelectAllSearchText()
+        {
+            if (_searchEditor.Length == 0) return;
+
+            _searchEditor.SelectAll();
+            ResetCaretBlink();
+            _fieldLayoutValid = false;
+        }
+
+        /// <summary>
+        /// Click handling for the bottom bar: the modes button, its popup, and the search field
+        /// with its clear button. Returns true when the click was consumed by the bar.
+        /// </summary>
+        private bool HandleBarInput(Vector2 mouse)
+        {
+            bool leftNew = MyAPIGateway.Input.IsNewLeftMousePressed();
+
+            Vector2 buttonTopLeft, buttonSize;
+            GetModesButtonRect(out buttonTopLeft, out buttonSize);
+            _modesHot = PortGeometry.Contains(buttonTopLeft, buttonSize, mouse);
+
+            // ---- modes popup (drawn above the button, so it is resolved first) ----
+            if (_modesMenuOpen)
+            {
+                // The canvas and the search field are not reachable while the popup is up, so
+                // every "pointer is over this" highlight is dropped here rather than left on from
+                // before the menu opened: a card that kept its hover border behind an open menu
+                // reads as a stuck control.
+                ClearHoverHighlights();
+
+                Vector2 rowTopLeft, rowSize;
+                GetModesRowRect(out rowTopLeft, out rowSize);
+                _modesRowHot = PortGeometry.Contains(rowTopLeft, rowSize, mouse);
+
+                if (leftNew)
+                {
+                    // The button toggles the popup even while it is open: that is what a menu
+                    // button does everywhere else, and without this a second click on it would
+                    // fall through to "close on any outside click" and look the same — until the
+                    // pointer happens to be over the button and the menu seems to ignore it.
+                    if (_modesHot)
+                    {
+                        _modesMenuOpen = false;
+                        return true;
+                    }
+
+                    if (_modesRowHot)
+                    {
+                        ToggleShowHidden();
+                        return true;
+                    }
+
+                    Vector2 menuTopLeft, menuSize;
+                    GetModesMenuRect(out menuTopLeft, out menuSize);
+
+                    // A click inside the popup but not on its row is a miss on the popup, not a
+                    // command: the menu stays open. A click anywhere else closes it.
+                    if (PortGeometry.Contains(menuTopLeft, menuSize, mouse)) return true;
+
+                    _modesMenuOpen = false;
+                    return true;
+                }
+
+                return true;
+            }
+
+            _modesRowHot = false;
+
+            // ---- modes button ----
+            if (leftNew && _modesHot)
+            {
+                _modesMenuOpen = true;
+                return true;
+            }
+
+            // ---- search field ----
+            Vector2 fieldTopLeft, fieldSize;
+            GetSearchFieldRect(out fieldTopLeft, out fieldSize);
+            _searchHot = PortGeometry.Contains(fieldTopLeft, fieldSize, mouse);
+
+            // The clear button exists only while there is something to clear, and it is
+            // resolved before the field for the same reason the port's "x" is resolved before its
+            // card: the smaller target on top of the bigger one has to win.
+            Vector2 clearTopLeft, clearSize;
+            _searchClearHot = SearchHasText
+                              && TrySearchClearRect(out clearTopLeft, out clearSize)
+                              && PortGeometry.Contains(clearTopLeft, clearSize, mouse);
+
+            if (leftNew && _searchClearHot)
+            {
+                ClearSearch();
+                return true;
+            }
+
+            // A click inside the field belongs to the field, never to the canvas underneath it.
+            // It also decides where the caret goes, which is the one thing a click in a text field
+            // is *for*: without this the field had no way to place the caret except by typing.
+            if (leftNew && _searchHot)
+            {
+                PlaceCaretAtPointer(mouse, fieldTopLeft);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Puts the caret at the character boundary nearest the pointer, and drops any selection.
+        ///
+        /// The inverse of <see cref="EnsureFieldLayout"/>: it walks the character boundaries that
+        /// layout already measured and picks the closest one. Walking measured boundaries rather
+        /// than dividing by an average character width is what makes a click land between the two
+        /// glyphs the player aimed at, whatever the font's spacing is.
+        ///
+        /// With Shift held it extends the selection instead, which is how a click completes a
+        /// selection that was started by keyboard.
+        /// </summary>
+        private void PlaceCaretAtPointer(Vector2 mouse, Vector2 fieldTopLeft)
+        {
+            float textLeft = fieldTopLeft.X + VgsConstants.SearchFieldPadding;
+            // A click anywhere in the field (including on the padding, or on the right half of the
+            // space the "x" does not occupy) scrolls the text, so the pointer has to be converted
+            // through the current scroll to reach a text coordinate.
+            float targetX = mouse.X - textLeft + _fieldScrollX;
+
+            string text = _searchEditor.Text;
+            int nearest = 0;
+            float nearestDistance = float.MaxValue;
+
+            for (int i = 0; i <= text.Length; i++)
+            {
+                float distance = Math.Abs(PrefixWidth(i) - targetX);
+                if (distance >= nearestDistance) continue;
+                nearestDistance = distance;
+                nearest = i;
+            }
+
+            bool extend = MyAPIGateway.Input.IsAnyShiftKeyPressed();
+            _searchEditor.MoveTo(nearest, extend);
+
+            ResetCaretBlink();
+            _fieldLayoutValid = false;
+        }
+
+        /// <summary>
+        /// Switches the "show invisible" mode: rebuilds the graph, since whether a hidden block is
+        /// part of the schema is decided while it is built (ADR-0023), and writes the new view so
+        /// the mode survives closing the editor (ADR-0022).
+        /// </summary>
+        private void ToggleShowHidden()
+        {
+            _showHidden = !_showHidden;
+
+            RebuildGraph();
+            SaveView();
+
+            VgsLog.Info("show invisible blocks: " + (_showHidden ? "on" : "off"));
+        }
+
 
         /// <summary>
         /// Click handling for the self-drawn Close button. Returns true when the click was
@@ -1463,7 +2421,7 @@ namespace Vgs.Ui
         /// </summary>
         private void RefuseWatch(string reason)
         {
-            _watchErrorUntilFrame = VgsSession.Frame + VgsConstants.WatchErrorFrames;
+            _watchErrorUntilFrame = _screenFrame + VgsConstants.WatchErrorFrames;
             Warn(reason);
         }
 
@@ -2027,7 +2985,7 @@ namespace Vgs.Ui
         private void Warn(string text)
         {
             _warningText = text;
-            _warningUntilFrame = VgsSession.Frame + VgsConstants.WarningFrames;
+            _warningUntilFrame = _screenFrame + VgsConstants.WarningFrames;
             VgsLog.Warn(text);
         }
 
@@ -2252,6 +3210,10 @@ namespace Vgs.Ui
                 DrawHeader();
 
                 if (_menuTarget != null) DrawActionMenu();
+
+                // The modes popup hangs above the bar's top edge and overlaps the canvas, so it
+                // is drawn after everything it covers.
+                if (_modesMenuOpen) DrawModesMenu();
             }
             catch (Exception e)
             {
@@ -2352,8 +3314,11 @@ namespace Vgs.Ui
                 if (!PortGeometry.TryPortDot(source, outPort, aspect, out from)) continue;
                 if (!PortGeometry.TryPortDot(target, inPort, aspect, out to)) continue;
 
+                // A line belongs to both of its ends: it is a ghost only when *both* are excluded
+                // by the search, so a matching block keeps its wiring visible — otherwise the
+                // player could not tell what the block they found is connected to (ADR-0023).
                 DrawRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                          ColLine, topLeft, size);
+                          Fade(ColLine, MaxAlpha(source, target)), topLeft, size);
                 drawn++;
             }
         }
@@ -2433,7 +3398,8 @@ namespace Vgs.Ui
                     }
 
                     DrawDashedRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                                    ColWatchLine, dash, gap, topLeft, size);
+                                    Fade(ColWatchLine, MaxAlpha(controller, target)), dash, gap,
+                                    topLeft, size);
                     drawn++;
                 }
             }
@@ -2454,7 +3420,7 @@ namespace Vgs.Ui
             Vector2 from;
             if (!PortGeometry.TryWatchButton(_watchSource, VgsScreenDraw.ClientAspect, out from)) return;
 
-            bool refused = VgsSession.Frame < _watchErrorUntilFrame;
+            bool refused = _screenFrame < _watchErrorUntilFrame;
             Color colour = refused ? ColWatchError : ColWatchLine;
 
             Vector2 start = GraphToScreen(from, topLeft);
@@ -2523,7 +3489,10 @@ namespace Vgs.Ui
             }
 
             // Cheap frustum culling: only draw what is on screen. On a large ship this is
-            // the difference between a smooth canvas and a slideshow.
+            // the difference between a smooth canvas and a slideshow. There is deliberately no
+            // "shown N of M" notice for the blocks this drops: the header already carries the
+            // totals, and a line under the canvas that appears and disappears as the player zooms
+            // was noise on top of a picture that is self-explanatory (ADR-0023).
             int drawn = 0;
             for (int i = 0; i < nodes.Count && drawn < VgsConstants.MaxRenderedBlocks; i++)
             {
@@ -2536,14 +3505,6 @@ namespace Vgs.Ui
 
                 DrawNode(n, screen, topLeft, size);
                 drawn++;
-            }
-
-            if (nodes.Count > drawn)
-            {
-                VgsScreenDraw.TextCentered(
-                    GetCullText(drawn, nodes.Count),
-                    new Vector2(topLeft.X + size.X * 0.5f, topLeft.Y + size.Y - 0.04f),
-                    0.62f, ColTextDim);
             }
         }
 
@@ -2561,14 +3522,21 @@ namespace Vgs.Ui
             bool selected = ReferenceEquals(node, _selected);
             bool hovered = ReferenceEquals(node, _hoverNode);
 
+            // A card the search excludes is still drawn — as a ghost at
+            // VgsConstants.SearchDimOpacity — so the player keeps the shape of the whole schema
+            // while looking for one block (ADR-0023). Every colour of the card and of everything
+            // hanging off it goes through this one multiplier.
+            float alpha = AlphaOf(node);
+
             Vector2 cardSize = new Vector2(VgsConstants.NodeWidth, PortGeometry.CardHeight(node)) * _zoom;
 
             // The card is a single filled rectangle. The port bars are separate rectangles
             // below it and must *not* be covered by this fill, or the stack would read as one
             // tall block instead of as ports attached to the card's bottom edge.
-            VgsScreenDraw.RectClipped(screenPos, cardSize, clipTopLeft, clipSize, ColNode);
+            VgsScreenDraw.RectClipped(screenPos, cardSize, clipTopLeft, clipSize, Fade(ColNode, alpha));
 
             Color border = selected ? ColNodeSelected : (hovered ? ColNodeHover : ColNodeBorder);
+            border = Fade(border, alpha);
             VgsScreenDraw.BorderClipped(screenPos, cardSize, clipTopLeft, clipSize, border,
                                         selected ? Hairline * 2f : Hairline);
 
@@ -2618,11 +3586,13 @@ namespace Vgs.Ui
             {
                 VgsScreenDraw.Text(node.DisplayName,
                                    screenPos + new Vector2(textLeft, band * 0.10f),
-                                   VgsConstants.NodeTitleScale * zoomText, ColText, textWidth);
+                                   VgsConstants.NodeTitleScale * zoomText, Fade(ColText, alpha),
+                                   textWidth);
 
                 VgsScreenDraw.Text(node.SubtypeId,
                                    screenPos + new Vector2(textLeft, band * 1.10f),
-                                   VgsConstants.NodeSubtitleScale * zoomText, ColTextDim, textWidth);
+                                   VgsConstants.NodeSubtitleScale * zoomText, Fade(ColTextDim, alpha),
+                                   textWidth);
 
                 // The mode description: what an event controller actually checks. A third line, in
                 // the watch colour, because it is the block's *state* rather than its identity —
@@ -2631,15 +3601,20 @@ namespace Vgs.Ui
                 {
                     VgsScreenDraw.Text(node.StatusText,
                                        screenPos + new Vector2(textLeft, band * 2.10f),
-                                       VgsConstants.NodeStatusScale * zoomText, ColWatch, textWidth);
+                                       VgsConstants.NodeStatusScale * zoomText, Fade(ColWatch, alpha),
+                                       textWidth);
                 }
             }
 
-            DrawPortBars(node, border, clipTopLeft, clipSize);
+            // The alpha is computed once here and passed down. Recomputing it inside
+            // DrawPortBar and DrawCardButton would run the search rule once per port and once
+            // per button of the card, on every frame — same picture, a dozen times the string
+            // scans.
+            DrawPortBars(node, border, alpha, clipTopLeft, clipSize);
 
             // The card's buttons are drawn last so they are never covered by a port bar of a
             // neighbouring card that happens to be drawn later.
-            DrawCardButtons(node, clipTopLeft, clipSize);
+            DrawCardButtons(node, alpha, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -2652,7 +3627,8 @@ namespace Vgs.Ui
         /// it. The frame colour is the card's, like every other bar of the node (ADR-0014) —
         /// only the fill differs, and that is what says "this is a watch, not a call".
         /// </summary>
-        private void DrawWatchBars(Node node, Color border, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawWatchBars(Node node, Color border, float alpha, Vector2 clipTopLeft,
+                                   Vector2 clipSize)
         {
             for (int i = 0; i < node.Watched.Count; i++)
             {
@@ -2665,7 +3641,8 @@ namespace Vgs.Ui
                 Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
                 Vector2 screenSize = size * _zoom;
 
-                VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, ColWatchFill);
+                VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize,
+                                          Fade(ColWatchFill, alpha));
                 VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, border,
                                             Hairline);
 
@@ -2682,7 +3659,7 @@ namespace Vgs.Ui
                                                    PortGeometry.CentredTextTop(labelScreen.Y,
                                                                                screenSize.Y, textHeight)),
                                        VgsConstants.PortLabelScale * _zoom,
-                                       ColText, labelSize.X * _zoom);
+                                       Fade(ColText, alpha), labelSize.X * _zoom);
                 }
 
                 float radius = VgsConstants.PortControlRadius * _zoom;
@@ -2690,7 +3667,7 @@ namespace Vgs.Ui
                 Vector2 dotCentre;
                 if (PortGeometry.TryWatchDot(node, watch, VgsScreenDraw.ClientAspect, out dotCentre))
                 {
-                    DrawPortDot(GraphToScreen(dotCentre, clipTopLeft), radius, ColWatch,
+                    DrawPortDot(GraphToScreen(dotCentre, clipTopLeft), radius, Fade(ColWatch, alpha),
                                 clipTopLeft, clipSize);
                 }
 
@@ -2701,8 +3678,8 @@ namespace Vgs.Ui
                     bool hot = ReferenceEquals(node, _hoverWatchRemoveNode)
                                && ReferenceEquals(watch, _hoverWatchRemoveTarget);
 
-                    DrawPortRemoveButton(GraphToScreen(removeCentre, clipTopLeft), ColWatch, hot,
-                                         clipTopLeft, clipSize);
+                    DrawPortRemoveButton(GraphToScreen(removeCentre, clipTopLeft),
+                                         ColWatch, alpha, hot, clipTopLeft, clipSize);
                 }
             }
         }
@@ -2741,17 +3718,23 @@ namespace Vgs.Ui
                 bool selected = ReferenceEquals(group, _selected);
                 bool hovered = ReferenceEquals(group, _hoverNode);
 
-                VgsScreenDraw.RectClipped(screen, screenSize, clipTopLeft, clipSize, ColGroupFill);
+                // A group follows its members through the search: it is a backdrop for them, so
+                // it is dimmed only when none of its drawn members matches (ADR-0023).
+                float alpha = AlphaOf(group);
+
+                VgsScreenDraw.RectClipped(screen, screenSize, clipTopLeft, clipSize,
+                                          Fade(ColGroupFill, alpha));
 
                 Vector2 titleTopLeft, titleSize;
                 if (PortGeometry.TryGroupTitleRect(group, out titleTopLeft, out titleSize))
                 {
                     VgsScreenDraw.RectClipped(GraphToScreen(titleTopLeft, clipTopLeft),
-                                              titleSize * _zoom, clipTopLeft, clipSize, ColGroupTitle);
+                                              titleSize * _zoom, clipTopLeft, clipSize,
+                                              Fade(ColGroupTitle, alpha));
                 }
 
                 Color border = selected ? ColGroupSelected : (hovered ? ColNodeHover : ColGroupBorder);
-                VgsScreenDraw.BorderClipped(screen, screenSize, clipTopLeft, clipSize, border,
+                VgsScreenDraw.BorderClipped(screen, screenSize, clipTopLeft, clipSize, Fade(border, alpha),
                                             selected ? Hairline * 2f : Hairline);
 
                 if (titleSize.Y > 0f)
@@ -2760,7 +3743,7 @@ namespace Vgs.Ui
                                        GraphToScreen(titleTopLeft, clipTopLeft)
                                            + new Vector2(screenSize.X * 0.012f, titleSize.Y * _zoom * 0.18f),
                                        VgsConstants.GroupTitleScale * CardTextScale,
-                                       ColText, screenSize.X * 0.976f);
+                                       Fade(ColText, alpha), screenSize.X * 0.976f);
                 }
             }
         }
@@ -2781,11 +3764,18 @@ namespace Vgs.Ui
             {
                 Node group = groups[i];
                 bool selected = ReferenceEquals(group, _selected);
-                Color border = selected ? ColGroupSelected : ColGroupBorder;
+
+                // One alpha per group: its bars belong to the frame and follow it (ADR-0023).
+                // The border is faded here, not inside DrawPortBar, for the same reason a block's
+                // is faded in DrawNode: a bar is drawn in its node's own frame colour, so a ghost
+                // node whose bars kept a full-opacity frame would be the brightest thing on the
+                // canvas — exactly what the search is supposed to de-emphasise.
+                float alpha = AlphaOf(group);
+                Color border = Fade(selected ? ColGroupSelected : ColGroupBorder, alpha);
 
                 for (int p = 0; p < group.Actions.Count; p++)
                 {
-                    DrawPortBar(group, group.Actions[p], border, clipTopLeft, clipSize);
+                    DrawPortBar(group, group.Actions[p], border, alpha, clipTopLeft, clipSize);
                 }
             }
         }
@@ -2819,7 +3809,7 @@ namespace Vgs.Ui
         /// The buffer is a field because <see cref="OnDraw"/> runs every frame for every visible
         /// card and allocating here would break R010.
         /// </summary>
-        private void DrawCardButtons(Node node, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawCardButtons(Node node, float alpha, Vector2 clipTopLeft, Vector2 clipSize)
         {
             int count = PortGeometry.GetCardButtons(node, _cardButtonRow);
             float aspect = VgsScreenDraw.ClientAspect;
@@ -2828,18 +3818,19 @@ namespace Vgs.Ui
             {
                 Vector2 topLeft, size;
                 PortGeometry.CardButtonRectAt(node, i, count, aspect, out topLeft, out size);
-                DrawCardButton(node, _cardButtonRow[i], topLeft + size * 0.5f, clipTopLeft, clipSize);
+                DrawCardButton(node, _cardButtonRow[i], topLeft + size * 0.5f, alpha,
+                               clipTopLeft, clipSize);
             }
         }
 
         /// <summary>Draws one button of a card's row: its icon, or its glyph when the icon is unavailable.</summary>
-        private void DrawCardButton(Node node, CardButtonKind kind, Vector2 center,
+        private void DrawCardButton(Node node, CardButtonKind kind, Vector2 center, float alpha,
                                     Vector2 clipTopLeft, Vector2 clipSize)
         {
             Vector2 screenCenter = GraphToScreen(center, clipTopLeft);
 
             bool hot = ReferenceEquals(node, _hoverButton) && _hoverButtonKind == kind;
-            Color color = hot ? ColPlusFillHot : ColPlusFill;
+            Color color = Fade(hot ? ColPlusFillHot : ColPlusFill, alpha);
 
             float diameter = VgsConstants.CardButtonDiameter * _zoom;
             if (VgsScreenDraw.Icon(IconOf(kind), screenCenter,
@@ -2923,15 +3914,16 @@ namespace Vgs.Ui
         /// a selected block whose ports stayed grey would break the column into two figures at
         /// exactly the moment the user is looking at it (ADR-0014).
         /// </summary>
-        private void DrawPortBars(Node node, Color border, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawPortBars(Node node, Color border, float alpha, Vector2 clipTopLeft,
+                                  Vector2 clipSize)
         {
             for (int i = 0; i < node.Events.Count; i++)
-                DrawPortBar(node, node.Events[i], border, clipTopLeft, clipSize);
+                DrawPortBar(node, node.Events[i], border, alpha, clipTopLeft, clipSize);
             for (int i = 0; i < node.Actions.Count; i++)
-                DrawPortBar(node, node.Actions[i], border, clipTopLeft, clipSize);
+                DrawPortBar(node, node.Actions[i], border, alpha, clipTopLeft, clipSize);
 
             // The watch stack follows the input stack in the same column (ADR-0017).
-            DrawWatchBars(node, border, clipTopLeft, clipSize);
+            DrawWatchBars(node, border, alpha, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -2950,7 +3942,7 @@ namespace Vgs.Ui
         /// positioned by its measured line height so that its centre line is the bar's centre
         /// line, not its top edge.
         /// </summary>
-        private void DrawPortBar(Node node, Port port, Color border, Vector2 clipTopLeft,
+        private void DrawPortBar(Node node, Port port, Color border, float alpha, Vector2 clipTopLeft,
                                  Vector2 clipSize)
         {
             if (port.Slot < 0) return;
@@ -2962,8 +3954,12 @@ namespace Vgs.Ui
             Vector2 screenSize = size * _zoom;
 
             bool output = port.Direction == PortDirection.Output;
-            Color fill = output ? ColPortOutFill : ColPortInFill;
+
+            // The port follows the card through the search: a bar that stayed bright under a
+            // ghost card would be the brightest thing on the canvas and read as a match.
+            Color fill = Fade(output ? ColPortOutFill : ColPortInFill, alpha);
             Color accent = output ? ColPortOut : ColPortIn;
+            Color accentFaded = Fade(accent, alpha);
 
             VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, fill);
             VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, border,
@@ -2984,7 +3980,7 @@ namespace Vgs.Ui
                                                PortGeometry.CentredTextTop(labelScreen.Y,
                                                                            screenSize.Y, textHeight)),
                                    VgsConstants.PortLabelScale * _zoom,
-                                   ColText, labelSize.X * _zoom);
+                                   Fade(ColText, alpha), labelSize.X * _zoom);
             }
 
             float radius = VgsConstants.PortControlRadius * _zoom;
@@ -2995,7 +3991,8 @@ namespace Vgs.Ui
             Vector2 dotCenter;
             if (PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter))
             {
-                DrawPortDot(GraphToScreen(dotCenter, clipTopLeft), radius, accent, clipTopLeft, clipSize);
+                DrawPortDot(GraphToScreen(dotCenter, clipTopLeft), radius, accentFaded, clipTopLeft,
+                            clipSize);
             }
 
             // The remove button: the dot's mirror image, on the other side of the same bar.
@@ -3006,8 +4003,11 @@ namespace Vgs.Ui
                            && ReferenceEquals(port, _hoverRemovePort);
 
                 // Accent, not the bar's fill: the mark is now bare, so its colour has to carry
-                // the contrast instead of the white disc that used to sit behind it.
-                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), accent, hot,
+                // the contrast instead of the white disc that used to sit behind it. The alpha is
+                // passed separately rather than pre-applied, because the hot colour is chosen
+                // inside — a caller-side fade would leave the hover state at full opacity on a
+                // ghost bar.
+                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), accent, alpha, hot,
                                      clipTopLeft, clipSize);
             }
         }
@@ -3050,16 +4050,22 @@ namespace Vgs.Ui
         /// the affordance instead — accent for the mark, the bar's own fill behind it — and hover
         /// brightens the mark, which is the same feedback the dot gets.
         ///
+        /// <paramref name="accent"/> is passed <em>unfaded</em>, together with
+        /// <paramref name="alpha"/>, because the hover colour is chosen here: fading at the call
+        /// site would fade the resting mark and leave the hot one at full brightness, so a ghost
+        /// bar's "x" would light up the moment the pointer touched it. The card's buttons solve
+        /// the same problem the same way (<see cref="DrawCardButton"/>).
+        ///
         /// The hit target is unchanged: it comes from the radius in `PortGeometry`, not from what
         /// is painted.
         /// </summary>
-        private void DrawPortRemoveButton(Vector2 screenCenter, Color glyph, bool hot,
+        private void DrawPortRemoveButton(Vector2 screenCenter, Color accent, float alpha, bool hot,
                                           Vector2 clipTopLeft, Vector2 clipSize)
         {
             float radius = VgsConstants.PortControlRadius * _zoom;
             float diameter = radius * 2f;
 
-            Color mark = hot ? ColPlusFillHot : glyph;
+            Color mark = Fade(hot ? ColPlusFillHot : accent, alpha);
 
             if (VgsScreenDraw.Icon(VgsIcon.Xmark, screenCenter,
                                    diameter * VgsConstants.PortRemoveIconRatio, mark,
@@ -3117,8 +4123,9 @@ namespace Vgs.Ui
             Vector2 topLeft, size;
             GetMenuRect(out topLeft, out size);
 
-            VgsScreenDraw.Rect(topLeft, size, ColMenu);
-            VgsScreenDraw.Border(topLeft, size, ColMenuBorder, Hairline);
+            // Panel rather than Rect + Border: the fill is inset under the frame, so it cannot
+            // round a row past the menu's bottom edge (ADR-0024 §5).
+            VgsScreenDraw.Panel(topLeft, size, ColMenu, ColMenuBorder, Hairline);
 
             VgsScreenDraw.Text(_menuTitle,
                                topLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
@@ -3159,6 +4166,14 @@ namespace Vgs.Ui
             }
         }
 
+        /// <summary>
+        /// Draws the bottom bar: the modes button, the block search field, and Close (ADR-0023).
+        ///
+        /// The bar no longer carries the statistics — they moved to the header — and no longer
+        /// carries the one-line help text, which is gone. What is left is the chrome the player
+        /// actually uses while looking at the schema. The failure message keeps its line above the
+        /// controls: it is the one thing that must not be pushed off the bar by anything.
+        /// </summary>
         private void DrawBottomBar()
         {
             Vector2 barTopLeft, barSize;
@@ -3167,36 +4182,359 @@ namespace Vgs.Ui
             VgsScreenDraw.Rect(barTopLeft, barSize, ColBottomBar);
             VgsScreenDraw.Rect(barTopLeft, new Vector2(1f, Hairline), ColGridMajor);
 
-            VgsScreenDraw.Text(GetStatusText(),
-                               new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.18f), 0.7f, ColText);
+            DrawModesButton();
+            DrawSearchField();
 
-            // The hint line has two jobs and one slot: it either explains the gesture, or it
-            // says why the last click did not produce a connection. The failure wins, because
-            // the user is looking at a line that did not appear and needs to know why.
-            //
-            // Both are clipped to the span left of the Close button. The hint is a long
-            // sentence in Russian, and it grew when the card's buttons stopped being one "+"
-            // (ADR-0020): without the clip it would run under the button on a narrow window,
-            // and a hint that overlaps a control reads as a rendering fault.
+            // The hint line has two jobs and one slot: it either explains the gesture under the
+            // pointer, or it says why the last click did not produce a connection. The failure
+            // wins, because the user is looking at a line that did not appear.
             Vector2 closeTopLeft, closeSize;
             GetCloseButtonRect(out closeTopLeft, out closeSize);
-            float hintWidth = closeTopLeft.X - 0.02f - VgsConstants.CardButtonTextGap;
+            float hintWidth = closeTopLeft.X - VgsConstants.BarLeftMargin - VgsConstants.CardButtonTextGap;
 
             string warning = ActiveWarning;
-            if (warning != null)
+            string hint = warning ?? BottomBarHint;
+            Color hintColor = warning != null ? ColWarning : ColTextDim;
+
+            // The hint occupies the strip above the control row, vertically centred in it, so it
+            // cannot collide with the controls whatever the font's line height is. Clamped to the
+            // bar's own top edge so a very tall line still starts inside the bar.
+            float hintHeight = HintLineHeight;
+            float stripTop = barTopLeft.Y;
+            float stripBottom = BarControlTop;
+            float hintTop = stripTop + ((stripBottom - stripTop) - hintHeight) * 0.5f;
+            if (hintTop < stripTop) hintTop = stripTop;
+
+            if (hint.Length > 0)
             {
-                VgsScreenDraw.Text(warning,
-                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f,
-                                   ColWarning, hintWidth);
-            }
-            else
-            {
-                VgsScreenDraw.Text(BottomBarHint,
-                                   new Vector2(0.02f, barTopLeft.Y + barSize.Y * 0.54f), 0.55f,
-                                   ColTextDim, hintWidth);
+                VgsScreenDraw.Text(hint, new Vector2(VgsConstants.BarLeftMargin, hintTop),
+                                   VgsConstants.HintTextScale, hintColor, hintWidth);
             }
 
             DrawCloseButton();
+        }
+
+        /// <summary>
+        /// Draws the modes button: a bare <c>sliders</c> icon in the same light colour as the
+        /// card's buttons, warming under the pointer, with the glyph "=" when the atlas is
+        /// unavailable (ADR-0019 §6, ADR-0023).
+        /// </summary>
+        private void DrawModesButton()
+        {
+            Vector2 topLeft, size;
+            GetModesButtonRect(out topLeft, out size);
+
+            Color color = _modesHot || _modesMenuOpen ? ColPlusFillHot : ColPlusFill;
+            Vector2 center = topLeft + size * 0.5f;
+
+            // The icon is sized by the control's height less a hair of padding, so it never
+            // touches the bar's edges at any resolution.
+            float ink = size.Y * 0.72f;
+            if (VgsScreenDraw.Icon(VgsIcon.Sliders, center, ink, color, Vector2.Zero,
+                                   new Vector2(1f, 1f)))
+            {
+                return;
+            }
+
+            VgsScreenDraw.TextCentered(VgsText.ModesGlyph, center, VgsConstants.ModesMenuLabelScale,
+                                       color);
+        }
+
+        /// <summary>
+        /// Draws the search field: a bordered box, the query, the selection wash, the blinking
+        /// caret, and the clear button at the right end while there is something to clear
+        /// (ADR-0023, ADR-0024).
+        ///
+        /// <b>Layout before painting.</b> Everything positional — where the caret is, where the
+        /// selection edges are, how far the text is scrolled — comes from
+        /// <see cref="EnsureFieldLayout"/>, which recomputes only when something moved. Painting
+        /// is then pure reads, so the per-frame cost of an idle field is a rectangle, a string and
+        /// two comparisons.
+        /// </summary>
+        private void DrawSearchField()
+        {
+            Vector2 topLeft, size;
+            GetSearchFieldRect(out topLeft, out size);
+
+            bool empty = !SearchHasText;
+
+            // The fill is inset by the frame's thickness: a fill and a frame on the same nominal
+            // rectangle are two quads rasterised independently, and at a fractional position the
+            // fill could cover a row past the frame — the stray line under the field that this
+            // replaces (see VgsScreenDraw.Panel).
+            VgsScreenDraw.Panel(topLeft, size, ColNode, _searchHot ? ColNodeHover : ColNodeBorder,
+                                Hairline);
+
+            float clearReserve = 0f;
+            Vector2 clearTopLeft, clearSize;
+            if (!empty && TrySearchClearRect(out clearTopLeft, out clearSize))
+            {
+                clearReserve = size.X - (clearTopLeft.X - topLeft.X);
+            }
+
+            float textAreaWidth = size.X - VgsConstants.SearchFieldPadding * 2f - clearReserve;
+            if (textAreaWidth <= 0f) return;
+
+            EnsureFieldLayout(textAreaWidth);
+
+            float textLeft = topLeft.X + VgsConstants.SearchFieldPadding;
+            float textRight = textLeft + textAreaWidth;
+            float textTop = topLeft.Y + (size.Y - SearchLineHeight) * 0.5f;
+            if (textTop < topLeft.Y) textTop = topLeft.Y;
+
+            // ---- selection wash ----
+            //
+            // Drawn before the text so the glyphs stay readable on top of it. Both edges are
+            // clamped into the text area, which is what keeps the wash from painting over the
+            // field's frame when the selection is scrolled partly out of view.
+            if (_searchEditor.HasSelection)
+            {
+                float selectionLeft = textLeft + _fieldSelectionStartX - _fieldScrollX;
+                float selectionRight = textLeft + _fieldSelectionEndX - _fieldScrollX;
+
+                if (selectionLeft < textLeft) selectionLeft = textLeft;
+                if (selectionRight > textRight) selectionRight = textRight;
+
+                if (selectionRight > selectionLeft)
+                {
+                    Color wash = new Color(ColNodeHover, VgsConstants.SelectionFillOpacity);
+                    VgsScreenDraw.Rect(new Vector2(selectionLeft, textTop),
+                                       new Vector2(selectionRight - selectionLeft, SearchLineHeight),
+                                       wash);
+                }
+            }
+
+            // ---- text or placeholder ----
+            if (empty)
+            {
+                VgsScreenDraw.Text(VgsText.SearchPlaceholder, new Vector2(textLeft, textTop),
+                                   VgsConstants.SearchTextScale, ColTextDim, textAreaWidth);
+            }
+            else if (_fieldDisplayText != null && _fieldDisplayText.Length > 0)
+            {
+                // The painted string starts at the first character that is not scrolled off the
+                // left edge; its origin is that character's own x, minus the scroll. Both numbers
+                // come from the cached layout — measuring here would call the font metrics every
+                // frame for a position that only moves when the player types (R010).
+                float displayLeft = textLeft + _fieldFirstVisibleX - _fieldScrollX;
+
+                float displayWidth = textRight - displayLeft;
+                if (displayWidth > 0f)
+                {
+                    VgsScreenDraw.Text(_fieldDisplayText, new Vector2(displayLeft, textTop),
+                                       VgsConstants.SearchTextScale, ColText, displayWidth);
+                }
+            }
+
+            // ---- caret ----
+            //
+            // Drawn last so nothing covers it, and only on the lit half of the blink cycle. The
+            // period restarts on every edit (ResetCaretBlink), so a keystroke never lands on a
+            // dark half and looks like it did nothing.
+            if (CaretVisible)
+            {
+                float caretX = textLeft + _fieldCaretX - _fieldScrollX;
+                if (caretX < textLeft) caretX = textLeft;
+                if (caretX > textRight) caretX = textRight;
+
+                VgsScreenDraw.Rect(new Vector2(caretX - CaretThickness * 0.5f, textTop),
+                                   new Vector2(CaretThickness, SearchLineHeight), ColText);
+            }
+
+            if (empty) return;
+            if (!TrySearchClearRect(out clearTopLeft, out clearSize)) return;
+
+            // The mark is drawn from the same rectangle the input pass hit-tests, so the visible
+            // "x" and its click target cannot disagree.
+            Vector2 clearCenter = clearTopLeft + clearSize * 0.5f;
+            float mark = clearSize.Y * VgsConstants.PortRemoveIconRatio;
+
+            if (VgsScreenDraw.Icon(VgsIcon.Xmark, clearCenter, mark,
+                                   _searchClearHot ? ColPlusFillHot : ColTextDim,
+                                   Vector2.Zero, new Vector2(1f, 1f)))
+            {
+                return;
+            }
+
+            VgsScreenDraw.TextCentered(VgsText.PortRemoveGlyph, clearCenter,
+                                       VgsConstants.PortRemoveGlyphScale, ColTextDim);
+        }
+
+        /// <summary>
+        /// Width of the caret in the layout's units, from its pixel size at the reference height.
+        ///
+        /// <b>Divided by the client WIDTH, not by the reference height.</b> The two axes of this
+        /// layout do not share a scale: one X unit is the full window width in pixels and one Y
+        /// unit is the safe-GUI height (ADR-0009). A horizontal size therefore has to convert
+        /// through the horizontal scale, or the caret comes out roughly a third too wide on a 16:9
+        /// window — which is exactly what dividing by the height did. The same aspect correction is
+        /// what `PortGeometry` applies to its horizontal extents.
+        ///
+        /// Falls back to the vertical reference before the first sync (client width still 0),
+        /// which keeps the caret drawable rather than zero-width for one frame.
+        /// </summary>
+        private static float CaretThickness
+        {
+            get
+            {
+                float width = VgsScreenDraw.ClientWidth;
+                if (width <= 0f) return VgsConstants.CaretWidth / VgsConstants.ReferenceHeightPixels;
+                return VgsConstants.CaretWidth / width;
+            }
+        }
+
+        /// <summary>
+        /// True on the lit half of the blink cycle.
+        ///
+        /// A caret that is always on is hard to find against a glyph; one that is always off is
+        /// not a caret. The half-period comes from <see cref="VgsConstants.CaretBlinkFrames"/>, and
+        /// the frame counter is the editor's own — no timer, so this costs one subtraction.
+        /// </summary>
+        private bool CaretVisible
+        {
+            get
+            {
+                int elapsed = _screenFrame - _caretBlinkBaseFrame;
+                if (elapsed < 0) elapsed = 0;
+                return elapsed % (VgsConstants.CaretBlinkFrames * 2) < VgsConstants.CaretBlinkFrames;
+            }
+        }
+
+        /// <summary>
+        /// Recomputes the caret and selection positions, the scroll, and the slice of the query
+        /// that is painted.
+        ///
+        /// Runs when the text, the caret or the field's width changed — never per frame — because
+        /// it calls the font metrics once per character boundary. This is the whole reason the
+        /// positions are cached: measuring a caret that has not moved, sixty times a second, is
+        /// work whose result is already known.
+        /// </summary>
+        private void EnsureFieldLayout(float areaWidth)
+        {
+            if (_fieldLayoutValid && _fieldAreaWidth == areaWidth) return;
+
+            _fieldAreaWidth = areaWidth;
+
+            string text = _searchEditor.Text;
+            int caret = _searchEditor.Caret;
+
+            _fieldCaretX = PrefixWidth(caret);
+
+            if (_searchEditor.HasSelection)
+            {
+                _fieldSelectionStartX = PrefixWidth(_searchEditor.SelectionStart);
+                _fieldSelectionEndX = PrefixWidth(_searchEditor.SelectionEnd);
+            }
+            else
+            {
+                _fieldSelectionStartX = _fieldCaretX;
+                _fieldSelectionEndX = _fieldCaretX;
+            }
+
+            // ---- keep the caret inside the visible span ----
+            float total = PrefixWidth(text.Length);
+            float scroll = _fieldScrollX;
+
+            if (_fieldCaretX - scroll > areaWidth) scroll = _fieldCaretX - areaWidth;
+            if (_fieldCaretX - scroll < 0f) scroll = _fieldCaretX;
+            if (scroll > total - areaWidth) scroll = total - areaWidth;
+            if (scroll < 0f) scroll = 0f;
+
+            _fieldScrollX = scroll;
+
+            // ---- the slice that is painted ----
+            //
+            // Sliced here rather than in the draw path: the visible tail is the same string on
+            // every frame until the text scrolls again, and a Substring per frame would be an
+            // allocation per frame for a field nobody is typing into.
+            if (scroll <= 0f)
+            {
+                _fieldDisplayText = text;
+                _fieldFirstVisible = 0;
+                _fieldFirstVisibleX = 0f;
+            }
+            else
+            {
+                int first = 0;
+                while (first < text.Length && PrefixWidth(first) < scroll) first++;
+
+                _fieldFirstVisible = first;
+                _fieldFirstVisibleX = PrefixWidth(first);
+                _fieldDisplayText = first == 0 ? text : text.Substring(first);
+            }
+        }
+
+        /// <summary>
+        /// Width of the first <paramref name="count"/> characters of the query, in client-area
+        /// units.
+        ///
+        /// A guarded call into the font metrics: it is the only way to know where a character
+        /// boundary lies, and it is used only when the layout is rebuilt. The whole string needs no
+        /// slice, which is the case a caret at the end of the query hits on every keystroke.
+        /// </summary>
+        private float PrefixWidth(int count)
+        {
+            if (count <= 0) return 0f;
+
+            string text = _searchEditor.Text;
+            if (count >= text.Length)
+            {
+                return VgsScreenDraw.Measure(text, VgsConstants.SearchTextScale).X;
+            }
+
+            return VgsScreenDraw.Measure(text.Substring(0, count), VgsConstants.SearchTextScale).X;
+        }
+
+        /// <summary>
+        /// Draws the modes popup above its button: one toggle row with a check mark, the way a
+        /// menu of view options reads everywhere else (ADR-0023).
+        ///
+        /// Drawn after the canvas and after the bar, because it overlaps both: it hangs above the
+        /// bar's top edge, and anything drawn later would cover it.
+        /// </summary>
+        private void DrawModesMenu()
+        {
+            Vector2 menuTopLeft, menuSize;
+            GetModesMenuRect(out menuTopLeft, out menuSize);
+
+            // Panel rather than Rect + Border, for the same reason as the action menu: the fill
+            // must not be able to round a row past the frame (ADR-0024 §5).
+            VgsScreenDraw.Panel(menuTopLeft, menuSize, ColMenu, ColMenuBorder, Hairline);
+
+            Vector2 rowTopLeft, rowSize;
+            GetModesRowRect(out rowTopLeft, out rowSize);
+
+            if (_modesRowHot) VgsScreenDraw.Rect(rowTopLeft, rowSize, ColMenuRowHot);
+
+            float checkLeft = rowTopLeft.X + VgsConstants.ModesMenuPadding;
+            float checkTop = rowTopLeft.Y + (rowSize.Y - VgsConstants.ModesMenuCheckSize) * 0.5f;
+
+            VgsScreenDraw.Border(new Vector2(checkLeft, checkTop),
+                                 new Vector2(VgsConstants.ModesMenuCheckSize,
+                                             VgsConstants.ModesMenuCheckSize),
+                                 _showHidden ? ColNodeSelected : ColMenuBorder, Hairline);
+
+            if (_showHidden)
+            {
+                // A filled square inside the frame rather than a tick glyph: the editor's font
+                // may be any of several, and a tick that is missing from one of them draws as a
+                // box — the same reasoning that made the port's remove mark a Latin "x".
+                float inset = VgsConstants.ModesMenuCheckSize * 0.25f;
+                VgsScreenDraw.Rect(new Vector2(checkLeft + inset, checkTop + inset),
+                                   new Vector2(VgsConstants.ModesMenuCheckSize - inset * 2f,
+                                               VgsConstants.ModesMenuCheckSize - inset * 2f),
+                                   ColNodeSelected);
+            }
+
+            float labelLeft = checkLeft + VgsConstants.ModesMenuCheckSize + VgsConstants.ModesMenuPadding;
+            float labelWidth = rowTopLeft.X + rowSize.X - labelLeft - VgsConstants.ModesMenuPadding;
+            if (labelWidth <= 0f) return;
+
+            float labelTop = rowTopLeft.Y + (rowSize.Y - ModesMenuLabelHeight) * 0.5f;
+            if (labelTop < rowTopLeft.Y) labelTop = rowTopLeft.Y;
+
+            VgsScreenDraw.Text(VgsText.ModesShowHidden, new Vector2(labelLeft, labelTop),
+                               VgsConstants.ModesMenuLabelScale, ColText, labelWidth);
         }
 
         /// <summary>
@@ -3208,19 +4546,19 @@ namespace Vgs.Ui
             get
             {
                 if (_warningText == null) return null;
-                if (VgsSession.Frame > _warningUntilFrame) { _warningText = null; return null; }
+                if (_screenFrame > _warningUntilFrame) { _warningText = null; return null; }
                 return _warningText;
             }
         }
 
         /// <summary>
-        /// Second line of the bottom bar. Bind mode replaces the static hint, because while
-        /// binding the only thing the user needs to know is how to finish or cancel — and on
-        /// a yes/no toolbar, which of the two lists the connection is going into.
+        /// The bar's hint line. Bind mode and watch mode replace the idle hint, because while
+        /// those modes are on the only thing the user needs to know is how to finish or cancel —
+        /// and on a yes/no toolbar, which of the two lists the connection is going into.
         ///
-        /// A pointer over the jump button replaces it too (ADR-0021): that button closes the
-        /// screen it sits on, and the cost of pressing it belongs in front of the player before
-        /// the click, not after it.
+        /// A pointer over the jump button, the modes button or the search field replaces it too
+        /// (ADR-0021, ADR-0023): each of those either closes the screen or changes what the whole
+        /// canvas shows, and that belongs in front of the player before the click.
         /// </summary>
         private string BottomBarHint
         {
@@ -3233,7 +4571,15 @@ namespace Vgs.Ui
                     {
                         return VgsText.JumpHint;
                     }
-                    return VgsText.Hint;
+
+                    if (_modesHot) return VgsText.ModesHint;
+                    if (_searchHot || _searchClearHot) return VgsText.SearchHint;
+
+                    // No idle hint. The editor's gestures are carried by the controls
+                    // themselves — an arrow, a bell, a lightbulb, an "x" — and a permanent
+                    // sentence describing them was the first thing every player had to read
+                    // past (ADR-0023).
+                    return string.Empty;
                 }
                 if (_bindGroup == PortGroup.Yes) return VgsText.BindHintTrue;
                 if (_bindGroup == PortGroup.No) return VgsText.BindHintFalse;
@@ -3251,30 +4597,148 @@ namespace Vgs.Ui
             Vector2 topLeft, size;
             GetCloseButtonRect(out topLeft, out size);
 
-            VgsScreenDraw.Rect(topLeft, size, _closeHot ? ColNodeBorder : ColNode);
-            VgsScreenDraw.Border(topLeft, size, ColNodeSelected, Hairline);
+            // Panel rather than Rect + Border: the fill sits under the frame instead of sharing
+            // its nominal bottom edge, so it cannot round a row lower than the border (ADR-0024 §5).
+            VgsScreenDraw.Panel(topLeft, size, _closeHot ? ColNodeBorder : ColNode, ColNodeSelected,
+                                Hairline);
 
             VgsScreenDraw.TextCentered(VgsText.CloseButton,
                                        topLeft + new Vector2(size.X * 0.5f, size.Y * 0.5f),
                                        0.7f, ColText);
         }
 
+        /// <summary>
+        /// Draws the header: "Workbench" and, on the same line, the counts of what is on the
+        /// canvas (ADR-0023).
+        ///
+        /// The statistics used to be the first line of the bottom bar, in Russian. They moved up
+        /// here and into English because the header is what reads as a tool's title bar: the name
+        /// of the window and what it currently contains, in one line, and the bottom bar left for
+        /// the controls the player operates. The grid's name stays right-aligned on the same line,
+        /// so the header is one row at every resolution.
+        /// </summary>
         private void DrawHeader()
         {
             VgsScreenDraw.Rect(Vector2.Zero, new Vector2(1f, VgsConstants.HeaderHeight), ColBottomBar);
-            VgsScreenDraw.Text(VgsText.EditorTitle, new Vector2(0.02f, 0.014f), 0.9f, ColText);
+
+            VgsScreenDraw.Text(VgsText.EditorTitle,
+                               new Vector2(VgsConstants.HeaderLeftMargin, VgsConstants.HeaderTitleTop),
+                               VgsConstants.HeaderTitleScale, ColText);
 
             string gridName = GetGridName();
+            float gridNameWidth = gridName != null ? GridNameWidth : 0f;
+            float gridNameLeft = 1f - VgsConstants.HeaderLeftMargin - gridNameWidth;
+
+            // A name wider than the header would otherwise be drawn starting left of the margin,
+            // on top of the title. Clamping it is the honest degradation: the name is clipped by
+            // its own left edge rather than painted over "Workbench".
+            if (gridNameLeft < VgsConstants.HeaderLeftMargin) gridNameLeft = VgsConstants.HeaderLeftMargin;
+
+            // The counts follow the title on the same baseline. Their X comes from the title's
+            // measured width, which is the only way to keep the two from colliding when the font
+            // differs: the screen-space API has no text flow, so a second string is placed by hand.
+            //
+            // They are also clipped to the span left of the grid's name. Without that, a ship with
+            // a long name and a dense schema would draw the two strings over each other in the
+            // middle of the header — the one place in this window where two pieces of text share a
+            // line and neither can move.
+            float statsLeft = VgsConstants.HeaderLeftMargin + TitleWidth;
+            float statsWidth = gridNameLeft - VgsConstants.CardButtonTextGap - statsLeft;
+
+            if (TitleWidth > 0f && statsWidth > 0f)
+            {
+                VgsScreenDraw.Text(GetStatusText(),
+                                   new Vector2(statsLeft, VgsConstants.HeaderTitleTop),
+                                   VgsConstants.HeaderTitleScale, ColTextDim, statsWidth);
+            }
+
             if (gridName == null) return;
 
-            // Right-aligned: measured so the text ends at the margin.
-            VgsScreenDraw.TextRight(gridName, new Vector2(0.98f, 0.018f), 0.6f, ColTextDim);
+            VgsScreenDraw.Text(gridName,
+                               new Vector2(gridNameLeft, VgsConstants.HeaderGridNameTop),
+                               VgsConstants.HeaderGridNameScale, ColTextDim,
+                               1f - VgsConstants.HeaderLeftMargin - gridNameLeft);
         }
+
+        /// <summary>
+        /// Width of the header's title, measured once.
+        ///
+        /// Cached because <see cref="DrawHeader"/> runs every frame and the title is a constant
+        /// string at a constant scale: measuring it per frame would call into the font metrics
+        /// sixty times a second for a number that cannot change while the editor is open. The
+        /// cache is keyed by the client width, which is the only input that can move the answer —
+        /// the editor is modal, so a resolution change closes and reopens it.
+        /// </summary>
+        private float TitleWidth
+        {
+            get
+            {
+                float width = VgsScreenDraw.ClientWidth;
+                if (_titleWidth > 0f && _titleWidthClientWidth == width) return _titleWidth;
+
+                // The title is a constant string, so a zero here means the font refused to
+                // measure (no font resource yet, or a measurement that threw). That is not cached:
+                // caching it would hide the header's statistics for the rest of the session over
+                // one bad frame, and the next frame costs a single measurement to retry.
+                float measured = VgsScreenDraw.Measure(VgsText.EditorTitle, VgsConstants.HeaderTitleScale).X;
+                if (measured <= 0f) return 0f;
+
+                _titleWidthClientWidth = width;
+                _titleWidth = measured;
+                return _titleWidth;
+            }
+        }
+
+        /// <summary>Cached title width, and the client width it was measured at.</summary>
+        private float _titleWidth = -1f;
+        private float _titleWidthClientWidth = -1f;
+
+        /// <summary>
+        /// Width of the grid's name in the header, measured once per name and client width.
+        ///
+        /// The header draws the name right-aligned, which means it has to know how wide it is; and
+        /// it also needs that width to know how much room is left for the counts. Measuring it
+        /// once here serves both and keeps the per-frame cost of a header with a long ship name at
+        /// two float comparisons.
+        ///
+        /// The name is compared by reference: <see cref="ResolveGridName"/> assigns the cache once
+        /// in <see cref="OnOpened"/> and nothing else writes it, so a new string there is a new
+        /// measurement, and the same string is free.
+        /// </summary>
+        private float GridNameWidth
+        {
+            get
+            {
+                string name = GetGridName();
+                if (name == null) return 0f;
+
+                float clientWidth = VgsScreenDraw.ClientWidth;
+                if (_gridNameWidth > 0f
+                    && ReferenceEquals(_gridNameWidthFor, name)
+                    && _gridNameWidthClientWidth == clientWidth)
+                {
+                    return _gridNameWidth;
+                }
+
+                float measured = VgsScreenDraw.Measure(name, VgsConstants.HeaderGridNameScale).X;
+                if (measured <= 0f) return 0f;   // not cached: a failed measure must be retried
+
+                _gridNameWidthFor = name;
+                _gridNameWidthClientWidth = clientWidth;
+                _gridNameWidth = measured;
+                return _gridNameWidth;
+            }
+        }
+
+        /// <summary>Cached grid-name width, the string it was measured for, and the client width.</summary>
+        private float _gridNameWidth = -1f;
+        private string _gridNameWidthFor;
+        private float _gridNameWidthClientWidth = -1f;
 
         // ------------------------------------------------------------------ cached strings
 
         /// <summary>
-        /// Builds the status line only when a value it shows actually changed. Called from
+        /// Builds the statistics line only when a value it shows actually changed. Called from
         /// <see cref="OnDraw"/>, i.e. every frame, so an unconditional rebuild here would
         /// allocate a string per frame for the whole time the editor is open.
         /// </summary>
@@ -3298,19 +4762,69 @@ namespace Vgs.Ui
             _statusKeyGroups = groupCount;
             _statusKeyEdges = edgeCount;
             _statusKeyZoom = zoomPercent;
-            _statusText = string.Format(VgsText.StatusFormat, nodeCount, groupCount, edgeCount, zoomPercent);
+            _statusText = string.Format(VgsText.StatsFormat, nodeCount, groupCount, edgeCount, zoomPercent);
             return _statusText;
         }
 
-        /// <summary>Builds the culling notice only when the drawn/total counts change.</summary>
-        private string GetCullText(int drawn, int total)
+        /// <summary>
+        /// Line height of the search field's text, measured once and cached.
+        ///
+        /// The field centres its text vertically, which needs the height of a line, and
+        /// <see cref="DrawSearchField"/> runs every frame. Measured on first use rather than in
+        /// the constructor: the font is resolved by <see cref="VgsScreenDraw.EnsureResources"/>,
+        /// which may not have run when the screen object is created.
+        /// </summary>
+        private float SearchLineHeight
         {
-            if (_cullText != null && _cullKeyDrawn == drawn && _cullKeyTotal == total) return _cullText;
+            get
+            {
+                if (_searchLineHeight < 0f)
+                {
+                    _searchLineHeight =
+                        VgsScreenDraw.Measure(LabelProbeText, VgsConstants.SearchTextScale).Y;
+                    if (_searchLineHeight <= 0f) _searchLineHeight = 0f;
+                }
+                return _searchLineHeight;
+            }
+        }
 
-            _cullKeyDrawn = drawn;
-            _cullKeyTotal = total;
-            _cullText = string.Format(VgsText.CullingFormat, drawn, total);
-            return _cullText;
+        /// <summary>
+        /// Line height of the modes menu's label, measured once and cached.
+        ///
+        /// A field of its own, not shared with <see cref="SearchLineHeight"/> or
+        /// <see cref="HintLineHeight"/>: the three are drawn at three different font scales, and
+        /// one cache served by three scales would return the first one measured to the other two.
+        /// </summary>
+        private float ModesMenuLabelHeight
+        {
+            get
+            {
+                if (_modesLineHeight < 0f)
+                {
+                    _modesLineHeight =
+                        VgsScreenDraw.Measure(LabelProbeText, VgsConstants.ModesMenuLabelScale).Y;
+                    if (_modesLineHeight <= 0f) _modesLineHeight = 0f;
+                }
+                return _modesLineHeight;
+            }
+        }
+
+        /// <summary>
+        /// Line height of the bottom bar's hint line, measured once and cached. Used to centre the
+        /// hint in the strip above the bar's controls.
+        /// </summary>
+        private float HintLineHeight
+        {
+            get
+            {
+                if (_hintLineHeight < 0f)
+                {
+                    _hintLineHeight =
+                        VgsScreenDraw.Measure(LabelProbeText, VgsConstants.HintTextScale).Y;
+                    if (_hintLineHeight <= 0f) _hintLineHeight = 0f;
+                }
+                return _hintLineHeight;
+            }
         }
 
         /// <summary>

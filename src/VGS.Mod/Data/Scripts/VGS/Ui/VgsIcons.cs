@@ -37,18 +37,29 @@ namespace Vgs.Ui
         private static bool _resolved;
 
         /// <summary>
-        /// Frame at which an unresolved icon set may be tried again. Negative means "try now".
+        /// Attempt at which an unresolved icon set may be tried again. Negative means "try now".
         ///
         /// Retrying exists because two things can lag behind the first draw: the GUI-texture
         /// table, which is rebuilt when a world loads, and the textures themselves, which the
         /// renderer streams in. A one-shot resolution would disable icons for the whole session
-        /// over a few frames of bad timing. The retry is throttled by frames because each attempt
-        /// hashes strings and walks a dictionary.
+        /// over a few frames of bad timing. The retry is throttled because each attempt hashes
+        /// strings and walks a dictionary.
+        ///
+        /// <b>Counted in attempts, not in session frames.</b> `VgsSession.Frame` only advances from
+        /// `UpdateAfterSimulation`, which a paused session skips — and the editor pauses the game.
+        /// A frame-based throttle therefore never expired while the editor was open, so an icon set
+        /// that failed to resolve at open stayed failed for the whole screen (ADR-0025 §Consequences
+        /// records the general form of this bug). `Ensure` is called once per draw, so counting
+        /// calls gives the same spacing whenever frames do advance, and keeps working when they do
+        /// not.
         /// </summary>
-        private static int _retryAfterFrame = -1;
+        private static int _retryAfterAttempt = -1;
 
-        /// <summary>How many frames to wait before trying an unresolved icon set again.</summary>
-        private const int RetryIntervalFrames = 300;
+        /// <summary>How many attempts have been made, used as the retry clock.</summary>
+        private static int _attempt;
+
+        /// <summary>How many attempts to wait before trying an unresolved icon set again.</summary>
+        private const int RetryIntervalAttempts = 300;
 
         /// <summary>
         /// How many icons resolved the last time a warning was logged, or -1 before the first
@@ -72,8 +83,12 @@ namespace Vgs.Ui
         {
             if (_resolved) return;
 
-            int frame = VgsSession.Frame;
-            if (_retryAfterFrame >= 0 && frame < _retryAfterFrame) return;
+            if (_retryAfterAttempt >= 0 && _attempt < _retryAfterAttempt) return;
+
+            // Saturating, because a session can run for a very long time and this only has to
+            // answer "has the interval elapsed". Wrapping into negative would silently disable the
+            // retry instead of merely mistiming it.
+            if (_attempt < int.MaxValue) _attempt++;
 
             int resolved = 0;
             for (int i = 0; i < VgsIconAtlas.Count; i++)
@@ -116,7 +131,7 @@ namespace Vgs.Ui
             if (resolved == VgsIconAtlas.Count)
             {
                 _resolved = true;
-                _retryAfterFrame = -1;
+                _retryAfterAttempt = -1;
                 _lastWarnedResolved = -1;
                 VgsLog.Info("icons ready (" + resolved + " texture(s), prefix '" +
                             VgsIconAtlas.MaterialPrefix + "')");
@@ -124,7 +139,14 @@ namespace Vgs.Ui
             }
 
             // Not all of them: keep whatever resolved, retry later, and say so once per change.
-            _retryAfterFrame = frame + RetryIntervalFrames;
+            //
+            // Clamped rather than added: at the saturating end of the counter the addition would
+            // wrap negative, the `>= 0` guard above would stop returning, and Ensure would retry
+            // on every call — hashing strings per draw. Unreachable in practice, but the increment
+            // three lines above argues about exactly this wrap.
+            _retryAfterAttempt = _attempt > int.MaxValue - RetryIntervalAttempts
+                                     ? int.MaxValue
+                                     : _attempt + RetryIntervalAttempts;
             if (resolved == _lastWarnedResolved) return;
             _lastWarnedResolved = resolved;
 
@@ -170,7 +192,8 @@ namespace Vgs.Ui
             }
 
             _resolved = false;
-            _retryAfterFrame = -1;
+            _retryAfterAttempt = -1;
+            _attempt = 0;
             _lastWarnedResolved = -1;
         }
     }

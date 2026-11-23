@@ -28,7 +28,12 @@ namespace Vgs.Core
 
         private static readonly StringBuilder Scratch = new StringBuilder(256);
 
-        /// <summary>Last frame each throttle tag emitted a line.</summary>
+        /// <summary>
+        /// Value of the tag's own call counter when it last emitted a line.
+        ///
+        /// An attempt count, not a frame number: frames stop while the game is paused and the
+        /// editor pauses it (ADR-0026). Read against <see cref="Calls"/>, never against a clock.
+        /// </summary>
         private static readonly Dictionary<string, int> LastEmit = new Dictionary<string, int>(8);
 
         /// <summary>How many calls each throttle tag suppressed since its last line.</summary>
@@ -80,16 +85,16 @@ namespace Vgs.Core
         }
 
         /// <summary>
-        /// Logs at most once per <paramref name="intervalFrames"/> calls for the given
-        /// <paramref name="tag"/>. Use for conditions that can be true every frame.
+        /// Logs at most once per <paramref name="intervalAttempts"/> calls **of this tag**.
+        /// Use for conditions that can be true every frame.
         /// </summary>
         /// <remarks>
         /// The tag is the throttle identity: two call sites must never share one, or they
         /// silence each other.
         /// </remarks>
-        public static void Throttled(string tag, string message, int intervalFrames)
+        public static void Throttled(string tag, string message, int intervalAttempts)
         {
-            if (!TryBeginThrottled(tag, intervalFrames)) return;
+            if (!TryBeginThrottled(tag, intervalAttempts)) return;
 
             int suppressed;
             if (Suppressed.TryGetValue(tag, out suppressed) && suppressed > 0)
@@ -108,9 +113,9 @@ namespace Vgs.Core
         /// Takes the exception rather than a formatted message so a per-frame failure path
         /// allocates nothing until the throttle actually lets a line through.
         /// </summary>
-        public static void Throttled(string tag, string prefix, Exception exception, int intervalFrames)
+        public static void Throttled(string tag, string prefix, Exception exception, int intervalAttempts)
         {
-            if (!TryBeginThrottled(tag, intervalFrames)) return;
+            if (!TryBeginThrottled(tag, intervalAttempts)) return;
 
             int suppressed;
             if (Suppressed.TryGetValue(tag, out suppressed) && suppressed > 0)
@@ -133,14 +138,36 @@ namespace Vgs.Core
         /// <summary>
         /// Returns true when this tag is allowed to emit now, and counts the call as
         /// suppressed otherwise. Shared by both Throttled overloads.
+        ///
+        /// <b>Counted in attempts of this tag, not in session frames</b> (ADR-0026).
+        /// `VgsSession.Frame` only advances from `UpdateAfterSimulation`, which a paused session
+        /// skips — and the editor pauses the game. A frame-based throttle therefore froze for the
+        /// whole time the editor was open, so every tag emitted once and then went silent for the
+        /// rest of the screen: exactly where the log is the primary diagnostic, and exactly where
+        /// the new failure modes (clipboard read/write, ADR-0025) fire.
+        ///
+        /// <b>Per tag, not global.</b> A single shared counter would couple the tags: a chatty one
+        /// advances the clock for everybody, so a tag with interval 300 could emit every third
+        /// frame instead of every three hundredth. The graph builder logs per block, which makes
+        /// that reachable — a hundred-block refresh advances a global counter four hundred times in
+        /// one frame. Counting each tag's own calls keeps every interval meaning what it says, at
+        /// the cost of one dictionary entry per tag (they already exist).
         /// </summary>
-        private static bool TryBeginThrottled(string tag, int intervalFrames)
+        private static bool TryBeginThrottled(string tag, int intervalAttempts)
         {
             if (tag == null) tag = "default";
-            if (intervalFrames < 1) intervalFrames = 1;
+            if (intervalAttempts < 1) intervalAttempts = 1;
+
+            int calls;
+            Calls.TryGetValue(tag, out calls);
+
+            // Saturating: a session can run for a very long time, and wrapping into negative would
+            // make this tag permanently eligible instead of merely mistimed.
+            if (calls < int.MaxValue) calls++;
+            Calls[tag] = calls;
 
             int last;
-            if (LastEmit.TryGetValue(tag, out last) && VgsSession.Frame - last < intervalFrames)
+            if (LastEmit.TryGetValue(tag, out last) && calls - last < intervalAttempts)
             {
                 int suppressed;
                 Suppressed.TryGetValue(tag, out suppressed);
@@ -148,9 +175,18 @@ namespace Vgs.Core
                 return false;
             }
 
-            LastEmit[tag] = VgsSession.Frame;
+            LastEmit[tag] = calls;
             return true;
         }
+
+        /// <summary>
+        /// How many times each tag has been offered to the throttle. The throttle's clock.
+        ///
+        /// Attempts rather than frames for the reason in <see cref="TryBeginThrottled"/>: attempts
+        /// keep coming while the game is paused, frames do not. Per tag so that one chatty call
+        /// site cannot shorten another's interval.
+        /// </summary>
+        private static readonly Dictionary<string, int> Calls = new Dictionary<string, int>();
 
         private static void Write(string message)
         {
@@ -173,13 +209,14 @@ namespace Vgs.Core
         }
 
         /// <summary>
-        /// Drops throttle state. Called on session unload so frame numbers from a previous
-        /// session cannot silence lines in the next one.
+        /// Drops throttle state. Called on session unload so counters from a previous session
+        /// cannot silence lines in the next one.
         /// </summary>
         internal static void Reset()
         {
             LastEmit.Clear();
             Suppressed.Clear();
+            Calls.Clear();
             _verbose = false;
         }
     }
