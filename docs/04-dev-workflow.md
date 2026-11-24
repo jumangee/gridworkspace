@@ -32,7 +32,7 @@ COMPILE OK — 49 file(s), 0 warning(s)
 pwsh -File tools/verify-compile.ps1 -Bin 'D:\Games\SpaceEngineers\Bin64'
 
 # Только один файл, во время отладки
-pwsh -File tools/verify-compile.ps1 -SourcePath src\VGS.Mod\Data\Scripts\VGS\Ui\VgsEditorScreen.cs
+pwsh -File tools/verify-compile.ps1 -SourcePath src\GridWorkspace.Mod\Data\Scripts\VGS\Ui\VgsEditorScreen.cs
 ```
 
 Второй шлюз — вайтлист. Компиляция доказывает вызываемость, но **не** допустимость:
@@ -86,9 +86,9 @@ pwsh -File tools/deploy-mod.ps1
 tools\deploy-mod.cmd          # то же самое на cmd, если политика запрещает .ps1
 ```
 
-Копирует `src\VGS.Mod` в `%APPDATA%\SpaceEngineers\Mods\VGS\`. Это **зеркало**: файлы,
-удалённые из `src`, удаляются и в игре — иначе старый `.cs` продолжит компилироваться и
-даст ошибку о дублирующемся типе.
+Копирует `src\GridWorkspace.Mod` в `%APPDATA%\SpaceEngineers\Mods\GridWorkspace\`. Это
+**зеркало**: файлы, удалённые из `src`, удаляются и в игре — иначе старый `.cs` продолжит
+компилироваться и даст ошибку о дублирующемся типе.
 
 Скрипт откажется работать, если запущен `SpaceEngineers.exe`.
 
@@ -98,6 +98,16 @@ tools\deploy-mod.cmd          # то же самое на cmd, если поли
 `.ps1` — например `& .\tools\deploy-mod.ps1` падает с «running scripts is disabled on this
 system». Параметры: `deploy-mod.cmd [FolderName] [/force]`, путь к папке модов можно
 переопределить переменной окружения `VGS_MODS_ROOT`.
+
+**Если папка в `Mods` называлась иначе** (мод переименовывали): имя папки — это идентичность
+мода в сохранении мира, поэтому существующие миры перестанут его находить. Мигрирует
+`tools/migrate-mod-folder.ps1` — переименовывает папку и правит `<Name>` в блоках `<Mods>`
+всех `Sandbox.sbc`/`Sandbox_config.sbc`, оставляя бэкап каждого файла:
+
+```powershell
+pwsh -File tools/migrate-mod-folder.ps1 -WhatIf   # только показать план
+pwsh -File tools/migrate-mod-folder.ps1           # выполнить
+```
 
 После деплоя:
 
@@ -132,7 +142,7 @@ pwsh -File tools/tail-mod-log.ps1 -Follow
 
 Если `[VGS]` строк нет вообще — мод не загрузился. Проверять по порядку:
 
-1. Папка называется `VGS` и лежит в `%APPDATA%\SpaceEngineers\Mods\`.
+1. Папка называется `GridWorkspace` и лежит в `%APPDATA%\SpaceEngineers\Mods\`.
 2. Мод включён в списке модов мира.
 3. В `Data\Scripts\VGS\` действительно лежат `.cs` файлы.
 4. Игра не показала свою ошибку компиляции — смотреть `-All -Lines 400`.
@@ -174,8 +184,8 @@ pwsh -File tools/dump-se-il.ps1 -Assembly 'Sandbox.Graphics.dll' -Type 'Sandbox.
 ## 5. Где что лежит
 
 ```
-src/VGS.Mod/                     ← это и есть мод
-  metadata.mod                   версия мода
+src/GridWorkspace.Mod/           ← это и есть мод (папка в Mods тоже GridWorkspace, см. ниже)
+  metadata.mod                   имя и версия мода
   Data/Scripts/VGS/              игра компилирует только это
     VgsSessionComponent.cs       точка входа
     Core/                        лог, сессия, константы, строки
@@ -189,6 +199,17 @@ docs/                            документация
 skills/                          чеклисты ролей
 agents/                          пресеты агентов для DSH
 ```
+
+**Почему имя папки в `Mods` — это не просто имя.** Для локального мода папка в
+`%APPDATA%\SpaceEngineers\Mods` — его идентичность: путь игра собирает как `ModsPath + Name`,
+где `Name` — элемент `<Name>` внутри `<ModItem>` сохранения мира
+(`MyObjectBuilder_Checkpoint+ModItem.GetPath`, проверено по IL), а `metadata.mod` в этом не
+участвует. Поэтому папка и `<Name>` в сейвах обязаны совпадать.
+
+Мод переименовывали: раньше папка была `VGS`, теперь `GridWorkspace`. Существующие миры,
+сохранённые с `<Name>VGS</Name>`, ищут `Mods\VGS` — их переводит
+`tools/migrate-mod-folder.ps1` (см. §5). Имя в списке модов берётся из `metadata.mod`
+(`<Name>Grid Workspace</Name>`) и от папки не зависит.
 
 ---
 

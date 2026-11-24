@@ -51,7 +51,7 @@ namespace Vgs.Core
                 // ---- Terminal controls (survive in the world) ----
                 { "BUTTON_TITLE", "Grid Workspace" },
                 { "BUTTON_TOOLTIP", "Open the grid logic editor" },
-                { "SHOW_IN_VGS_TITLE", "Show in Grid Workspace" },
+                { "SHOW_IN_VGS_TITLE", "Show in Workspace" },
                 { "SHOW_IN_VGS_TOOLTIP",
                   "Draw this block on the grid schema. Turning it off hides the block and its lines; "
                   + "connections keep working" },

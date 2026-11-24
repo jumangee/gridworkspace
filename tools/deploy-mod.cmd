@@ -4,7 +4,7 @@ rem  Deploys the VGS mod into the Space Engineers local mod folder.
 rem
 rem  Cmd twin of tools\deploy-mod.ps1, for machines where PowerShell script
 rem  execution is blocked by policy. It does exactly the same thing: mirror
-rem  src\VGS.Mod into %APPDATA%\SpaceEngineers\Mods\<folder> and verify that the
+rem  src\GridWorkspace.Mod into %APPDATA%\SpaceEngineers\Mods\<folder> and verify that the
 rem  result has the layout the game actually compiles (Data\Scripts\**\*.cs).
 rem
 rem  The game compiles only .cs files under Data\Scripts of the mod folder. A
@@ -13,10 +13,10 @@ rem  loading with MOD_CRITICAL_ERROR, which is why the layout is checked here an
 rem  again after the copy.
 rem
 rem  Usage:
-rem      tools\deploy-mod.cmd                 deploy into ...\Mods\VGS
-rem      tools\deploy-mod.cmd VGS-dev         deploy into ...\Mods\VGS-dev
+rem      tools\deploy-mod.cmd                 deploy into ...\Mods\GridWorkspace
+rem      tools\deploy-mod.cmd GridWorkspace-dev deploy into ...\Mods\GridWorkspace-dev
 rem      tools\deploy-mod.cmd /force          deploy even if the game is running
-rem      tools\deploy-mod.cmd VGS-dev /force  both
+rem      tools\deploy-mod.cmd GridWorkspace-dev /force  both
 rem
 rem  Environment override (mainly for tests):
 rem      set VGS_MODS_ROOT=<path>             use another Mods folder
@@ -33,11 +33,11 @@ if "%MOD_FOLDER%"=="/force" (
 ) else if /i "%~2"=="/force" (
     set "FORCE=1"
 )
-if not defined MOD_FOLDER set "MOD_FOLDER=VGS"
+if not defined MOD_FOLDER set "MOD_FOLDER=GridWorkspace"
 
 rem Repo root is the parent of this script's folder.
 for %%I in ("%~dp0..") do set "REPO=%%~fI"
-set "SRC=%REPO%\src\VGS.Mod"
+set "SRC=%REPO%\src\GridWorkspace.Mod"
 
 if defined VGS_MODS_ROOT (
     set "MODS_ROOT=%VGS_MODS_ROOT%"

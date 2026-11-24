@@ -5,7 +5,7 @@
 .DESCRIPTION
     Space Engineers does not load mods from the game installation. It reads them from
     %APPDATA%\SpaceEngineers\Mods\<folder>\, and only when the folder is enabled in the
-    world's mod list. This script mirrors src\VGS.Mod into that folder so the game picks up
+    world's mod list. This script mirrors src\GridWorkspace.Mod into that folder so the game picks up
     the current sources on the next world load.
 
     It is a mirror, not a merge: files removed from src are removed from the deployed copy.
@@ -17,14 +17,32 @@
     inside the game instead of here.
 
 .PARAMETER Source
-    Mod source folder. Defaults to src\VGS.Mod in this repository.
+    Mod source folder. Defaults to src\GridWorkspace.Mod in this repository.
 
 .PARAMETER ModsRoot
     Space Engineers mods folder. Defaults to %APPDATA%\SpaceEngineers\Mods.
 
 .PARAMETER FolderName
-    Deployed folder name. Changing it creates a second mod entry in the game's list, so keep
-    it stable once the world references it.
+    Deployed folder name. Defaults to GridWorkspace.
+
+    The folder name IS the mod's identity in a save: MyObjectBuilder_Checkpoint+ModItem builds
+    the mod path as MyFileSystem.ModsPath + Name (the <Name> element inside the save's <ModItem>),
+    and metadata.mod does not participate. So the folder and the save's <Name> must agree.
+
+    The mod was deployed as VGS before it was renamed. A world saved with
+    <Name>VGS</Name> looks for Mods\VGS and will not find the mod under the new folder name;
+    the unloaded mod also stops claiming its storage GUIDs, so MyModStorageComponent drops the
+    layout and visibility flags on the next save. Migrate existing worlds first:
+
+        pwsh -File tools/migrate-mod-folder.ps1 -WhatIf   # see what would change
+        pwsh -File tools/migrate-mod-folder.ps1           # rename folder + rewrite worlds
+
+    See docs/adr/0034-naming-grid-workspace.md.
+
+    The display name in the mod list comes from metadata.mod (<Name>Grid Workspace</Name>), so
+    the player sees the product name while the folder carries the technical one.
+
+    Use another name only for a throwaway test deployment (e.g. GridWorkspace-dev).
 
 .PARAMETER Force
     Deploy even when SpaceEngineers.exe appears to be running.
@@ -33,20 +51,20 @@
     pwsh -File tools/deploy-mod.ps1
 
 .EXAMPLE
-    pwsh -File tools/deploy-mod.ps1 -FolderName VGS-dev -Force
+    pwsh -File tools/deploy-mod.ps1 -FolderName GridWorkspace-dev -Force
 #>
 [CmdletBinding()]
 param(
     [string] $Source,
     [string] $ModsRoot = (Join-Path $env:APPDATA 'SpaceEngineers\Mods'),
-    [string] $FolderName = 'VGS',
+    [string] $FolderName = 'GridWorkspace',
     [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $Source) { $Source = Join-Path $repo 'src\VGS.Mod' }
+if (-not $Source) { $Source = Join-Path $repo 'src\GridWorkspace.Mod' }
 
 if (-not (Test-Path $Source)) { throw "Mod source not found: $Source" }
 if (-not (Test-Path $ModsRoot)) { throw "Mods folder not found: $ModsRoot" }

@@ -18,7 +18,7 @@
     Exit code is 1 when any ERROR is found, so it can gate a change on its own.
 
 .PARAMETER SourcePath
-    Mod source root. Defaults to src\VGS.Mod\Data\Scripts\VGS.
+    Mod source root. Defaults to src\GridWorkspace.Mod\Data\Scripts\VGS.
 
 .PARAMETER Rules
     Only run the given rule ids, e.g. -Rules R001,R004.
@@ -42,7 +42,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\VGS.Mod\Data\Scripts\VGS' }
+if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\GridWorkspace.Mod\Data\Scripts\VGS' }
 if (-not (Test-Path $SourcePath)) { throw "Source path not found: $SourcePath" }
 
 $files = @(Get-ChildItem -Path $SourcePath -Recurse -Filter '*.cs' -File)

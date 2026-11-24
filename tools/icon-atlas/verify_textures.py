@@ -23,10 +23,10 @@ import sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TEXTURE_DIR = os.path.join(ROOT, r'src\VGS.Mod\Textures\VGS\Icons')
+TEXTURE_DIR = os.path.join(ROOT, r'src\GridWorkspace.Mod\Textures\VGS\Icons')
 PREVIEW_DIR = os.path.join(ROOT, r'docs\icons')
-CODE = os.path.join(ROOT, r'src\VGS.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs')
-SBC = os.path.join(ROOT, r'src\VGS.Mod\Data\GuiTextures.sbc')
+CODE = os.path.join(ROOT, r'src\GridWorkspace.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs')
+SBC = os.path.join(ROOT, r'src\GridWorkspace.Mod\Data\GuiTextures.sbc')
 
 # The ink height, as a fraction of the texture side. Every glyph is scaled so that its ink fills
 # the inset box *vertically* and is centred, so the ratio is the same for every icon:

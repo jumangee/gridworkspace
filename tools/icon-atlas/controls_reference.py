@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TEXTURE_DIR = os.path.join(ROOT, r'src\VGS.Mod\Textures\VGS\Icons')
+TEXTURE_DIR = os.path.join(ROOT, r'src\GridWorkspace.Mod\Textures\VGS\Icons')
 OUT = os.path.join(ROOT, r'tmp\icon-atlas-preview\controls-reference.png')
 
 # --- constants mirrored from VgsConstants ---------------------------------------------------

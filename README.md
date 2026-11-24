@@ -10,9 +10,10 @@ draw into the **real block toolbars**, so what you see on the diagram is what th
 
 ## Install
 
-1. Copy the mod folder into `%APPDATA%\SpaceEngineers\Mods` (the folder is named `VGS`), or
+1. Copy the mod folder into `%APPDATA%\SpaceEngineers\Mods` (the folder must be named
+   `GridWorkspace`), or
    subscribe on Steam Workshop.
-2. In game: **Load Game** → select the world → **Mods** → enable `VGS - Visual Grid Setup` →
+2. In game: **Load Game** → select the world → **Mods** → enable `Grid Workspace` →
    load the world.
 
 Install it **on the server and on every client**. Reading the diagram works anywhere; creating

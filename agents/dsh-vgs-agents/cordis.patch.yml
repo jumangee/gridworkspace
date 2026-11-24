@@ -102,7 +102,7 @@
 
                 Hard constraints, non-negotiable:
                 - C# only, language version 7.3, .NET Framework 4.x. No `async/await`, no LINQ-heavy hot paths, no tuples deconstruction in public APIs, no shipped DLLs.
-                - The game compiles your `.cs` files itself. Anything you cannot express in `src/VGS.Mod/Data/Scripts/VGS/` does not exist.
+                - The game compiles your `.cs` files itself. Anything you cannot express in `src/GridWorkspace.Mod/Data/Scripts/VGS/` does not exist.
                 - Never touch `UnityEngine`, `UnityEditor`, WPF, ImGui or any native library.
                 - Never call an API you have not seen in `docs/01-research/api-surface.md` or dumped with `tools/dump-se-api.ps1`.
                 - Anything that can throw into the game loop must be guarded: a mod exception breaks the session, not just the mod.

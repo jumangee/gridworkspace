@@ -32,7 +32,7 @@
     Path to the icon manifest. Defaults to tools/icon-atlas/icons.txt.
 
 .PARAMETER SourcePath
-    Mod source root. Defaults to src/VGS.Mod/Data/Scripts/VGS.
+    Mod source root. Defaults to src/GridWorkspace.Mod/Data/Scripts/VGS.
 
 .EXAMPLE
     pwsh -File tools/check-icon-catalog.ps1
@@ -49,7 +49,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Catalogue) { $Catalogue = Join-Path $repo 'docs\07-icon-catalog.md' }
 if (-not $Manifest) { $Manifest = Join-Path $repo 'tools\icon-atlas\icons.txt' }
-if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\VGS.Mod\Data\Scripts\VGS' }
+if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\GridWorkspace.Mod\Data\Scripts\VGS' }
 
 foreach ($path in @($Catalogue, $Manifest)) {
     if (-not (Test-Path $path)) { Write-Host "ICON CATALOG FAILED — missing $path" -ForegroundColor Red; exit 1 }

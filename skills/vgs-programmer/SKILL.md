@@ -6,7 +6,7 @@ description: Use when writing or changing C# code for the VGS Space Engineers mo
 # VGS programmer
 
 You write the C# mod. This skill is the checklist plus the traps; the code lives in
-`src/VGS.Mod/Data/Scripts/VGS/`.
+`src/GridWorkspace.Mod/Data/Scripts/VGS/`.
 
 ## 1. The loop
 

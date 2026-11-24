@@ -18,9 +18,9 @@
     This script is the whole build. It compiles `tools/icon-atlas/*.cs` with the same Roslyn the
     mod is type-checked with, runs it, and lets it write the artefacts into the mod:
 
-      src/VGS.Mod/Textures/VGS/Icons/<Id>.png     one texture per icon
-      src/VGS.Mod/Data/GuiTextures.sbc            the SubtypeName -> texture registration
-      src/VGS.Mod/Data/Scripts/VGS/Ui/VgsIconAtlas.g.cs
+      src/GridWorkspace.Mod/Textures/VGS/Icons/<Id>.png     one texture per icon
+      src/GridWorkspace.Mod/Data/GuiTextures.sbc            the SubtypeName -> texture registration
+      src/GridWorkspace.Mod/Data/Scripts/VGS/Ui/VgsIconAtlas.g.cs
                                                   the VgsIcon enum, material names, sizes
       docs/icons/<Id>.png                         the catalogue preview (dark background, so the
                                                   light ink is visible in a Markdown viewer)
@@ -176,8 +176,8 @@ if (-not $Verify) { exit 0 }
 # not require touching this script — and a texture that is checked in but no longer in the
 # manifest is reported too.
 $artefacts = @(
-    'src\VGS.Mod\Data\GuiTextures.sbc',
-    'src\VGS.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs'
+    'src\GridWorkspace.Mod\Data\GuiTextures.sbc',
+    'src\GridWorkspace.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs'
 )
 
 $manifestPath = Join-Path $repo 'tools\icon-atlas\icons.txt'
@@ -185,7 +185,7 @@ foreach ($line in (Get-Content $manifestPath)) {
     $trimmed = $line.Trim()
     if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
     $id = ($trimmed -split '\s+')[0]
-    $artefacts += "src\VGS.Mod\Textures\VGS\Icons\$id.png"
+    $artefacts += "src\GridWorkspace.Mod\Textures\VGS\Icons\$id.png"
     # The catalogue previews are generated too, so they are compared like every other artefact:
     # a preview that drifted from its icon would show the reader a shape the mod no longer ships.
     $artefacts += "docs\icons\$id.png"
@@ -221,7 +221,7 @@ foreach ($relative in $artefacts) {
 
 # An icon removed from the manifest leaves its texture behind, and the mod would keep shipping
 # a file nothing references.
-$textureDir = Join-Path $repo 'src\VGS.Mod\Textures\VGS\Icons'
+$textureDir = Join-Path $repo 'src\GridWorkspace.Mod\Textures\VGS\Icons'
 $previewDir = Join-Path $repo 'docs\icons'
 $expected = @{}
 foreach ($line in (Get-Content $manifestPath)) {
@@ -233,7 +233,7 @@ foreach ($line in (Get-Content $manifestPath)) {
 if (Test-Path $textureDir) {
     foreach ($file in (Get-ChildItem $textureDir -Filter *.png -File)) {
         if (-not $expected.ContainsKey($file.Name)) {
-            $drift += "src\VGS.Mod\Textures\VGS\Icons\$($file.Name) — no longer listed in icons.txt"
+            $drift += "src\GridWorkspace.Mod\Textures\VGS\Icons\$($file.Name) — no longer listed in icons.txt"
         }
     }
 }

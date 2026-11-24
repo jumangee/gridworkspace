@@ -35,7 +35,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$sourceRoot = Join-Path $repo 'src\VGS.Mod\Data\Scripts\VGS'
+$sourceRoot = Join-Path $repo 'src\GridWorkspace.Mod\Data\Scripts\VGS'
 $checks = Join-Path $repo 'tests\OfflineChecks.cs'
 
 if (-not $Out) { $Out = Join-Path ([System.IO.Path]::GetTempPath()) ('vgs-offline-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
@@ -274,7 +274,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ''
 Write-Host '=== icon textures are well formed (ADR-0019) ==='
 
-$textureDir = Join-Path $repo 'src\VGS.Mod\Textures\VGS\Icons'
+$textureDir = Join-Path $repo 'src\GridWorkspace.Mod\Textures\VGS\Icons'
 $tableFile = Join-Path $sourceRoot 'Ui\VgsIconAtlas.g.cs'
 $tableText = Get-Content $tableFile -Raw
 
@@ -288,7 +288,7 @@ if ($declaredNames.Count -ne $declaredCount) {
     $textureProblems += "the table declares $declaredCount icon(s) but names $($declaredNames.Count)"
 }
 
-$sbcText = Get-Content (Join-Path $repo 'src\VGS.Mod\Data\GuiTextures.sbc') -Raw
+$sbcText = Get-Content (Join-Path $repo 'src\GridWorkspace.Mod\Data\GuiTextures.sbc') -Raw
 
 # CRC-32 as PNG defines it: reflected polynomial 0xEDB88320, pre- and post-inverted.
 # The arithmetic is done in uint64 and masked back to 32 bits: PowerShell widens to int32, which

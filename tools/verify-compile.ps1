@@ -51,7 +51,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\VGS.Mod\Data\Scripts\VGS' }
+if (-not $SourcePath) { $SourcePath = Join-Path $repo 'src\GridWorkspace.Mod\Data\Scripts\VGS' }
 if (-not $Out) { $Out = Join-Path ([System.IO.Path]::GetTempPath()) ('vgs-verify-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 
 if (-not (Test-Path $Bin)) { throw "Game bin folder not found: $Bin" }

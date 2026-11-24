@@ -85,9 +85,9 @@ namespace Vgs.IconAtlasBuilder
             string iconDir = Path.Combine(toolDir, "icons");
             string manifest = Path.Combine(toolDir, "icons.txt");
 
-            string textureDir = Path.Combine(outRoot, @"src\VGS.Mod\Textures\VGS\Icons");
-            string sbcPath = Path.Combine(outRoot, @"src\VGS.Mod\Data\GuiTextures.sbc");
-            string codePath = Path.Combine(outRoot, @"src\VGS.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs");
+            string textureDir = Path.Combine(outRoot, @"src\GridWorkspace.Mod\Textures\VGS\Icons");
+            string sbcPath = Path.Combine(outRoot, @"src\GridWorkspace.Mod\Data\GuiTextures.sbc");
+            string codePath = Path.Combine(outRoot, @"src\GridWorkspace.Mod\Data\Scripts\VGS\Ui\VgsIconAtlas.g.cs");
             string previewDir = Path.Combine(outRoot, @"docs\icons");
 
             if (!File.Exists(manifest))

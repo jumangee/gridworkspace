@@ -16,16 +16,46 @@
 | Русское полное название | **Центр Управления Гридом** (ЦУГ) | это новое имя |
 | Рабочее (техническое) название | **VGS** | не меняется |
 | Пространство имён, классы | `Vgs.*`, `VgsText`, `VgsLog` | не меняется |
-| Пути | `src/VGS.Mod`, `Data/Scripts/VGS`, папка мода `VGS` | не меняется |
+| Папка мода в репозитории | `src/GridWorkspace.Mod` | **переименована** из `src/VGS.Mod`; правится во всех скриптах и документах |
+| Папка скриптов внутри мода | `Data/Scripts/VGS` | оставлена намеренно: это идентификатор, её имя видно в логе как сборка `VGS_VGS` |
+| Папка мода в `%APPDATA%\SpaceEngineers\Mods` | `GridWorkspace` | **переименована** из `VGS`; миграция — `tools/migrate-mod-folder.ps1` (см. ниже) |
 | Лог | префикс `[VGS]` | не меняется |
-| Строки игры | `Grid Workspace` / «Центр Управления Гридом»; чекбокс `Show in Grid Workspace` / «Показывать в ЦУГ» | это новые строки (`Core/VgsStrings.cs`) |
+| Строки игры | `Grid Workspace` / «Центр Управления Гридом»; чекбокс `Show in Workspace` / «Показывать в ЦУГ» | это новые строки (`Core/VgsStrings.cs`) |
+| Имя мода в списке модов | `Grid Workspace` (`metadata.mod`, `<Name>`) | уже новое |
 | Ключи хранилища, id контролов, материалы | `VGS_*`, `Vgs*` | не меняется: это контракт сохранений и вайтлиста |
-| Имя мода в списке модов | `VGS - Visual Grid Setup` (`metadata.mod`) | **пока нет** — отдельное решение |
+
+**Папка в `Mods` — идентификатор, а не название, и её переименование требует миграции.**
+`VRage.Game.MyObjectBuilder_Checkpoint+ModItem` вычисляет путь мода как `MyFileSystem.ModsPath` +
+`Name`, где `Name` — элемент `<Name>` внутри `<ModItem>` сохранения мира (проверено по IL:
+`dump-se-il.ps1 -Assembly VRage.Game.dll -Type '...ModItem' -Method 'GetPath'`). `metadata.mod`
+в вычислении пути не участвует, поэтому папка и `<Name>` в сейвах обязаны совпадать.
+
+Папка переименована `VGS` → `GridWorkspace`, значит существующие миры, сохранённые с
+`<Name>VGS</Name>`, стали бы искать `Mods\VGS` и мод не нашли. Хуже того, без загруженного мода
+`MyModStorageComponent.Serialize` не находит заявленных GUID и выбрасывает их при сохранении
+мира («Not saving ModStorageComponent GUID: … not claimed») — пропадают раскладка карточек и
+флаги видимости.
+
+Поэтому любое переименование папки в `Mods` делается **только** вместе с миграцией:
+
+```powershell
+pwsh -File tools/migrate-mod-folder.ps1 -WhatIf   # показать план
+pwsh -File tools/migrate-mod-folder.ps1           # переименовать папку и поправить сейвы
+```
+
+Скрипт переименовывает папку и переписывает `<ModItem>` в `<Mods>` во всех `Sandbox.sbc` и
+`Sandbox_config.sbc`, оставляя бэкап каждого файла; он идемпотентен. Имя мода в списке модов
+берётся из `metadata.mod` и от папки не зависит — игрок видит `Grid Workspace`.
 
 **Новый текст пишем новым именем, идентификаторы — нет.** В прозе, заголовках и README —
 `Grid Workspace` (или «Центр Управления Гридом» в русском тексте). `VGS` допустим только там,
 где это буквально идентификатор: путь, префикс лога, имя типа, ключ, id контрола, ссылка на
 старый документ.
+
+**Пути правятся, имена — нет.** Разница практическая: путь, который больше не существует, —
+это дефект документа (он ведёт в никуда), поэтому ссылки на `src/VGS.Mod` заменены на
+`src/GridWorkspace.Mod` **везде, включая старые ADR**. А имя в прозе старого ADR — это запись
+решения на момент решения, её не трогают; её резолвит таблица ниже.
 
 **Старые документы не переписываются, а «резолвятся».** В `docs/adr/`, `docs/01-research/`,
 `docs/review/` и в старых редакциях README встречаются имена, которых в игре больше нет.
@@ -36,7 +66,8 @@
 | `VGS`, «проект VGS» | Grid Workspace |
 | «кнопка `Grid setup`» | кнопка `Grid Workspace` («Центр Управления Гридом») |
 | заголовок `Workbench` | заголовок `Workspace` («Центр Управления Гридом») |
-| чекбокс `Show in VGS` | `Show in Grid Workspace` («Показывать в ЦУГ»); ключ и флаг в коде те же |
+| чекбокс `Show in VGS` | `Show in Workspace` («Показывать в ЦУГ»); ключ `SHOW_IN_VGS_TITLE` и флаг в коде те же |
+| путь `src/VGS.Mod` | `src/GridWorkspace.Mod` (переименован; в старых ADR ссылки уже исправлены) |
 
 Встретилось имя, которого нет в этой таблице, — это либо новый идентификатор (тогда он
 остаётся), либо дефект документа (тогда он правится). Третье имя не придумывается.
@@ -201,7 +232,8 @@ pwsh -File tools/verify-compile.ps1        # компиляция против �
 pwsh -File tools/check-whitelist.ps1       # сверка ссылок с вайтлистом скриптов
 pwsh -File tools/review-check.ps1          # статические правила качества R001–R010
 pwsh -File tools/offline-check.ps1         # офлайн-проверки графа и геометрии
-pwsh -File tools/deploy-mod.ps1            # деплой в %APPDATA%\SpaceEngineers\Mods
+pwsh -File tools/deploy-mod.ps1            # деплой в %APPDATA%\SpaceEngineers\Mods\GridWorkspace
+pwsh -File tools/migrate-mod-folder.ps1    # переименовать папку мода и поправить сейвы
 pwsh -File tools/tail-mod-log.ps1          # строки [VGS] из последнего лога
 pwsh -File tools/dump-se-api.ps1 -Types '...'   # публичный контракт типа
 pwsh -File tools/find-se-type.ps1 -Name '...'   # в какой сборке живёт тип

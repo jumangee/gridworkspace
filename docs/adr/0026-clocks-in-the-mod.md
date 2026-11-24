@@ -154,7 +154,7 @@
 & .\tools\dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' -Type 'Sandbox.ModAPI.MyModScreen+MyGuiScreenModHost' -Method 'Update'
 
 # 2. В экране не осталось замершего счётчика (ожидаемо: только комментарии)
-Select-String -Path src\VGS.Mod\Data\Scripts\VGS\Ui\*.cs -Pattern 'VgsSession\.Frame'
+Select-String -Path src\GridWorkspace.Mod\Data\Scripts\VGS\Ui\*.cs -Pattern 'VgsSession\.Frame'
 
 # 3. Шлюзы
 & .\tools\verify-compile.ps1     # COMPILE OK

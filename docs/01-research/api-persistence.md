@@ -152,7 +152,7 @@ Not saving ModStorageComponent GUID: {0}, not claimed
 `MyFileSystem.GetFiles(context.ModPathData, "*.sbc", MySearchOption.AllDirectories)`, а
 `MySearchOption` — `TopDirectoryOnly, AllDirectories` (`dump-se-api.ps1 -Types
 'VRage.FileSystem.MySearchOption'`). То есть файл кладётся **в `Data/` мода** (глубина любая):
-`src/VGS.Mod/Data/EntityComponents.sbc`.
+`src/GridWorkspace.Mod/Data/EntityComponents.sbc`.
 
 **Как это попадает в сейв и возвращается из него.** [ПРОВЕРЕНО] по IL:
 

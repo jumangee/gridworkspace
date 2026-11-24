@@ -5,7 +5,7 @@ The card's button row (ADR-0020) is a different composition and is covered by th
 previews in `docs/icons/`, which the icon build generates. This script is kept because it shows
 the controls *at every zoom level*, which the catalogue does not.
 
-This is not the design mock-up: it reads `src/VGS.Mod/Textures/VGS/Icons/*.png`, reduces each
+This is not the design mock-up: it reads `src/GridWorkspace.Mod/Textures/VGS/Icons/*.png`, reduces each
 icon to the pixel size the editor computes for a given zoom and screen height, and composites
 the control exactly as `VgsEditorScreen` does — the same disc behind the "x", the same colours,
 the same size ratios from `VgsConstants`.
@@ -22,7 +22,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 ROOT = r'e:\Projects\!VGS'
-TEXTURE_DIR = os.path.join(ROOT, r'src\VGS.Mod\Textures\VGS\Icons')
+TEXTURE_DIR = os.path.join(ROOT, r'src\GridWorkspace.Mod\Textures\VGS\Icons')
 OUT = os.path.join(ROOT, r'tmp\icon-atlas-preview')
 
 # --- constants mirrored from VgsConstants / VgsEditorScreen -------------------------------

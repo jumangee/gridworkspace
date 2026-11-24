@@ -544,7 +544,7 @@ $py = '<python>'
 1. `tools/build-icon-atlas.ps1` — берёт `.svg` из `tools/icon-atlas/icons/` (по списку
    `icons.txt`), растеризует каждую в маску 256 px тем же `IconRaster`, строит мип-цепочку,
    пишет `Icons\<Id>.dds` **на каждую иконку** и `GuiTextures.sbc`;
-2. артефакты кладутся в `src/VGS.Mod/Textures/VGS/Icons/` и `src/VGS.Mod/Data/`, плюс
+2. артефакты кладутся в `src/GridWorkspace.Mod/Textures/VGS/Icons/` и `src/GridWorkspace.Mod/Data/`, плюс
    генерируется `Ui/VgsIconAtlas.g.cs`;
 3. мод в рантайме знает только `MyStringId` на иконку и размер её текстуры.
 

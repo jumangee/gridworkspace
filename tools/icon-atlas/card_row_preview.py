@@ -16,7 +16,7 @@ import os
 from PIL import Image, ImageDraw
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TEXTURES = os.path.join(ROOT, r'src\VGS.Mod\Textures\VGS\Icons')
+TEXTURES = os.path.join(ROOT, r'src\GridWorkspace.Mod\Textures\VGS\Icons')
 OUT = os.path.join(ROOT, r'docs\01-research\images\card-button-row-preview.png')
 
 # ---- VgsConstants (the values the mod compiles) ----

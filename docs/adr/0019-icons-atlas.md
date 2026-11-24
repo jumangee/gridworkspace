@@ -26,7 +26,7 @@
   текстура на иконку, PNG, `DrawPixels` в целых пикселях окна, иконка на любом зуме, откат
   только при отсутствии текстуры.
 - Implementation: **done** (2026-11-22) — `tools/icon-atlas/` (инструмент сборки),
-  `src/VGS.Mod/Textures/VGS/Icons/*.png`, `src/VGS.Mod/Data/GuiTextures.sbc`,
+  `src/GridWorkspace.Mod/Textures/VGS/Icons/*.png`, `src/GridWorkspace.Mod/Data/GuiTextures.sbc`,
   `Ui/VgsIconAtlas.g.cs` (сгенерированная таблица), `Ui/VgsIcons.cs`, `Ui/IconPlacement.cs`,
   `Ui/VgsScreenDraw.Icon`, `Ui/VgsEditorScreen` (три контрола), `Core/VgsConstants`,
   `Ui/PortGeometry` (зона попадания кнопки привязки). Шлюзы зелёные; приёмка в игре — за
