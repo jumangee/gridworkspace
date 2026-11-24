@@ -80,6 +80,13 @@ namespace Vgs.Ui
         /// Draws the "infinite" field. The spacing is derived from zoom so the grid stays
         /// legible at any scale; lines are skipped when they would be denser than a few
         /// pixels, which is what keeps zoomed-out views cheap.
+        ///
+        /// <b>Every line is one device pixel thick at every zoom, and the two kinds of line
+        /// differ in colour only</b> (ADR-0032 §3). A thickness in layout units cannot express
+        /// that: the axes do not share a scale (ADR-0009), so the same value is one pixel on one
+        /// axis and <c>height/width</c> of a pixel on the other, and it would also have to be
+        /// divided by the zoom to stay constant. The two effects together are what made the
+        /// lighter every-fifth line look like a second, thicker kind of line.
         /// </summary>
         private void DrawGrid(Vector2 topLeft, Vector2 size)
         {
@@ -89,7 +96,7 @@ namespace Vgs.Ui
             const float minVisibleStep = 0.006f;
             if (step < minVisibleStep) return;
 
-            // Every 5th line is emphasised to give a sense of scale.
+            // Every 5th line is emphasised to give a sense of scale — in colour, not in width.
             const int majorEvery = 5;
 
             float startX = -_view.Camera.X * _view.Zoom;
@@ -103,10 +110,8 @@ namespace Vgs.Ui
                 if (x < 0f) continue;
 
                 Color c = (col % majorEvery == 0) ? ColGridMajor : ColGridMinor;
-                VgsScreenDraw.Rect(
-                    new Vector2(topLeft.X + x, topLeft.Y),
-                    new Vector2(Hairline, size.Y),
-                    c);
+                VgsScreenDraw.VerticalLinePixels(topLeft.X + x, topLeft.Y, topLeft.Y + size.Y, c,
+                                                 VgsConstants.GridLinePixels);
             }
 
             float startY = -_view.Camera.Y * _view.Zoom;
@@ -119,11 +124,9 @@ namespace Vgs.Ui
                 if (y > size.Y) break;
                 if (y < 0f) continue;
 
-                Color c = (row % 5 == 0) ? ColGridMajor : ColGridMinor;
-                VgsScreenDraw.Rect(
-                    new Vector2(topLeft.X, topLeft.Y + y),
-                    new Vector2(size.X, Hairline),
-                    c);
+                Color c = (row % majorEvery == 0) ? ColGridMajor : ColGridMinor;
+                VgsScreenDraw.HorizontalLinePixels(topLeft.Y + y, topLeft.X, topLeft.X + size.X, c,
+                                                   VgsConstants.GridLinePixels);
             }
         }
 
@@ -1335,7 +1338,7 @@ namespace Vgs.Ui
             GetBottomBarRect(out barTopLeft, out barSize);
 
             VgsScreenDraw.Rect(barTopLeft, barSize, ColBottomBar);
-            VgsScreenDraw.Rect(barTopLeft, new Vector2(1f, Hairline), ColGridMajor);
+            VgsScreenDraw.Rect(barTopLeft, new Vector2(1f, Hairline), ColBarSeparator);
 
             DrawModesButton();
             DrawSearchField();

@@ -125,6 +125,19 @@ namespace Vgs.Core
         /// <summary>Multiplicative zoom step per mouse-wheel notch.</summary>
         public const float ZoomStep = 1.12f;
 
+        /// <summary>
+        /// Thickness of one line of the field's grid, in device pixels — one pixel at every zoom,
+        /// the same rule as <see cref="GridBorderPixels"/> (ADR-0032 §3).
+        ///
+        /// <b>Not a layout-unit size, unlike <see cref="BaseCellSize"/>.</b> The cell size is a
+        /// distance on the field and scales with the zoom; a line's thickness is not a distance on
+        /// the field at all. Expressed in layout units it came out one pixel wide vertically and
+        /// <c>height/width</c> wide horizontally (ADR-0009), and the every-fifth line, being
+        /// lighter, read as a second, thicker kind of line. The two kinds now differ in colour
+        /// only.
+        /// </summary>
+        public const float GridLinePixels = 1f;
+
         // ---- Block card ----
         //
         // The card is a label, not a panel: one line of name, one line of subtype, nothing

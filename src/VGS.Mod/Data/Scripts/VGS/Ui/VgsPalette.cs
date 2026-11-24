@@ -28,8 +28,17 @@ namespace Vgs.Ui
     {
         public static readonly Color ColBackdrop = new Color(12, 15, 20, 235);
         public static readonly Color ColCanvas = new Color(18, 22, 29, 255);
-        public static readonly Color ColGridMinor = new Color(30, 36, 46, 255);
-        public static readonly Color ColGridMajor = new Color(44, 52, 66, 255);
+
+        /// <summary>
+        /// The field's grid: two kinds of line that differ in <b>colour only</b>, never in
+        /// thickness (ADR-0032 §3). Both are one device pixel thick at every zoom, so these two
+        /// values are the field's entire look — raise them to make the field louder, lower them
+        /// to make it quieter. Nothing else in the editor reads them.
+        ///
+        /// Minor line is ColGridMinor, every fifth (ColGridMajor) line is the lighter.
+        /// </summary>
+        public static readonly Color ColGridMinor = new Color(30, 30, 30, 255);
+        public static readonly Color ColGridMajor = new Color(50, 50, 50, 255);
         public static readonly Color ColNode = new Color(38, 45, 58, 255);
         public static readonly Color ColNodeBorder = new Color(70, 84, 105, 255);
         public static readonly Color ColNodeSelected = new Color(255, 170, 60, 255);
@@ -105,6 +114,16 @@ namespace Vgs.Ui
         public static readonly Color ColMenuBorder = new Color(90, 106, 130, 255);
         public static readonly Color ColMenuRowHot = new Color(52, 66, 88, 255);
         public static readonly Color ColBottomBar = new Color(24, 29, 38, 255);
+
+        /// <summary>
+        /// The line along the bottom bar's top edge.
+        ///
+        /// <b>Deliberately not a grid colour.</b> It used to borrow
+        /// <see cref="ColGridMajor"/>, which made every tuning of the field's grid repaint the
+        /// chrome as well: the two are different objects — the field's grid is tuned against the
+        /// canvas, the bar's edge against the bar — and one value cannot serve both.
+        /// </summary>
+        public static readonly Color ColBarSeparator = new Color(44, 52, 66, 255);
 
         /// <summary>
         /// Colour of a failure message: warm enough to read as a problem, dim enough not to shout

@@ -613,9 +613,8 @@ namespace Vgs.Ui
             if (right <= left || bottom <= top) return;
 
             // A whole number of pixels, at least one: half a pixel is a translucent line, and a
-            // line that rounds to nothing is a missing border.
-            float t = (float)Math.Round(thicknessPixels);
-            if (t < 1f) t = 1f;
+            // line that rounds to nothing is a missing border (see PixelThickness).
+            float t = PixelThickness(thicknessPixels);
 
             _borderEdges.Clear();
             GridFrames.AppendBorderEdges(_borderEdges, left, top, right, bottom, t);
@@ -625,6 +624,77 @@ namespace Vgs.Ui
                 Vector4 edge = _borderEdges[i];
                 DrawApiPixelRect(edge.X, edge.Y, edge.Z, edge.W, color);
             }
+        }
+
+        /// <summary>
+        /// A whole number of pixels, at least one, from a thickness given in device pixels.
+        ///
+        /// Half a pixel is not a thin line, it is a translucent one (ADR-0032 §3): it covers part
+        /// of a pixel column, and a colour's own alpha is not enough to hide that. A thickness
+        /// that rounds to nothing is a missing line, which is worse than a thin one.
+        /// </summary>
+        private static float PixelThickness(float thicknessPixels)
+        {
+            float t = (float)Math.Round(thicknessPixels);
+            return t < 1f ? 1f : t;
+        }
+
+        /// <summary>
+        /// A vertical line, <paramref name="thicknessPixels"/> device pixels wide at every zoom,
+        /// snapped to the pixel grid.
+        ///
+        /// <b>The field's grid is drawn with this, and that is why it exists.</b> The grid's lines
+        /// used to be rectangles whose thickness was <c>Hairline</c> — a fraction of the client
+        /// <i>height</i> — so a vertical line came out <c>height/width</c> times wider than a
+        /// horizontal one (ADR-0009), and the lighter every-fifth line read as a second, thicker
+        /// kind of line. Here the thickness is a pixel count, so there is no axis to get wrong and
+        /// no zoom to divide by, exactly as with <see cref="BorderPixels"/>.
+        ///
+        /// <b>The far edge is the near edge plus the thickness, not a second rounded
+        /// coordinate.</b> Rounding both edges independently makes the line one pixel narrower or
+        /// wider depending on where the fraction fell — the same defect this replaces, only
+        /// smaller and harder to see.
+        /// </summary>
+        public static void VerticalLinePixels(float x, float top, float bottom, Color color,
+                                              float thicknessPixels)
+        {
+            if (bottom <= top) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
+
+            float t = PixelThickness(thicknessPixels);
+
+            float left = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                                      x);
+            float topPixels = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY,
+                                                           _clientHeightPixels, top);
+            float bottomPixels = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY,
+                                                              _clientHeightPixels, bottom);
+
+            DrawApiPixelRect(left, topPixels, left + t, bottomPixels, color);
+        }
+
+        /// <summary>
+        /// A horizontal line, <paramref name="thicknessPixels"/> device pixels tall at every zoom,
+        /// snapped to the pixel grid. The counterpart of <see cref="VerticalLinePixels"/>, and the
+        /// reason both exist: one thickness for both axes is exactly what a layout-unit size
+        /// cannot express here (ADR-0009).
+        /// </summary>
+        public static void HorizontalLinePixels(float y, float left, float right, Color color,
+                                                float thicknessPixels)
+        {
+            if (right <= left) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
+
+            float t = PixelThickness(thicknessPixels);
+
+            float top = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                                     y);
+            float leftPixels = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX,
+                                                            _clientWidthPixels, left);
+            float rightPixels = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX,
+                                                             _clientWidthPixels, right);
+
+            DrawApiPixelRect(leftPixels, top, rightPixels, top + t, color);
         }
 
         /// <summary>
