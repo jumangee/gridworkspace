@@ -59,6 +59,38 @@ function Get-Relative([string] $full) {
     return $full.Replace($SourcePath.TrimEnd('\') + '\', '')
 }
 
+# Removes string literals and the trailing comment from a line, leaving only the code.
+#
+# The syntax rules below (R002 async, R003 language version) are about what the compiler sees, and
+# a compiler never sees the inside of a string. Without this, a perfectly ordinary sentence in a
+# user-facing string trips a rule: `"Jump failed: the player is not in the world yet"` matched
+# R003's `is not` pattern (C# 9) and failed the gate on text that cannot be C# at all. Suppressing
+# the rule there would have been the wrong fix — the gate, not the sentence, was wrong.
+#
+# Verbatim strings are not handled because this project has none; a `@"` literal would leave its
+# content in place and the rule would simply behave as it did before.
+function Get-CodeOnly([string] $line) {
+    if (-not $line) { return '' }
+
+    $sb = [System.Text.StringBuilder]::new($line.Length)
+    $inString = $false
+    $i = 0
+    while ($i -lt $line.Length) {
+        $ch = $line[$i]
+        if ($inString) {
+            if ($ch -eq '\' -and $i + 1 -lt $line.Length) { $i += 2; continue }
+            if ($ch -eq '"') { $inString = $false }
+            $i++
+            continue
+        }
+        if ($ch -eq '"') { $inString = $true; $i++; continue }
+        if ($ch -eq '/' -and $i + 1 -lt $line.Length -and $line[$i + 1] -eq '/') { break }
+        [void]$sb.Append($ch)
+        $i++
+    }
+    return $sb.ToString()
+}
+
 # A rule that cannot be silenced gets ignored, and an ignored gate protects nothing. Any line
 # may carry `// review:allow R0NN <reason>`; the same line is then excluded from that rule.
 # The reason is required — a bare suppression is itself a finding.
@@ -149,8 +181,8 @@ if (Should-Run 'R002') {
         $rel = Get-Relative $f.FullName
         $lines = @(Get-Content $f.FullName)
         for ($i = 0; $i -lt $lines.Count; $i++) {
-            $l = $lines[$i]
-            if ($l -match '^\s*//') { continue }
+            $l = Get-CodeOnly $lines[$i]
+            if (-not $l) { continue }
             if ($l -match '\basync\b' -or $l -match '\bawait\b' -or
                 $l -match 'System\.Threading\.Tasks' -or $l -match '\bTask<') {
                 Add-Finding 'R002' 'ERROR' $rel ($i + 1) `
@@ -181,8 +213,8 @@ if (Should-Run 'R003') {
         $rel = Get-Relative $f.FullName
         $lines = @(Get-Content $f.FullName)
         for ($i = 0; $i -lt $lines.Count; $i++) {
-            $l = $lines[$i]
-            if ($l -match '^\s*//') { continue }
+            $l = Get-CodeOnly $lines[$i]
+            if (-not $l) { continue }
             foreach ($p in $patterns) {
                 if ($l -match $p.Re) {
                     Add-Finding 'R003' 'ERROR' $rel ($i + 1) `
@@ -255,10 +287,16 @@ if (Should-Run 'R005') {
 # that nobody can find when the wording changes.
 # ---------------------------------------------------------------------------------------
 if (Should-Run 'R006') {
-    # The text table has its own file since Step 6.3: `Core\VgsText.cs`. `Core\VgsConstants.cs`
-    # is skipped too, because VgsText lived there before the split and a stray literal left
-    # behind in it is still a literal in the table's file rather than a string in the wrong place.
-    $textTables = @('Core\VgsText.cs', 'Core\VgsConstants.cs')
+    # The text tables have their own files since Step 6.3: `Core\VgsText.cs` holds the facade and
+    # the language-independent marks, and `Core\VgsStrings.cs` holds one key → value table per
+    # language (ADR-0033). `Core\VgsConstants.cs` is skipped too, because VgsText lived there
+    # before the split and a stray literal left behind in it is still a literal in a table's file
+    # rather than a string in the wrong place.
+    $textTables = @(
+        'Core\VgsText.cs',
+        'Core\VgsConstants.cs',
+        'Core\VgsStrings.cs'
+    )
     foreach ($f in $files) {
         $rel = Get-Relative $f.FullName
         if ($textTables -contains $rel) { continue }
@@ -268,7 +306,7 @@ if (Should-Run 'R006') {
             if ($l -match '^\s*//') { continue }
             if ($l -match '"[^"]*[\u0400-\u04FF][^"]*"') {
                 Add-Finding 'R006' 'WARNING' $rel ($i + 1) `
-                    'Cyrillic string literal outside VgsText. Move it to Core\VgsText.cs.'
+                    'Cyrillic string literal outside the text tables. Move it to Core\VgsStringsRussian.cs and its English counterpart (ADR-0033).'
             }
         }
     }

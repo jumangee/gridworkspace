@@ -96,7 +96,10 @@ Read the change against these, and name the rule when you raise a point.
 **Naming and comments**
 - Names say what, comments say why. A comment restating the code is noise; a comment
   explaining a non-obvious constraint is the most valuable line in the file.
-- Game API names stay in English (`IMyTerminalBlock`), user-facing text stays in `VgsText`.
+- Game API names stay in English (`IMyTerminalBlock`), user-facing text stays in the string
+  tables behind `VgsText` (ADR-0033). A user-visible literal outside those tables is a finding;
+  so is a translated fallback glyph or number format, which would change behaviour rather than
+  wording.
 
 **Testability**
 - `Vgs.Model` must stay free of game types so it can be reasoned about without launching the

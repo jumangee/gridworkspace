@@ -1,126 +1,124 @@
 using System;
+using System.Collections.Generic;
 
 namespace Vgs.Core
 {
     /// <summary>
-    /// All user-facing strings, in one place.
+    /// The editor's text, read through whichever language is active (ADR-0033).
     ///
-    /// Space Engineers localizes through <c>MyStringId</c> and a localization dictionary
-    /// shipped as content. Until the project ships translations, an explicit table beats
-    /// scattering literals: it keeps the Russian and English text adjacent, makes it
-    /// obvious which strings still need translating, and lets the QA checklist reference a
-    /// single file.
+    /// <b>One facade, two jobs.</b> It names every string once — a call site says
+    /// <c>VgsText.CloseButton</c> and never a literal — and it holds the language for the whole
+    /// mod. The strings themselves live in <see cref="VgsStrings"/>, one key → value table per
+    /// language; the tables are data, so adding a language or moving the wording into a file
+    /// does not change this class's surface and does not touch a single call site.
+    ///
+    /// <b>Why a property per string and not <c>VgsText.Get("CLOSE_BUTTON")</c>.</b> A method call
+    /// would put the key in every call site, which is exactly the scattering the facade exists to
+    /// prevent: a typo in a key at a call site compiles and shows the key on screen, and the
+    /// compiler cannot help because the parameter is a string. With a property, the key appears
+    /// once, next to its name, and a renamed or removed key breaks in one file.
+    ///
+    /// <b>Missing entries do not throw.</b> <see cref="S"/> falls back to English and then to the
+    /// key itself. A key on screen is ugly and unmistakable — it is an all-caps mark no sentence
+    /// looks like — and it is strictly better than an exception in a draw path, or a blank
+    /// control that reads as a layout bug. The offline gate asserts that no property ever
+    /// returns a key, so the fallback is a safety net rather than a state the mod ships in.
+    ///
+    /// <b>Cost.</b> One dictionary lookup per read (about twenty nanoseconds, no allocation). The
+    /// draw path reads a handful of strings per frame, so this is not measured; if it ever were,
+    /// the tables are read-only and a snapshot could be cached on <see cref="UseLanguage"/>.
+    ///
+    /// <b>Not thread safe, and does not need to be:</b> the game calls session components on the
+    /// main thread, and the language is only switched from there.
     /// </summary>
     public static class VgsText
     {
-        // Terminal (survives in-game, so it is bilingual from day one)
-        public const string ButtonTitle = "Grid setup";
-        public const string ButtonTooltip = "Open the grid logic editor";
-
         /// <summary>
-        /// The checkbox that removes a block from the schema without touching the ship
-        /// (ADR-0013). Wording matters: the flag does not delete anything, it only stops the
-        /// editor from drawing the card, so the tooltip says so explicitly.
+        /// The active table. Starts as English: before a session exists there is no config to ask,
+        /// and English is the language this repository and the game's default are written in.
         /// </summary>
-        public const string ShowInVgsTitle = "Show in VGS";
-        public const string ShowInVgsTooltip =
-            "Draw this block on the grid schema. Turning it off hides the block and its lines; connections keep working";
-        public const string ShowInVgsOn = "On";
-        public const string ShowInVgsOff = "Off";
+        private static IReadOnlyDictionary<string, string> _table = VgsStrings.English;
 
-        // Editor chrome
-        public const string EditorTitle = "Workbench";
+        /// <summary>The language currently in use.</summary>
+        public static VgsLanguage Language
+        {
+            get { return _language; }
+        }
+
+        private static VgsLanguage _language = VgsLanguage.English;
 
         /// <summary>
-        /// Header line, drawn right after <see cref="EditorTitle"/>: the window's name and the
-        /// counts of what is on the canvas, in one string (ADR-0023).
+        /// Switches the language. Returns true when the table actually changed, so the caller can
+        /// log a real change instead of every attempt.
         ///
-        /// It used to be the first line of the bottom bar, in Russian. It moved to the header and
-        /// into English because the header is the part of the editor that reads as a tool's title
-        /// bar; the "//" is the separator the mock-up used. Format arguments: blocks, groups,
-        /// links, zoom in percent.
+        /// A language without a table is <b>not</b> an error: the mod translates two of the game's
+        /// twenty-seven languages, and everything else falls back to English. That is the same
+        /// rule <c>Vgs.Game.GameLanguage</c> applies, kept here as well so that a direct call
+        /// cannot end up pointing at a table that does not exist.
         /// </summary>
-        public const string StatsFormat = " // blocks: {0} · groups: {1} · links: {2} · zoom: {3}%";
+        public static bool UseLanguage(VgsLanguage language)
+        {
+            if (language == _language) return false;
 
-        public const string CloseButton = "Закрыть";
+            _language = language;
+            _table = language == VgsLanguage.Russian ? VgsStrings.Russian : VgsStrings.English;
+            return true;
+        }
 
-        public const string EmptyGrid = "На этом гриде нет блоков для отображения";
-        public const string Loading = "Чтение блоков грида…";
-        public const string NoGrid = "Не удалось определить грид";
-        public const string GridFallbackName = "Grid";
+        /// <summary>
+        /// Drops the language back to the default. Called on session unload, so a language read in
+        /// one world cannot outlive it: the next session asks the game again, and a failed read
+        /// leaves the fallback rather than the previous world's choice.
+        /// </summary>
+        internal static void Reset()
+        {
+            _language = VgsLanguage.English;
+            _table = VgsStrings.English;
+        }
 
-        // ---- Bottom bar: modes menu and block search (ADR-0023) ----
+        /// <summary>
+        /// The one lookup: the active language, then English, then the key.
+        ///
+        /// The second fallback is not redundancy — it is what keeps a half-translated language from
+        /// showing a key. A table may be missing a key (the gate forbids it, but the runtime must
+        /// not depend on the gate), and the English word is always a better answer than
+        /// <c>WARN_WATCH_BLOCK_GONE</c> in the middle of a sentence.
+        /// </summary>
+        private static string S(string key)
+        {
+            string value;
+            if (_table.TryGetValue(key, out value) && !string.IsNullOrEmpty(value)) return value;
+            if (VgsStrings.English.TryGetValue(key, out value) && !string.IsNullOrEmpty(value)) return value;
+
+            // Last resort: the key itself. Visible, greppable, and never an exception in a draw
+            // path. The offline gate asserts this never happens for any property.
+            return key;
+        }
+
+        // ---- Language-independent marks ----
         //
-        // Two controls that act on what the schema *shows*, not on the wiring: the modes menu
-        // toggles whether blocks hidden from the schema are drawn, and the search field dims
-        // everything the query does not match.
-
-        /// <summary>Placeholder of the search field while it is empty. English, like the header.</summary>
-        public const string SearchPlaceholder = "Search blocks";
+        // These are ASCII on purpose, and they are not translated. The editor falls back between
+        // several fonts, and a glyph missing from one of them draws as a box; a letter from
+        // another alphabet is the most likely glyph to be missing. The full reasoning for each
+        // mark is in ADR-0019 (icon fallbacks) and ADR-0014 (the port's "x").
 
         /// <summary>
         /// Fallback glyph of the modes button, used only when the icon atlas is unavailable
         /// (ADR-0019). The button is drawn as the <c>sliders</c> icon; "=" is the ASCII mark
-        /// closest to three sliders and exists in every font the editor may fall back to.
+        /// closest to three sliders.
         /// </summary>
         public const string ModesGlyph = "=";
 
         /// <summary>
-        /// First row of the modes menu. It is a toggle, not a command: the check mark says
-        /// whether blocks with "Show in VGS" turned off are drawn as well.
-        /// </summary>
-        public const string ModesShowHidden = "Show/hide invisible";
-
-        /// <summary>
-        /// Second row: whether blocks standing on subgrids are part of the schema (ADR-0032).
-        /// Wording names the ship part, not the API term — "subgrid" is what the game's own
-        /// terminal and the player's vocabulary use.
-        /// </summary>
-        public const string ModesShowSubgrids = "Show subgrids";
-
-        /// <summary>
-        /// Third row: whether the frame around each grid's cards is drawn (ADR-0032). The frame
-        /// is a guide, not an object — nothing can be clicked on it, which is why the label says
-        /// "borders" rather than "frames" or "groups".
-        /// </summary>
-        public const string ModesShowGridBorders = "Show grid borders";
-
-        /// <summary>
-        /// Hover hint of the modes button, shown in the bottom bar's second line. Same role as
-        /// <see cref="JumpHint"/>: an icon alone does not say what pressing it will do, and this
-        /// one changes what the whole canvas shows.
-        /// </summary>
-        public const string ModesHint = "Режимы просмотра: показывать скрытые блоки";
-
-        /// <summary>
-        /// Hover hint of the search field. Names the keys that are not discoverable from the field
-        /// itself: Enter, the clear button, and the selection/clipboard shortcuts (ADR-0024).
-        ///
-        /// It says the clipboard is the field's own. The platform gives a mod no access to the
-        /// system clipboard (ADR-0027, measured by a failed load), so a player who expects to
-        /// paste a block name from Notepad must be told here rather than left to conclude the
-        /// feature is broken.
-        /// </summary>
-        public const string SearchHint =
-            "Поиск блоков · Enter — к первому совпадению · «x» — сбросить · "
-            + "Ctrl+A / C / X / V — выделить, копировать, вырезать, вставить "
-            + "(буфер — только внутри поля)";
-
-        // Bind mode: the bind button turns the pointer into a live line from a source port
-        // until the user picks a target or cancels with the right mouse button.
-        public const string BindHint = "Режим привязки: нажмите блок-получатель · ПКМ — отмена";
-
-        /// <summary>
         /// Fallback glyph of the single-group bind button (ADR-0019, ADR-0020). The button is
-        /// drawn as the <c>square-plus</c> icon; this string is what it falls back to when the
-        /// icon textures are unavailable, and it is the same bare mark in the same colour.
+        /// drawn as the <c>square-plus</c> icon.
         /// </summary>
         public const string SingleButtonGlyph = "+";
 
         /// <summary>
         /// Fallback glyph of the "true" button of a yes/no toolbar. The button is drawn as a
-        /// filled <c>lightbulb</c> icon; "T" is what it falls back to — and what the button said
-        /// before it became an icon, so a reader of the old screenshots still recognises it.
+        /// filled <c>lightbulb</c> icon; "T" is what it said before it became an icon, so a
+        /// reader of the old screenshots still recognises it.
         /// </summary>
         public const string TrueButtonGlyph = "T";
 
@@ -129,83 +127,17 @@ namespace Vgs.Core
 
         /// <summary>
         /// Glyph on a port's remove button, used only when the icon atlas is unavailable
-        /// (ADR-0019). The Latin letter, not the multiplication sign: the glyph is drawn by the
-        /// game's font, and the plain letter exists in every font the editor may fall back to,
-        /// while U+00D7 is not guaranteed in any of them.
+        /// (ADR-0019). The Latin letter, not the multiplication sign: U+00D7 is not guaranteed
+        /// in any of the fonts the editor may fall back to.
         /// </summary>
         public const string PortRemoveGlyph = "x";
 
-        public const string BindHintTrue =
-            "Привязка к «да»: нажмите блок-получатель · ПКМ — отмена";
-
-        public const string BindHintFalse =
-            "Привязка к «нет»: нажмите блок-получатель · ПКМ — отмена";
-
-        // ---- Jump to the block's terminal (ADR-0021) ----
-        //
-        // The one card button that is not a gesture on the schema: it closes the editor and
-        // opens the game's terminal on the block whose card was clicked. It therefore has no
-        // mode and no hint — it does something immediately — and it is the first button of the
-        // row, because "go to this block" is what a reader of a card looks for first.
-
         /// <summary>
         /// Fallback glyph of the jump button, used only when the icon atlas is unavailable
-        /// (ADR-0019). The button is drawn as a <c>share-from-square</c> icon — a square with an
-        /// arrow leaving it; "&gt;" is the ASCII mark that says the same thing, and it is
-        /// guaranteed to exist in every font the editor may fall back to.
+        /// (ADR-0019). The button is drawn as a <c>share-from-square</c> icon; "&gt;" is the
+        /// ASCII mark that says the same thing.
         /// </summary>
         public const string JumpGlyph = ">";
-
-        /// <summary>
-        /// The card's block no longer exists. The editor works on a snapshot, so the block can be
-        /// gone between two refreshes; the jump is refused instead of closing the schema onto a
-        /// terminal that would show nothing.
-        /// </summary>
-        public const string WarnJumpBlockGone = "Переход не выполнен: блок исчез";
-
-        /// <summary>
-        /// There is no local character to open a terminal for (spectator, or a session that is
-        /// still loading). Refused rather than attempted: the game's terminal screen expects a
-        /// character and would fail on a null one.
-        /// </summary>
-        public const string WarnJumpNoPlayer = "Переход не выполнен: игрок ещё не в мире";
-
-        /// <summary>
-        /// The game did not accept the request: the terminal screen is not available (no GUI, or
-        /// the interaction was refused). The editor stays open.
-        /// </summary>
-        public const string WarnJumpFailed = "Переход не выполнен: терминал недоступен";
-
-        /// <summary>
-        /// The node resolved to an entity that is not a terminal block. Practically unreachable —
-        /// a node is built only from <c>IMyTerminalBlock</c> — but "the block is gone" would be a
-        /// lie about a block that exists, so the case gets its own sentence.
-        /// </summary>
-        public const string WarnJumpNotTerminal = "Переход не выполнен: у блока нет терминала";
-
-        /// <summary>
-        /// The jump refused because the block is out of the game's interactive reach and no antenna
-        /// on the construct is broadcasting. The game's terminal re-checks the connection every
-        /// frame: within reach it wants the player next to the block, beyond it, a remote session
-        /// carried by an antenna (ADR-0021). With neither, the terminal would open and then hide
-        /// its tabs, so the jump is refused before the screen is disturbed.
-        /// </summary>
-        public const string WarnJumpNoAntenna = "Переход не выполнен: блок далеко, антенна не передаёт";
-
-        /// <summary>
-        /// Hover hint of the jump button (ADR-0021). The jump is the one control on the canvas
-        /// that closes the screen it sits on, so it says what it will do before it is pressed —
-        /// the icon alone ("a square with an arrow leaving it") is a fair description of the
-        /// destination but not of the cost.
-        /// </summary>
-        public const string JumpHint = "Терминал этого блока · редактор закроется";
-
-        // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
-        //
-        // The watch button attaches a block to the controller's watch list. It is a third kind
-        // of gesture: not a connection (nothing is written into a toolbar) and not a selection
-        // (the block stays where it is), so it gets its own icon — a bell — in the card's button
-        // row, and its own hint.
 
         /// <summary>
         /// Fallback glyph of the watch button, used only when the icon atlas is unavailable
@@ -214,38 +146,8 @@ namespace Vgs.Core
         /// </summary>
         public const string WatchGlyph = "#";
 
-        public const string WatchHint =
-            "Режим отслеживания: нажмите блок, который должен отслеживать контроллер · ПКМ — отмена";
-
         /// <summary>
-        /// Mode description on the controller's card: event, comparison sign, threshold.
-        /// Built by <c>Vgs.Game.EventControllerProbe</c>, drawn by the card.
-        /// </summary>
-        public const string WatchStatusThresholdFormat = "{0} · {1} {2}";
-
-        /// <summary>Mode description for an event that has no threshold (only a name).</summary>
-        public const string WatchStatusPlainFormat = "{0}";
-
-        /// <summary>
-        /// Mode description of a controller with no event selected. Written on the card rather
-        /// than left blank: the watch button is still there, and a player who presses it
-        /// deserves to know why nothing can be attached.
-        /// </summary>
-        public const string WatchStatusNoEvent = "Событие не выбрано";
-
-        /// <summary>
-        /// Appended when the controller requires *every* watched block to satisfy the condition
-        /// (the game's "AND gate"). "OR" is the default and is not written: a line on every
-        /// card stating the default would only take space.
-        /// </summary>
-        public const string WatchStatusAndSuffix = " · И";
-
-        /// <summary>
-        /// Comparison sign for "less or equal" (the game's inverted condition).
-        ///
-        /// ASCII on purpose, like <see cref="PortRemoveGlyph"/>: the editor falls back between
-        /// several fonts, and a glyph that is missing from one of them draws as a box. "&lt;="
-        /// reads the same and is guaranteed to exist in every font the editor may pick.
+        /// Comparison sign for "less or equal" (the game's inverted condition). ASCII, see above.
         /// </summary>
         public const string WatchSignLower = "<=";
 
@@ -255,111 +157,90 @@ namespace Vgs.Core
         /// <summary>Number format of the threshold, invariant culture.</summary>
         public const string WatchThresholdFormat = "0.00";
 
-        // Refusals of a watch attachment. Each reason gets its own sentence for the same
-        // reason a toolbar refusal does: they call for different actions from the player.
-        public const string WarnWatchSelf =
-            "Блок не добавлен: контроллер не может отслеживать сам себя";
+        // ---- Terminal controls ----
 
-        public const string WarnWatchDuplicateFormat =
-            "Блок «{0}» уже отслеживается этим контроллером";
+        public static string ButtonTitle { get { return S("BUTTON_TITLE"); } }
+        public static string ButtonTooltip { get { return S("BUTTON_TOOLTIP"); } }
+        public static string ShowInVgsTitle { get { return S("SHOW_IN_VGS_TITLE"); } }
+        public static string ShowInVgsTooltip { get { return S("SHOW_IN_VGS_TOOLTIP"); } }
+        public static string ShowInVgsOn { get { return S("SHOW_IN_VGS_ON"); } }
+        public static string ShowInVgsOff { get { return S("SHOW_IN_VGS_OFF"); } }
 
-        public const string WarnWatchNoEvent =
-            "Блок не добавлен: у контроллера не выбрано событие";
+        // ---- Editor chrome ----
 
-        public const string WarnWatchEventIgnoresBlocks =
-            "Блок не добавлен: выбранное событие не следит за блоками";
+        public static string EditorTitle { get { return S("EDITOR_TITLE"); } }
+        public static string StatsFormat { get { return S("STATS_FORMAT"); } }
+        public static string CloseButton { get { return S("CLOSE_BUTTON"); } }
+        public static string EmptyGrid { get { return S("EMPTY_GRID"); } }
+        public static string Loading { get { return S("LOADING"); } }
+        public static string NoGrid { get { return S("NO_GRID"); } }
+        public static string GridFallbackName { get { return S("GRID_FALLBACK_NAME"); } }
 
-        public const string WarnWatchDifferentConstruct =
-            "Блок не добавлен: он на другом конструкте, а контроллер видит только свой";
+        // ---- Bottom bar: modes menu and block search (ADR-0023) ----
 
-        public const string WarnWatchNotAcceptedFormat =
-            "Блок «{0}» не подходит для события «{1}»";
+        public static string SearchPlaceholder { get { return S("SEARCH_PLACEHOLDER"); } }
+        public static string ModesShowHidden { get { return S("MODES_SHOW_HIDDEN"); } }
+        public static string ModesShowSubgrids { get { return S("MODES_SHOW_SUBGRIDS"); } }
+        public static string ModesShowGridBorders { get { return S("MODES_SHOW_GRID_BORDERS"); } }
+        public static string ModesHint { get { return S("MODES_HINT"); } }
+        public static string SearchHint { get { return S("SEARCH_HINT"); } }
 
-        public const string WarnWatchClient =
-            "Блок не добавлен: список контроллера хранится на сервере";
+        // ---- Pointer modes ----
 
-        public const string WarnWatchRejected =
-            "Блок не добавлен: игра не приняла изменение списка контроллера";
+        public static string BindHint { get { return S("BIND_HINT"); } }
+        public static string BindHintTrue { get { return S("BIND_HINT_TRUE"); } }
+        public static string BindHintFalse { get { return S("BIND_HINT_FALSE"); } }
 
-        public const string WarnWatchBlockGone =
-            "Блок не добавлен: блок исчез";
+        // ---- Jump to the block's terminal (ADR-0021) ----
 
-        /// <summary>
-        /// A group cannot be watched: the controller's list holds block entity ids, and a group
-        /// is not an entity at all (ADR-0015). Said explicitly, because a click on a group's
-        /// title strip would otherwise fall through to "the block is gone", which is untrue.
-        /// </summary>
-        public const string WarnWatchGroup =
-            "Блок не добавлен: контроллер следит за отдельными блоками, а не за группой";
+        public static string WarnJumpBlockGone { get { return S("WARN_JUMP_BLOCK_GONE"); } }
+        public static string WarnJumpNoPlayer { get { return S("WARN_JUMP_NO_PLAYER"); } }
+        public static string WarnJumpFailed { get { return S("WARN_JUMP_FAILED"); } }
+        public static string WarnJumpNotTerminal { get { return S("WARN_JUMP_NOT_TERMINAL"); } }
+        public static string WarnJumpNoAntenna { get { return S("WARN_JUMP_NO_ANTENNA"); } }
+        public static string JumpHint { get { return S("JUMP_HINT"); } }
 
-        /// <summary>
-        /// The watch stack is capped like every other stack on a card
-        /// (<see cref="Vgs.Model.GridGraph.MaxPortsPerSide"/>). The cap is enforced when a block
-        /// is attached, not when the bars are drawn: a bar that exists in the list but is not
-        /// drawn would have no "x", and the player could never remove it.
-        /// </summary>
-        public const string WarnWatchTooManyFormat =
-            "Блок не добавлен: у контроллера уже {0} отслеживаемых блоков — это предел";
+        // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
 
-        public const string WarnWatchRemoveRejectedFormat =
-            "Блок «{0}» не убран: игра не приняла изменение списка контроллера";
+        public static string WatchHint { get { return S("WATCH_HINT"); } }
+        public static string WatchStatusThresholdFormat { get { return S("WATCH_STATUS_THRESHOLD_FORMAT"); } }
+        public static string WatchStatusPlainFormat { get { return S("WATCH_STATUS_PLAIN_FORMAT"); } }
+        public static string WatchStatusNoEvent { get { return S("WATCH_STATUS_NO_EVENT"); } }
+        public static string WatchStatusAndSuffix { get { return S("WATCH_STATUS_AND_SUFFIX"); } }
+        public static string WarnWatchSelf { get { return S("WARN_WATCH_SELF"); } }
+        public static string WarnWatchDuplicateFormat { get { return S("WARN_WATCH_DUPLICATE_FORMAT"); } }
+        public static string WarnWatchNoEvent { get { return S("WARN_WATCH_NO_EVENT"); } }
+        public static string WarnWatchEventIgnoresBlocks { get { return S("WARN_WATCH_EVENT_IGNORES_BLOCKS"); } }
+        public static string WarnWatchDifferentConstruct { get { return S("WARN_WATCH_DIFFERENT_CONSTRUCT"); } }
+        public static string WarnWatchNotAcceptedFormat { get { return S("WARN_WATCH_NOT_ACCEPTED_FORMAT"); } }
+        public static string WarnWatchClient { get { return S("WARN_WATCH_CLIENT"); } }
+        public static string WarnWatchRejected { get { return S("WARN_WATCH_REJECTED"); } }
+        public static string WarnWatchBlockGone { get { return S("WARN_WATCH_BLOCK_GONE"); } }
+        public static string WarnWatchGroup { get { return S("WARN_WATCH_GROUP"); } }
+        public static string WarnWatchTooManyFormat { get { return S("WARN_WATCH_TOO_MANY_FORMAT"); } }
+        public static string WarnWatchRemoveRejectedFormat { get { return S("WARN_WATCH_REMOVE_REJECTED_FORMAT"); } }
+        public static string WarnWatchGameOwnedFormat { get { return S("WARN_WATCH_GAME_OWNED_FORMAT"); } }
 
-        /// <summary>
-        /// A watch the *player* selected in the vanilla terminal. The controller keeps that list
-        /// in private fields with no public setter, so the editor can show it and cannot remove
-        /// it (ADR-0018). Saying so is the only honest answer; silently pretending would bring
-        /// the port back on the next refresh.
-        /// </summary>
-        public const string WarnWatchGameOwnedFormat =
-            "Блок «{0}» выбран в терминале контроллера — уберите его там, редактор этот список не меняет";
+        // ---- Action menu ----
 
-        // Action menu
-        public const string ActionMenuTitleFormat = "Действие для «{0}»";
-        public const string ActionMenuEmpty = "Нет доступных действий";
+        public static string ActionMenuTitleFormat { get { return S("ACTION_MENU_TITLE_FORMAT"); } }
+        public static string ActionMenuEmpty { get { return S("ACTION_MENU_EMPTY"); } }
+        public static string ActionMenuFanInFormat { get { return S("ACTION_MENU_FAN_IN_FORMAT"); } }
 
-        /// <summary>
-        /// Suffix on a menu row whose action already has sources. Input ports are shared, so
-        /// the row must stay usable — this only tells the user that choosing it adds another
-        /// line to an input that is already driven.
-        /// </summary>
-        public const string ActionMenuFanInFormat = "  ·  источников: {0}";
+        // ---- Write failures ----
 
-        // Write failures. A connection is an item in the block's toolbar (ADR-0011), and the
-        // game refuses some placements; saying which one failed is the whole point of the
-        // warning, so each reason has its own sentence.
-        public const string WarnNoFreeCellFormat =
-            "Связь не добавлена: в тулбаре «{0}» нет свободной ячейки";
+        public static string WarnNoFreeCellFormat { get { return S("WARN_NO_FREE_CELL_FORMAT"); } }
+        public static string WarnEveryPageFormat { get { return S("WARN_EVERY_PAGE_FORMAT"); } }
+        public static string WarnActionGoneFormat { get { return S("WARN_ACTION_GONE_FORMAT"); } }
+        public static string WarnNotDrivableFormat { get { return S("WARN_NOT_DRIVABLE_FORMAT"); } }
+        public static string WarnRejected { get { return S("WARN_REJECTED"); } }
+        public static string WarnBlockGone { get { return S("WARN_BLOCK_GONE"); } }
+        public static string WarnGroupGoneFormat { get { return S("WARN_GROUP_GONE_FORMAT"); } }
+        public static string WarnRemoveRefusedFormat { get { return S("WARN_REMOVE_REFUSED_FORMAT"); } }
 
-        public const string WarnEveryPageFormat =
-            "Связь не добавлена: «{0}» уже стоит на всех страницах тулбара «{1}» — игра не разрешает одно действие дважды на одной странице";
+        // ---- Errors ----
 
-        public const string WarnActionGoneFormat =
-            "Связь не добавлена: у блока «{0}» больше нет действия «{1}»";
-
-        public const string WarnNotDrivableFormat =
-            "Связь не добавлена: блок «{0}» не управляет другими блоками";
-
-        public const string WarnRejected = "Связь не добавлена: игра не приняла действие в тулбар";
-
-        public const string WarnBlockGone = "Связь не добавлена: блок исчез";
-
-        /// <summary>
-        /// A group is addressed by name (ADR-0015): if the player renamed or dissolved it
-        /// between two refreshes, the connection cannot be written at all, and that is a
-        /// different sentence from "the block is gone".
-        /// </summary>
-        public const string WarnGroupGoneFormat = "Связь не добавлена: группы «{0}» больше нет";
-
-        /// <summary>
-        /// Removing a connection goes the other way through the same writer, so it can fail
-        /// for the same reason a write can: the machine does not own the block's toolbar (a
-        /// remote multiplayer client). The connection is kept in that case, and this says why.
-        /// </summary>
-        public const string WarnRemoveRefusedFormat =
-            "Связь не удалена: игра не разрешила изменить тулбар блока «{0}»";
-
-        // Errors
-        public const string ErrOpenScreen = "Не удалось открыть редактор";
-        public const string ErrNoAccess = "Нет доступа к этому блоку";
+        public static string ErrOpenScreen { get { return S("ERR_OPEN_SCREEN"); } }
+        public static string ErrNoAccess { get { return S("ERR_NO_ACCESS"); } }
     }
 }

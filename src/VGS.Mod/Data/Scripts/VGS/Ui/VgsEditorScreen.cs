@@ -494,6 +494,13 @@ namespace Vgs.Ui
             if (cockpit == null) return;
             if (!VgsSession.HasLocalPlayer) return;
 
+            // The game's language is re-read here, not once per session (ADR-0033): a player who
+            // changed it in the options must not have to restart the world to see the editor in
+            // it. The screen is built below, so every cached string it takes is in the new table;
+            // the terminal controls keep the wording they were registered with, which is the one
+            // limitation of doing it this way and is recorded in the ADR.
+            GameLanguage.Apply();
+
             IMyCubeGrid grid = null;
             try
             {

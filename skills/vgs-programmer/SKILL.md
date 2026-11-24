@@ -40,14 +40,39 @@ adding one is a few lines.
 `review-check.ps1` encodes the mechanical half of code review. Run it before handing the
 change over — a finding you fix yourself is cheaper than one the reviewer sends back.
 
+`review-check.ps1` reads code with string literals and comments stripped before applying the
+syntax rules (R002, R003). A sentence in a user-facing string is not C#: without that, the text
+`"the player is not in the world yet"` tripped R003's `is not` pattern (C# 9) and failed the gate
+on a string that cannot be a syntax error. When a rule fires on text, the gate is wrong — do not
+suppress the rule on that line.
+
+### Strings: a table of data, a facade of properties
+
+User-facing text lives in `Core/VgsStrings.cs` as two `key → value` dictionaries (`English`,
+`Russian`), read through `VgsText` properties (ADR-0033). A new string is a key plus a value in
+both tables and one property on the facade. Three things that are easy to get wrong:
+
+- **Completeness is a gate, not a compile error.** Nothing in the compiler stops you adding a key
+  to one table only. `offline-check.ps1` proves the key sets match, that every value formats, that
+  the placeholders `{n}` agree between languages, and that no property resolves to a key. A red
+  `OFFLINE` here is the only thing standing between you and `CLOSE_BUTTON` on screen.
+- **The fallback is silent.** `VgsText.S(key)` tries the active language, then English, then the
+  key itself. That chain is why a missing translation degrades instead of throwing in a draw
+  path — and why a typo'd key looks like a bug rather than an exception. The gate is what
+  notices.
+- **Do not translate what is not a sentence.** Fallback glyphs (`+`, `T`, `F`, `#`, `>`, `=`, `x`)
+  and number formats stay constants in `VgsText`: a glyph from another alphabet is the likeliest
+  one to be missing from a fallback font, and `0,5` is a different number to the game.
+
 ## 2. Structure you must respect
 
 ```
-Vgs.Core/   VgsLog, VgsSession, VgsConstants, VgsText   — no game logic
+Vgs.Core/   VgsLog, VgsSession, VgsConstants, VgsText (facade), VgsStrings (tables)
+                                                         — no game logic
 Vgs.Model/  Node, Port, Edge, GridGraph, BlockPortCatalog, ToolbarPlanner
                                                          — no Sandbox.* references
-Vgs.Game/   GridGraphBuilder, ToolbarProbe, ToolbarWriter, VgsTerminalControls
-                                                         — the only world access
+Vgs.Game/   GridGraphBuilder, ToolbarProbe, ToolbarWriter, VgsTerminalControls,
+            GameLanguage                                 — the only world access
 Vgs.Ui/     VgsEditorScreen, PortGeometry, EdgeRouting, VgsScreenDraw
                                                          — draws cached data only
 ```

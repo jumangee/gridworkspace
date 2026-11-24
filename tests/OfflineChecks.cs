@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Reflection;
 using VRageMath;
 using Vgs.Core;
 using Vgs.Model;
@@ -222,6 +224,9 @@ internal static class OfflineChecks
 
         Console.WriteLine("=== view state writes (Step 4.3, ADR-0022) ===");
         ViewStateWrites();
+
+        Console.WriteLine("=== localization tables (ADR-0033) ===");
+        Localization();
 
         Console.WriteLine();
         Console.WriteLine(_failures == 0
@@ -4489,5 +4494,259 @@ internal static class OfflineChecks
         // A successful write after all that still records the view, and the change clears.
         view.RememberSaved(VgsConstants.ViewSaveIntervalFrames * 2);
         Check(!view.HasChanged, "a successful write makes the view the new baseline");
+    }
+
+    /// <summary>
+    /// The two string tables and the facade over them (ADR-0033).
+    ///
+    /// The tables are data, so completeness is a gate's job rather than the compiler's. What can
+    /// actually go wrong with a key → value table, and what is asserted here:
+    ///
+    ///  * <b>a key present in one language and not the other</b> — compared as sets, in both
+    ///    directions;
+    ///  * <b>a value that is empty</b> — compiles, paints a blank control, and reads as a layout
+    ///    bug rather than as a missing translation;
+    ///  * <b>a broken format string</b> — the call sites pass arguments by position, so a
+    ///    translation that drops <c>{1}</c> prints the wrong value and one that mistypes a brace
+    ///    throws <c>FormatException</c> inside a draw path. Every value is formatted with as many
+    ///    arguments as it asks for, in both languages;
+    ///  * <b>a placeholder that means a different thing in each language</b> — compared as sets;
+    ///  * <b>a table that is a copy of the other one</b> — compared entry by entry, and the count
+    ///    of entries that differ must stay near the whole;
+    ///  * <b>a key nobody reads</b> — a string the player will never see translated. Detected by
+    ///    counting: the table must not hold more keys than the facade has string properties;
+    ///  * <b>a property whose key does not exist</b> — the facade falls back to the key itself,
+    ///    which is an all-caps mark no sentence looks like, so asking every property in both
+    ///    languages and refusing a key-shaped answer catches a typo without reading source.
+    /// </summary>
+    private static void Localization()
+    {
+        IReadOnlyDictionary<string, string> english = VgsStrings.English;
+        IReadOnlyDictionary<string, string> russian = VgsStrings.Russian;
+
+        Check(english.Count > 0, "the English table is not empty");
+        Check(russian.Count > 0, "the Russian table is not empty");
+        Check(SameKeys(english, russian), "both languages have exactly the same keys");
+
+        int differing = 0;
+
+        foreach (KeyValuePair<string, string> entry in english)
+        {
+            string en = entry.Value;
+            string ru;
+            if (!russian.TryGetValue(entry.Key, out ru)) continue;   // already reported by SameKeys
+
+            Check(!string.IsNullOrEmpty(en), entry.Key + " is not empty in English");
+            Check(!string.IsNullOrEmpty(ru), entry.Key + " is not empty in Russian");
+            if (string.IsNullOrEmpty(en) || string.IsNullOrEmpty(ru)) continue;
+
+            if (en != ru) differing++;
+
+            List<int> enSlots = Placeholders(en);
+            List<int> ruSlots = Placeholders(ru);
+            Check(SameSlots(enSlots, ruSlots),
+                  entry.Key + " uses the same placeholders in both languages");
+
+            // Formatting proves the string is well formed, not just that it looks like it. The
+            // arguments are placeholders themselves, so a swapped one is visible in the output.
+            int arity = 0;
+            for (int i = 0; i < enSlots.Count; i++) if (enSlots[i] + 1 > arity) arity = enSlots[i] + 1;
+            if (arity == 0) continue;
+
+            var args = new object[arity];
+            for (int i = 0; i < arity; i++) args[i] = "<" + i + ">";
+
+            Check(Formats(en, args), entry.Key + " formats in English");
+            Check(Formats(ru, args), entry.Key + " formats in Russian");
+        }
+
+        Check(differing >= english.Count - 4,
+              "the two tables are translations, not copies (" + differing + " of " + english.Count + " differ)");
+
+        // ---- the facade ----
+
+        // The mod starts in the fallback: before a session exists there is no config to ask, and a
+        // screen built in that window must still have text.
+        Check(VgsText.Language == VgsLanguage.English, "the editor starts in English");
+
+        // Every property, in every language. Reflection rather than a list, because a list stops
+        // covering the newest string — the one most likely to be wrong.
+        PropertyInfo[] properties = typeof(VgsText).GetProperties(BindingFlags.Public | BindingFlags.Static);
+        int strings = 0;
+
+        foreach (VgsLanguage language in new[] { VgsLanguage.English, VgsLanguage.Russian })
+        {
+            VgsText.UseLanguage(language);
+
+            foreach (PropertyInfo property in properties)
+            {
+                if (property.PropertyType != typeof(string)) continue;   // `Language` is the enum
+                if (language == VgsLanguage.English) strings++;
+
+                string value = (string)property.GetValue(null, null);
+                Check(!string.IsNullOrEmpty(value),
+                      "VgsText." + property.Name + " is not empty in " + language);
+                Check(!LooksLikeKey(value),
+                      "VgsText." + property.Name + " resolves in " + language
+                      + " (got \"" + value + "\", so its key is missing from the table)");
+            }
+        }
+
+        // A key no property reads is a string that is never shown; a property count below the key
+        // count means exactly that.
+        Check(strings == english.Count,
+              "every key is read by a property (keys " + english.Count + ", properties " + strings + ")");
+
+        // ---- switching ----
+
+        // The loop above left the facade on the last language it asked. Put it back to the
+        // fallback first: otherwise "switching to Russian reports a change" would be asserting
+        // the opposite of what it says, and would pass for the wrong reason on a machine where
+        // the loop happened to end elsewhere.
+        VgsText.UseLanguage(VgsLanguage.English);
+        Check(VgsText.Language == VgsLanguage.English, "the facade can be put back to English");
+
+        Check(VgsText.UseLanguage(VgsLanguage.Russian), "switching to Russian reports a change");
+        Check(VgsText.Language == VgsLanguage.Russian, "the facade reports Russian after the switch");
+        Check(VgsText.CloseButton == russian["CLOSE_BUTTON"], "the facade answers from the Russian table");
+        Check(!VgsText.UseLanguage(VgsLanguage.Russian), "switching to the language in use reports no change");
+
+        // A language the mod has no table for is not an error: it falls back to English.
+        VgsText.UseLanguage(VgsLanguage.English);
+        Check(VgsText.EditorTitle == english["EDITOR_TITLE"], "switching back restores English");
+
+        // Session teardown returns the mod to the fallback, so a language read in one world cannot
+        // outlive it. `Reset` is internal, which the offline build can reach because it compiles
+        // these checks and the mod's sources into one assembly.
+        VgsText.UseLanguage(VgsLanguage.Russian);
+        VgsText.Reset();
+        Check(VgsText.Language == VgsLanguage.English, "Reset returns the facade to the fallback");
+
+        // ---- what must NOT be translated ----
+
+        // The fallback glyphs are chosen for existing in every font the editor may fall back to.
+        // A translated glyph would be a letter from another alphabet, which is the most likely
+        // one to be missing — and a missing glyph draws as a box on the card.
+        Check(IsAscii(VgsText.ModesGlyph), "the modes glyph is ASCII");
+        Check(IsAscii(VgsText.SingleButtonGlyph), "the bind glyph is ASCII");
+        Check(IsAscii(VgsText.TrueButtonGlyph), "the 'yes' glyph is ASCII");
+        Check(IsAscii(VgsText.FalseButtonGlyph), "the 'no' glyph is ASCII");
+        Check(IsAscii(VgsText.PortRemoveGlyph), "the port remove glyph is ASCII");
+        Check(IsAscii(VgsText.JumpGlyph), "the jump glyph is ASCII");
+        Check(IsAscii(VgsText.WatchGlyph), "the watch glyph is ASCII");
+        Check(IsAscii(VgsText.WatchSignLower), "the '<=' sign is ASCII");
+        Check(IsAscii(VgsText.WatchSignHigher), "the '>=' sign is ASCII");
+
+        // The threshold is written by the card and read back by the game's own comparison; the
+        // format is invariant culture on purpose (a comma decimal separator would be a different
+        // number to a player, and a different string to the game).
+        Check(0.5f.ToString(VgsText.WatchThresholdFormat, CultureInfo.InvariantCulture) == "0.50",
+              "the threshold format is invariant and two-place");
+    }
+
+    /// <summary>
+    /// True when two tables hold exactly the same keys. Compares both directions, so a key only
+    /// the translation has is a failure too — that is a string the default language lost.
+    /// </summary>
+    private static bool SameKeys(IReadOnlyDictionary<string, string> left, IReadOnlyDictionary<string, string> right)
+    {
+        if (left.Count != right.Count) return false;
+
+        foreach (string key in left.Keys) if (!right.ContainsKey(key)) return false;
+        foreach (string key in right.Keys) if (!left.ContainsKey(key)) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when a value looks like a key rather than a sentence: capitals, digits and underscores.
+    ///
+    /// This is what makes "the key is missing from the table" detectable without reading source.
+    /// The facade falls back to the key, and a key is an all-caps mark — no wording in either
+    /// language is written that way. A translation that happened to be, would fail here, and that
+    /// is the right outcome: on screen it would be indistinguishable from a bug.
+    /// </summary>
+    private static bool LooksLikeKey(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+
+        bool sawLetter = false;
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            if (c >= 'A' && c <= 'Z') { sawLetter = true; continue; }
+            if (c >= '0' && c <= '9') continue;
+            if (c == '_') continue;
+            return false;
+        }
+
+        return sawLetter && value.IndexOf('_') >= 0;
+    }
+
+    /// <summary>
+    /// The <c>{n}</c> indices of a format string, in the order they appear.
+    ///
+    /// Written by hand rather than with a regex: this has to run inside the offline gate, and a
+    /// scanner that cannot backtrack is easier to trust than a pattern with three groups.
+    /// </summary>
+    private static List<int> Placeholders(string text)
+    {
+        var found = new List<int>();
+        if (text == null) return found;
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] != '{') continue;
+
+            int j = i + 1;
+            int value = 0;
+            bool digits = false;
+            while (j < text.Length && text[j] >= '0' && text[j] <= '9')
+            {
+                value = value * 10 + (text[j] - '0');
+                digits = true;
+                j++;
+            }
+
+            if (digits && j < text.Length && text[j] == '}')
+            {
+                found.Add(value);
+                i = j;
+            }
+        }
+
+        return found;
+    }
+
+    private static bool SameSlots(List<int> left, List<int> right)
+    {
+        if (left.Count != right.Count) return false;
+
+        var a = new List<int>(left);
+        var b = new List<int>(right);
+        a.Sort();
+        b.Sort();
+        for (int i = 0; i < a.Count; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static bool Formats(string format, object[] args)
+    {
+        try
+        {
+            string result = string.Format(CultureInfo.InvariantCulture, format, args);
+            return result != null;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsAscii(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        for (int i = 0; i < text.Length; i++) if (text[i] > 127) return false;
+        return true;
     }
 }

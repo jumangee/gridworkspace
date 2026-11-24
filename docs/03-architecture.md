@@ -157,13 +157,45 @@ classDiagram
 
     class VgsText {
         <<static>>
+        +VgsLanguage Language
+        +bool UseLanguage(language)
+        ~Reset()
+        -string S(key)
         +string ButtonTitle
         +string CloseButton
         +string EditorTitle
         +string StatsFormat
         +string SearchPlaceholder
         +string ModesShowHidden
+        +string ModesGlyph
+        +string WatchSignLower
+        +string WatchThresholdFormat
     }
+
+    class VgsStrings {
+        <<static>>
+        +IReadOnlyDictionary~string,string~ English
+        +IReadOnlyDictionary~string,string~ Russian
+        -BuildEnglish() Dictionary
+        -BuildRussian() Dictionary
+    }
+
+    class VgsLanguage {
+        <<enum>>
+        English
+        Russian
+    }
+
+    class GameLanguage {
+        <<static>>
+        +bool Apply()
+        -VgsLanguage Translate(MyLanguagesEnum)
+    }
+
+    VgsText --> VgsStrings : активная таблица
+    VgsText ..> VgsLanguage
+    GameLanguage ..> VgsText : UseLanguage
+    GameLanguage ..> VgsLanguage
 
     class VgsTerminalControls {
         <<static>>
@@ -823,6 +855,8 @@ classDiagram
     VgsSessionComponent --> VgsSession
     VgsSessionComponent --> VgsTerminalControls
     VgsSessionComponent --> VgsLog
+    VgsSessionComponent --> GameLanguage : язык до регистрации контролов
+    VgsSessionComponent --> VgsText : Reset на выгрузке
 
     VgsTerminalControls --> VgsEditorScreen : OpenFor
     VgsTerminalControls --> IMyCockpit
@@ -919,6 +953,7 @@ classDiagram
 
     VgsEditorScreen ..> VgsLog : Throttled (tags)
     VgsEditorScreen --> VgsText
+    VgsEditorScreen --> GameLanguage : язык при каждом открытии
     VgsEditorScreen --> VgsConstants
 ```
 
@@ -963,11 +998,27 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `VgsLog.cs` | единая точка логирования; префикс `[VGS]`; `Throttled` для условий, истинных каждый кадр |
 | `VgsSession.cs` | фасад сессии: номер кадра, признак «есть локальный игрок», признак dedicated |
 | `VgsConstants.cs` | все числа и id в одном месте; `ModGuid` для хранилища |
-| `VgsText.cs` | все пользовательские строки |
+| `VgsText.cs` | фасад текста: свойство на каждую строку (`S("КЛЮЧ")`), активная таблица (`Language`, `UseLanguage`, `Reset`) и всё, что **не** переводится — глифы отката, знаки сравнения, форматы чисел |
+| `VgsStrings.cs` | две таблицы «ключ → строка» (`English`, `Russian`); данные, а не типы: добавление языка — словарь, а не класс |
+| `VgsLanguage.cs` | языки, которые мод знает (`English`, `Russian`) — **список мода**, не `MyLanguagesEnum` |
 
 `VgsConstants` и `VgsText` жили в одном файле, пока таблица строк не переросла класс констант.
 Файл с именем `VgsConstants.cs` — неправильное место, чтобы искать в нём текст предупреждения;
-правило R006 указывает теперь на `VgsText.cs`.
+правило R006 указывает теперь на `Core/VgsStrings.cs`.
+
+Почему строки — таблица на C#, а не `MyTexts.resx`: таблица компилируется в
+`tools/offline-check.ps1`, и шлюз проверяет, что у обоих языков один набор ключей, что
+плейсхолдеры совпадают, что каждая строка форматируется и что ни одно свойство фасада не
+возвращает ключ, — **без запуска игры**. С `.resx` эта же проверка требует человека в игре.
+Решение и его цена — [ADR-0033](adr/0033-localization.md).
+
+Почему ключ, а не класс на язык: строки — данные, и [ADR-0031](adr/0031-specificity-inheritance-vs-typed-state.md)
+запрещает заводить тип под данные. Полнота таблиц поэтому обеспечивается шлюзом, а не
+компилятором — это записанная цена, а не недосмотр.
+
+`VgsText` — фасад, а не хранилище: он держит ссылку на активную таблицу и одно свойство на
+строку, поэтому вызов `VgsText.CloseButton` не изменился ни в одном из 86 мест, и ни смена
+формы хранения строк, ни новый язык не двигают вызывающий код.
 
 Почему фасад, а не передача компонента по конструкторам: у мода нет DI-контейнера, а
 подсистемам нужно 3–4 факта о сессии. Протаскивание компонента через каждый конструктор
@@ -1083,6 +1134,7 @@ public bool IsEventController { get { return Controller != null; } }
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 | `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
 | `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`»: `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
+| `GameLanguage.cs` | **единственное** место, которое знает `MyLanguagesEnum`: читает `MyAPIGateway.Session.Config.Language` и переключает таблицу `VgsText`; всё, что ниже, говорит на `VgsLanguage` (ADR-0033) |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
 `Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет

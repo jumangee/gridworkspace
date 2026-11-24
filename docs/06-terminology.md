@@ -316,6 +316,10 @@ Esc выходит из самого глубокого режима первы�
 | **затемнение** | Карточка, не подошедшая под запрос, рисуется с альфой 10% вместо скрытия: контекст схемы сохраняется | `VgsConstants.SearchDimOpacity`, `AlphaOf` |
 | **hit-test** | Проверка, что находится под указателем. Для карточек и портов живёт рядом с геометрией, чтобы нарисованное и кликабельное совпадали | `PortGeometry.HitNode` |
 | **отсечение** | Пропуск того, что не видно: карточек — по экрану, линий — по пределу `MaxRenderedEdges`, прямоугольников — пересечением с холстом. Отсечение **молчит**: надписи «показано N из M» больше нет | `DrawNodes`, `VgsScreenDraw.RectClipped` |
+| **язык редактора** | Язык, на котором редактор пишет свои строки. **Не настройка мода**: берётся из языка игры (`Config.Language`), перечитывается при каждом открытии экрана. Мод знает два языка; всё остальное — английский | `VgsText.Language`, `VgsLanguage`, `Game.GameLanguage` |
+| **таблица строк** | Все пользовательские строки одного языка: словарь «ключ → строка». Таблицы — данные, поэтому новый язык это словарь, а не класс; полноту набора ключей проверяет шлюз | `VgsStrings.English`, `VgsStrings.Russian` |
+| **ключ строки** | Имя строки в таблице (`CLOSE_BUTTON`). Встречается дважды: в таблицах и в одном свойстве фасада; в местах вызова ключа нет | `VgsText.S("CLOSE_BUTTON")` |
+| **непереводимое** | Глифы отката кнопок, знаки сравнения и форматы чисел. Выбраны за то, что есть в любом шрифте, или за контракт с `ToString`; перевод менял бы поведение, а не текст | `VgsText.ModesGlyph`, `WatchSignLower`, `WatchThresholdFormat` |
 
 ## 7. Слои кода
 
@@ -324,9 +328,9 @@ Esc выходит из самого глубокого режима первы�
 
 | Слой | Что внутри | Чего не содержит |
 |---|---|---|
-| `Vgs.Core` | Логирование, константы, строки, фасад сессии | игровой логики |
+| `Vgs.Core` | Логирование, константы, строки (таблицы на язык и фасад), фасад сессии | игровой логики |
 | `Vgs.Model` | `Node`, `NodeKind`, `GroupMemberActions`, `Port`, `WatchTarget`, `Edge`, `GridGraph`, `BlockPortCatalog`, `NodeStateFormat`, `GridViewFormat`, `BlockSearch`, `TextEditor` | **ни одной ссылки на игру** |
-| `Vgs.Game` | `GridGraphBuilder`, `VgsTerminalControls`, `ToolbarProbe`, `ToolbarWriter`, `NodeStateStore`, `GridViewStore`, `TextClipboard`, `EventControllerProbe`, `EventControllerKeeper`, `TerminalJump` | отрисовки |
+| `Vgs.Game` | `GridGraphBuilder`, `VgsTerminalControls`, `ToolbarProbe`, `ToolbarWriter`, `NodeStateStore`, `GridViewStore`, `TextClipboard`, `EventControllerProbe`, `EventControllerKeeper`, `TerminalJump`, `GameLanguage` | отрисовки |
 | `Vgs.Ui` | `VgsEditorScreen`, `VgsScreenDraw`, `PortGeometry`, `EdgeRouting`, `IconPlacement`, `VgsIcons` | чтения живых блоков при рисовании |
 
 `Vgs.Model` — единственный слой, который можно проверить, не запуская игру. Поэтому правила

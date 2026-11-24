@@ -33,6 +33,15 @@ namespace Vgs
         private bool _initialised;
         private int _registrationAttempts;
 
+        /// <summary>
+        /// True once the game's language has been read successfully (ADR-0033).
+        ///
+        /// It has to be resolved <b>before</b> the terminal controls are created: their titles and
+        /// tooltips are resolved from <c>MyStringId</c> at registration, so a table switched
+        /// afterwards would leave the button in the old language until the world was reloaded.
+        /// </summary>
+        private bool _languageResolved;
+
         /// <summary>Guards against registering more than a few times if the API is late.</summary>
         private const int MaxRegistrationAttempts = 600;
 
@@ -96,6 +105,31 @@ namespace Vgs
                 if (_registrationAttempts >= MaxRegistrationAttempts) return;
 
                 _registrationAttempts++;
+
+                // The editor speaks the game's language (ADR-0033). Resolved **here**, before the
+                // controls are created, because MyStringId bakes a title into a control at
+                // registration: a table switched afterwards would leave the button in the old
+                // language until the world was reloaded.
+                //
+                // Bounded by the same counter as the registration. Without that, a session whose
+                // config never appears would cost a property read and a try block on every tick
+                // for the rest of the world's life — and the editor re-reads the language when it
+                // opens anyway, so giving up here costs nothing the player can see.
+                if (!_languageResolved)
+                {
+                    try
+                    {
+                        _languageResolved = GameLanguage.Apply();
+                    }
+                    catch (Exception e)
+                    {
+                        // Apply is guarded internally; this catch exists because the rule at this
+                        // boundary is unconditional, and a future change there must not be able
+                        // to break the session's update. Tag distinct from Apply's own, so one
+                        // broken path cannot silence the other.
+                        VgsLog.Throttled("language-apply", "language resolution failed", e, 300);
+                    }
+                }
 
                 if (VgsSession.IsDedicated)
                 {
@@ -170,6 +204,8 @@ namespace Vgs
             // Reset last, so the two calls above still have their throttle state.
             VgsSession.Reset();
             VgsLog.Reset();
+            VgsText.Reset();
+            _languageResolved = false;
             _initialised = false;
 
             try

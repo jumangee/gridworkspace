@@ -47,6 +47,13 @@ if (-not (Test-Path $checks)) { throw "Offline checks not found: $checks" }
 # installed but does not start it.
 $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
+    # The string tables (ADR-0033): pure data plus a facade, no game references, which is what
+    # lets the gate assert that both languages carry the same keys, that every value formats, and
+    # that no property resolves to a key — the failure modes a key → value table actually has,
+    # and all of them invisible in a compile.
+    (Join-Path $sourceRoot 'Core\VgsLanguage.cs'),
+    (Join-Path $sourceRoot 'Core\VgsStrings.cs'),
+    (Join-Path $sourceRoot 'Core\VgsText.cs'),
     # One file per concept since Step 6.4: the model types that used to share Node.cs.
     (Join-Path $sourceRoot 'Model\Port.cs'),
     (Join-Path $sourceRoot 'Model\ToolbarLayout.cs'),
