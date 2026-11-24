@@ -520,6 +520,16 @@ namespace Vgs.Ui
                     return;
                 }
 
+                // The power switch sits in the card's state column and is a control, so it is
+                // resolved before the card for the same reason the row is: a click there must
+                // switch the block, not start dragging it across the canvas (ADR-0035).
+                Node switchNode = HitTestPowerSwitch(graphPos);
+                if (switchNode != null)
+                {
+                    ToggleBlockPower(switchNode);
+                    return;
+                }
+
                 Node hit = HitTest(graphPos);
                 _selected = hit;
 
@@ -1075,6 +1085,108 @@ namespace Vgs.Ui
             {
                 VgsLog.Error("terminal jump succeeded but the editor could not close", e);
             }
+        }
+
+        // ------------------------------------------------------------------ block power switch
+
+        /// <summary>
+        /// Switches a block on or off from the card's power switch (ADR-0035).
+        ///
+        /// <b>Order: refuse first, write the block, then update the picture from what the block
+        /// says.</b> The refusal is the cheap part and it is the part the player needs to hear
+        /// about: a block damaged below its critical integrity cannot be switched on, and the game
+        /// would accept the flag and then not run the block, so the editor refuses it here with a
+        /// sentence instead of leaving a green switch on a dead block.
+        ///
+        /// <b>The graph is not asked; the block is.</b> After the write, the node's state is
+        /// rewritten from a fresh read of the block — not toggled in place — because the request
+        /// can be refused (a remote client sends it to the server) and because the block may have
+        /// changed between the last state pass and this click. Toggling a cached value would be a
+        /// guess about the world, which is the one thing this project does not do (ADR-0018).
+        ///
+        /// The node itself is left alone: no ports, no slots, no frame. Switching a block off does
+        /// not unwire it — the toolbar item stays, and the block simply does nothing until it is
+        /// switched back on.
+        /// </summary>
+        private void ToggleBlockPower(Node node)
+        {
+            if (node == null || node.IsGroup) return;
+
+            IMyTerminalBlock block = ResolveBlock(node.EntityId);
+            if (block == null)
+            {
+                Warn(VgsText.WarnBlockGone);
+                return;
+            }
+
+            BlockPower current = node.State.Power;
+
+            // The state pass has not reached this card yet: there is nothing to flip, and guessing
+            // "off" would switch on a block that is already on. Refusing quietly is right here —
+            // the player did not do anything wrong, the reading is just half a second away.
+            if (current == BlockPower.Unknown) return;
+
+            if (current == BlockPower.Unavailable)
+            {
+                Warn(VgsText.WarnPowerDamaged);
+                return;
+            }
+
+            bool wanted = current != BlockPower.On;
+
+            // Switching on is the direction that can be refused by the block's own condition, so
+            // the functional flag is re-read here rather than trusted from the last pass: the
+            // block may have been hit since. Switching off is always allowed.
+            if (wanted)
+            {
+                bool enabled, functional;
+                if (BlockSwitch.TryRead(block, out enabled, out functional) && !functional)
+                {
+                    Warn(VgsText.WarnPowerDamaged);
+
+                    // The card is corrected now rather than on the next tick: the player just
+                    // learned the block is broken, and a grey switch for another half second
+                    // would contradict the sentence on the bar.
+                    node.State.SetPower(enabled, functional);
+                    return;
+                }
+            }
+
+            if (!BlockSwitch.TrySetEnabled(block, wanted))
+            {
+                Warn(VgsText.WarnPowerRefused);
+
+                // The block did not take the value, so the picture is re-read instead of toggled:
+                // whatever it reports now is the truth, including "no change".
+                bool enabled, functional;
+                if (BlockSwitch.TryRead(block, out enabled, out functional))
+                {
+                    node.State.SetPower(enabled, functional);
+                }
+                return;
+            }
+
+            // Read back: the flag the block reports after the request is what the card shows.
+            bool nowEnabled, nowFunctional;
+            if (BlockSwitch.TryRead(block, out nowEnabled, out nowFunctional))
+            {
+                node.State.SetPower(nowEnabled, nowFunctional);
+            }
+
+            VgsLog.Info("block " + node.EntityId + " switched " + (wanted ? "on" : "off"));
+        }
+
+        /// <summary>Topmost node whose power switch is under the pointer, or null.</summary>
+        private Node HitTestPowerSwitch(Vector2 graphPoint)
+        {
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                if (PortGeometry.HitPowerSwitch(nodes[i], graphPoint, aspect)) return nodes[i];
+            }
+            return null;
         }
 
         // ------------------------------------------------------------------ bind mode
@@ -1674,9 +1786,14 @@ namespace Vgs.Ui
             _hoverButton = HitTestCardButton(graphPos, out kind);
             _hoverButtonKind = kind;
 
+            // The power switch is a control too, and it lives in the card's state column — the same
+            // rule: it highlights instead of the card, because a click there switches the block
+            // rather than grabbing it (ADR-0035).
+            _hoverPowerSwitch = HitTestPowerSwitch(graphPos);
+
             // A card under a control is not "hovered": the control is the thing about to be
             // clicked, and highlighting the card as well would suggest a drag.
-            _hoverNode = _hoverButton == null ? HitTest(graphPos) : null;
+            _hoverNode = _hoverButton == null && _hoverPowerSwitch == null ? HitTest(graphPos) : null;
         }
 
     }

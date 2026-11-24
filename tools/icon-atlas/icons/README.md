@@ -12,6 +12,8 @@ The SVGs in this folder are copied verbatim from **Font Awesome Free 7.3.1**
 | `lightbulb-solid.svg` | `lightbulb` | Solid | `svgs/solid/lightbulb.svg` |
 | `lightbulb-regular.svg` | `lightbulb` | Regular | `svgs/regular/lightbulb.svg` |
 | `share-from-square-regular.svg` | `share-from-square` | Regular | `svgs/regular/share-from-square.svg` |
+| `toggle-on-solid.svg` | `toggle-on` | Solid | `svgs/solid/toggle-on.svg` |
+| `toggle-off-solid.svg` | `toggle-off` | Solid | `svgs/solid/toggle-off.svg` |
 
 > The jump-to-terminal button was asked for as `up-right-from-square` **Regular**. That icon has no
 > Regular cut in the free set — `metadata/icons.json` lists `styles: ["solid"]` for it, and
@@ -19,6 +21,13 @@ The SVGs in this folder are copied verbatim from **Font Awesome Free 7.3.1**
 > `share-square`) is the same square-with-an-arrow-leaving-it silhouette and *does* ship in Regular,
 > so it is the one copied. The reasoning is recorded in
 > [ADR-0021](../../docs/adr/0021-jump-to-block-terminal.md) §Context 4.
+>
+> The block-power switch was asked for as `toggle-on` **Solid** and `toggle-off` **Regular**. Neither
+> has a Regular cut in the free set: `metadata/icons.json` lists `styles: ["solid"]` for both, and
+> `svgs/regular/` contains no `toggle-*` file. Both are therefore Solid, and the two states are told
+> apart by their fill (a filled pill with the knob on the right vs. an outlined pill with the knob on
+> the left) and by colour, not by the stroke weight. The reasoning is recorded in
+> [ADR-0035](../../docs/adr/0035-block-power-toggle.md) §Context 2.
 
 Which icon is drawn by which control is recorded in the catalogue,
 [`docs/07-icon-catalog.md`](../../docs/07-icon-catalog.md). This file only says where the source

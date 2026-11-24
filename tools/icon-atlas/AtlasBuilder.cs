@@ -70,6 +70,14 @@ namespace Vgs.IconAtlasBuilder
             public string File;
             public string Comment;
             public float TextureScale;
+
+            /// <summary>
+            /// Width ÷ height of the icon's ink, in its own units. It is what tells a caller that
+            /// an icon is wider than it is tall: the texture is square and the ink is fitted into
+            /// it, so the drawn quad carries no hint of the shape inside, and geometry that
+            /// reserves room for an icon would otherwise have to guess (ADR-0035).
+            /// </summary>
+            public float InkAspect;
         }
 
         public static int Main(string[] args)
@@ -126,6 +134,7 @@ namespace Vgs.IconAtlasBuilder
                 IconRaster.Cell cell = IconRaster.Render(shape, TextureSize, Inset, SubSamples);
 
                 entry.TextureScale = cell.TextureScale;
+                entry.InkAspect = cell.Ink.Height > 0f ? cell.Ink.Width / cell.Ink.Height : 1f;
 
                 string path = Path.Combine(textureDir, entry.Id + ".png");
                 PngWriter.Report report = PngWriter.Write(path, cell.Alpha, TextureSize, TextureSize);
@@ -137,9 +146,10 @@ namespace Vgs.IconAtlasBuilder
 
                 Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
                     "  {0,-12} {1,-26} contours {2,2}  points {3,4}  ink {4:0.0}x{5:0.0} " +
-                    "texture x{6:0.000}  {7:0.0} KB",
+                    "texture x{6:0.000}  aspect {7:0.000}  {8:0.0} KB",
                     entry.Id, entry.File, shape.Contours.Count, shape.PointCount,
-                    cell.Ink.Width, cell.Ink.Height, entry.TextureScale, report.Bytes / 1024.0));
+                    cell.Ink.Width, cell.Ink.Height, entry.TextureScale, entry.InkAspect,
+                    report.Bytes / 1024.0));
             }
 
             File.WriteAllText(sbcPath, BuildSbc(entries), new UTF8Encoding(false));
@@ -389,6 +399,32 @@ namespace Vgs.IconAtlasBuilder
                 Entry e = entries[i];
                 sb.Append("                case VgsIcon.").Append(e.Id).Append(": return ")
                   .Append(e.TextureScale.ToString("0.######", CultureInfo.InvariantCulture)).Append("f;\r\n");
+            }
+
+            sb.Append("                default: return 1f;\r\n");
+            sb.Append("            }\r\n");
+            sb.Append("        }\r\n");
+            sb.Append("\r\n");
+            sb.Append("        /// <summary>\r\n");
+            sb.Append("        /// Width divided by height of <paramref name=\"icon\"/>'s ink, in its own units.\r\n");
+            sb.Append("        ///\r\n");
+            sb.Append("        /// The texture is square and the ink is fitted into it, so the drawn quad says\r\n");
+            sb.Append("        /// nothing about the shape inside: an icon that is wider than it is tall and one\r\n");
+            sb.Append("        /// that is taller than it is wide both arrive as a square sprite. A caller that\r\n");
+            sb.Append("        /// reserves room for an icon — the card's power switch does (ADR-0035) — asks\r\n");
+            sb.Append("        /// here instead of assuming a square, because the ink inside the quad is what the\r\n");
+            sb.Append("        /// player sees and what a hit test has to cover.\r\n");
+            sb.Append("        /// </summary>\r\n");
+            sb.Append("        public static float InkAspect(VgsIcon icon)\r\n");
+            sb.Append("        {\r\n");
+            sb.Append("            switch (icon)\r\n");
+            sb.Append("            {\r\n");
+
+            for (int i = 0; i < entries.Count; i++)
+            {
+                Entry e = entries[i];
+                sb.Append("                case VgsIcon.").Append(e.Id).Append(": return ")
+                  .Append(e.InkAspect.ToString("0.######", CultureInfo.InvariantCulture)).Append("f;\r\n");
             }
 
             sb.Append("                default: return 1f;\r\n");

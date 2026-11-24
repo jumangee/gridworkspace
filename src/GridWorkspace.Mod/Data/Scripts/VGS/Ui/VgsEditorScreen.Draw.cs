@@ -509,7 +509,102 @@ namespace Vgs.Ui
             // The card's buttons are drawn last so they are never covered by a port bar of a
             // neighbouring card that happens to be drawn later.
             DrawCardButtons(node, alpha, clipTopLeft, clipSize);
+
+            // The power switch goes last of all, for the same reason and one more: it sits in the
+            // card's state column, on the leading edge, and a port bar of a card drawn later can
+            // overlap it — the switch has to win, because a control the player cannot see is a
+            // control they cannot use.
+            DrawPowerSwitch(node, alpha, clipTopLeft, clipSize);
         }
+
+        /// <summary>
+        /// Draws the power switch in the card's <b>state column</b> (ADR-0035): a Font Awesome
+        /// <c>toggle-on</c> while the block is on, a <c>toggle-off</c> while it is off, and the
+        /// same <c>toggle-off</c> in red when the block is damaged below its critical integrity
+        /// and the game would refuse to run it anyway.
+        ///
+        /// <b>Three states, and the third is not "off".</b> Grey means "switched off, click to
+        /// switch on"; red means "this block cannot be switched on at all". Both are drawn with
+        /// the same icon and differ only in colour, because the icon already says "off" and
+        /// colouring it is what tells the player whether the switch is still a switch.
+        ///
+        /// <b>Nothing is drawn before the first reading.</b> <see cref="BlockPower.Unknown"/> means
+        /// the state pass has not reached this card yet; drawing "off" there would be a claim about
+        /// a block nobody has read. The column keeps its width regardless — that width comes from
+        /// the block's type — so the icon appears without moving the name.
+        ///
+        /// <b>Hover brightens the state colour instead of replacing it.</b> Every other control on
+        /// the canvas warms to <see cref="ColPlusFillHot"/> under the pointer, because its colour
+        /// says nothing about the block. This one's colour *is* the reading, so the feedback is a
+        /// lighter shade of the same state: the player still sees what the block is while the
+        /// pointer is on the control that will change it.
+        ///
+        /// A missing texture costs the shape, never the control: the fallback is the mark the
+        /// switch carried before it became an icon — <c>|</c> for on and <c>o</c> for off, in the
+        /// same colour — which is the rule every icon in this editor follows (ADR-0019 §6).
+        /// </summary>
+        private void DrawPowerSwitch(Node node, float alpha, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            BlockPower power = node.State.Power;
+            if (power == BlockPower.Unknown) return;
+
+            Vector2 topLeft, size;
+            if (!PortGeometry.TryPowerSwitchRect(node, VgsScreenDraw.ClientAspect, out topLeft, out size))
+            {
+                return;
+            }
+
+            bool hot = ReferenceEquals(node, _hoverPowerSwitch);
+
+            Color colour;
+            VgsIcon icon;
+            string glyph;
+
+            if (power == BlockPower.On)
+            {
+                colour = ColPowerOn;
+                icon = VgsIcon.ToggleOn;
+                glyph = VgsText.PowerOnGlyph;
+            }
+            else if (power == BlockPower.Off)
+            {
+                colour = ColPowerOff;
+                icon = VgsIcon.ToggleOff;
+                glyph = VgsText.PowerOffGlyph;
+            }
+            else
+            {
+                colour = ColPowerUnavailable;
+                icon = VgsIcon.ToggleOff;
+                glyph = VgsText.PowerOffGlyph;
+            }
+
+            if (hot) colour = VgsPalette.Brighten(colour, PowerSwitchHoverLift);
+            colour = Fade(colour, alpha);
+
+            // The ink height is the band, and the ink is wider than tall, so the sprite's square
+            // destination is bigger than the band by the atlas's own texture scale. `Icon` takes
+            // the ink height for exactly this reason, and the rectangle above is the ink box — so
+            // the drawn pill lands on the rectangle the hit test uses, not merely near it.
+            Vector2 centre = GraphToScreen(topLeft + size * 0.5f, clipTopLeft);
+            float ink = size.Y * _view.Zoom;
+
+            if (VgsScreenDraw.Icon(icon, centre, ink, colour, clipTopLeft, clipSize)) return;
+
+            VgsScreenDraw.TextCentered(glyph, centre, VgsConstants.CardButtonGlyphScale * CardTextScale,
+                                       colour);
+        }
+
+        /// <summary>
+        /// How far a hovered power switch is lightened towards white, as a fraction.
+        ///
+        /// A fifth: enough to read as "the pointer is on this" at a glance, small enough that the
+        /// three state colours stay distinguishable from each other while hovered — including the
+        /// dark red, which a stronger lift would turn pink and thereby break the one thing the
+        /// colour is for.
+        /// </summary>
+        private const float PowerSwitchHoverLift = 0.20f;
+
 
         /// <summary>
         /// Draws the watch bars of one controller: the yellow bars under the card, each with the
@@ -1662,6 +1757,15 @@ namespace Vgs.Ui
                     if (_hoverButton != null && _hoverButtonKind == CardButtonKind.Jump)
                     {
                         return VgsText.JumpHint;
+                    }
+
+                    // The power switch explains itself before the click: what it does while it can
+                    // do something, and why it will refuse while it cannot (ADR-0035).
+                    if (_hoverPowerSwitch != null)
+                    {
+                        return _hoverPowerSwitch.State.Power == BlockPower.Unavailable
+                            ? VgsText.PowerUnavailableHint
+                            : VgsText.PowerHint;
                     }
 
                     if (_modesHot) return VgsText.ModesHint;

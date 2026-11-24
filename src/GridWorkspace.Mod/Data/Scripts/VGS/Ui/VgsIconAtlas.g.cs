@@ -29,6 +29,10 @@ namespace Vgs.Ui
         ShareFromSquare = 6,
         /// <summary>sliders (Solid): the modes button of the bottom bar</summary>
         Sliders = 7,
+        /// <summary>toggle-on (Solid): the card's block-power switch while the block is on</summary>
+        ToggleOn = 8,
+        /// <summary>toggle-off (Solid): the card's block-power switch while the block is off or too damaged to be switched on</summary>
+        ToggleOff = 9,
     }
 
     /// <summary>
@@ -53,7 +57,7 @@ namespace Vgs.Ui
         public const int TextureSize = 256;
 
         /// <summary>Number of icons the build produced.</summary>
-        public const int Count = 8;
+        public const int Count = 10;
 
         /// <summary>
         /// SubtypeName of <paramref name="icon"/> in Data\GuiTextures.sbc, and therefore the
@@ -72,6 +76,8 @@ namespace Vgs.Ui
                 case VgsIcon.LightbulbRegular: return "VGS_LightbulbRegular";
                 case VgsIcon.ShareFromSquare: return "VGS_ShareFromSquare";
                 case VgsIcon.Sliders: return "VGS_Sliders";
+                case VgsIcon.ToggleOn: return "VGS_ToggleOn";
+                case VgsIcon.ToggleOff: return "VGS_ToggleOff";
                 default: return "";
             }
         }
@@ -111,6 +117,36 @@ namespace Vgs.Ui
                 case VgsIcon.LightbulbRegular: return 1.066667f;
                 case VgsIcon.ShareFromSquare: return 1.11672f;
                 case VgsIcon.Sliders: return 1.137778f;
+                case VgsIcon.ToggleOn: return 1.6f;
+                case VgsIcon.ToggleOff: return 1.6f;
+                default: return 1f;
+            }
+        }
+
+        /// <summary>
+        /// Width divided by height of <paramref name="icon"/>'s ink, in its own units.
+        ///
+        /// The texture is square and the ink is fitted into it, so the drawn quad says
+        /// nothing about the shape inside: an icon that is wider than it is tall and one
+        /// that is taller than it is wide both arrive as a square sprite. A caller that
+        /// reserves room for an icon — the card's power switch does (ADR-0035) — asks
+        /// here instead of assuming a square, because the ink inside the quad is what the
+        /// player sees and what a hit test has to cover.
+        /// </summary>
+        public static float InkAspect(VgsIcon icon)
+        {
+            switch (icon)
+            {
+                case VgsIcon.CircleDot: return 1f;
+                case VgsIcon.SquarePlus: return 1f;
+                case VgsIcon.Xmark: return 1f;
+                case VgsIcon.Bell: return 0.874829f;
+                case VgsIcon.LightbulbSolid: return 0.727273f;
+                case VgsIcon.LightbulbRegular: return 0.75f;
+                case VgsIcon.ShareFromSquare: return 1.046925f;
+                case VgsIcon.Sliders: return 1.066667f;
+                case VgsIcon.ToggleOn: return 1.5f;
+                case VgsIcon.ToggleOff: return 1.5f;
                 default: return 1f;
             }
         }

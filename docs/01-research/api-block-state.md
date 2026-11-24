@@ -170,3 +170,95 @@ pwsh -File tools/dump-se-il.ps1 -Type 'Sandbox.Game.Entities.MyComponentStack' -
 `IMySlimBlock` проходит шлюз; `Sandbox.ModAPI` — тоже. Проверяется не рассуждением, а
 `pwsh -File tools/check-whitelist.ps1` на собранной сборке мода: после Шага 2 шлюз печатает
 `WHITELIST OK` при 158 ссылках на типы (было 156; +`IMySlimBlock` и +`BlockState`).
+
+---
+
+## 6. Флаг питания блока (`Enabled` / `IsFunctional`) — проверено 2026-11-24
+
+Второе значение того же прохода состояния (ADR-0035): включён ли блок и можно ли его вообще
+включить. Это **две разные величины**, и их легко перепутать.
+
+```powershell
+pwsh -File tools/dump-se-api.ps1 -Types 'Sandbox.ModAPI.IMyFunctionalBlock','Sandbox.ModAPI.Ingame.IMyFunctionalBlock','VRage.Game.ModAPI.Ingame.IMyCubeBlock'
+```
+
+```
+## `Sandbox.ModAPI.IMyFunctionalBlock`        (assembly Sandbox.Common)
+- interfaces: ... Sandbox.ModAPI.IMyTerminalBlock, VRage.Game.ModAPI.IMyCubeBlock, ...
+### Properties
+public Boolean IsUpdateTimerCreated { get; }
+public Boolean IsUpdateTimerEnabled { get; }
+### Events
+public event Action<IMyTerminalBlock> EnabledChanged
+
+## `Sandbox.ModAPI.Ingame.IMyFunctionalBlock`
+### Properties
+public Boolean Enabled { get; set; }
+### Methods
+public abstract Void RequestEnable(Boolean enable)
+
+## `VRage.Game.ModAPI.Ingame.IMyCubeBlock`
+### Properties
+public Boolean IsFunctional { get; }
+public Boolean IsWorking { get; }
+```
+
+Три вывода, и все три проверены, а не выведены из названий:
+
+1. **`Enabled` объявлен на Ingame-интерфейсе**, а `Sandbox.ModAPI.IMyFunctionalBlock` из него
+   выводится, поэтому `((IMyFunctionalBlock)block).Enabled` доступен без приведения к
+   `Ingame`. `IsFunctional` живёт на `IMyCubeBlock`, то есть доступен у любого блока, а не
+   только у функционального.
+2. **`Enabled` — это `Sync<bool, BothWays>`**, а не поле: `MyFunctionalBlock.set_Enabled`
+   (`dump-se-il.ps1 ... -Type 'Sandbox.Game.Entities.Cube.MyFunctionalBlock' -Method 'set_Enabled'`)
+   — это `ldfld m_enabled; ldarg.1; callvirt Sync`2::set_Value`. Следствие: на удалённом клиенте
+   запись уходит на сервер, и мод не может отличить «принято» от «отправлено» — поэтому после
+   записи блок **перечитывается** (ADR-0035 §Decision 4).
+3. **`RequestEnable` помечен `[Obsolete("Use the setter of Enabled")]`** и делает то же самое:
+   `MyFunctionalBlock.Sandbox.ModAPI.Ingame.IMyFunctionalBlock.RequestEnable`
+   = `ldarg.1; callvirt set_Enabled`. Мод использует сеттер, чтобы не тащить предупреждение,
+   которое спрятало бы следующее, настоящее.
+
+### Почему `IsFunctional`, а не `Enabled`, отвечает на «включить нельзя»
+
+```powershell
+pwsh -File tools/dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' -Type 'Sandbox.Game.Entities.MyComponentStack' -Method 'get_IsFunctional'
+```
+
+```
+0000: ldarg.0
+0001: call    MyComponentStack::get_IsBuilt
+0006: brfalse.s 27
+0008: ldarg.0
+0009: call    MyComponentStack::get_Integrity
+000E: ldarg.0
+000F: call    MyComponentStack::get_MaxIntegrity
+0014: ldarg.0
+0015: ldfld   m_blockDefinition
+001A: ldfld   CriticalIntegrityRatio
+001F: mul
+0020: cgt
+0022: ret
+0023: ldc.i4.0
+0024: ret
+```
+
+То есть `IsFunctional == IsBuilt && Integrity > MaxIntegrity * CriticalIntegrityRatio`. Отсюда:
+**блок ниже критической целостности продолжает репортить `Enabled == true`** и просто не
+работает. Если карточка берёт флаг питания в лоб, сломанный блок выглядит зелёным. Поэтому
+`BlockState.SetPower(enabled, functional)` даёт функциональному флагу приоритет и рисует третий
+цвет — `ColPowerUnavailable` (ADR-0035 §Decision 2).
+
+Свой порог по целостности мод **не** заводит: `CriticalIntegrityRatio` — свойство определения
+блока, у разных блоков разное, и копия этого числа в моде разошлась бы с игрой на первой правке
+баланса.
+
+### Что этим НЕ проверяется
+
+- **Не проверено:** приходит ли `EnabledChanged` на клиенте при выключении блока сервером.
+  Подписки на него мод не делает — проход состояния читает флаг сам (ADR-0035 §Decision 3), —
+  так что проверять это отдельным запуском игры не требуется.
+- **Не проверено:** как ведёт себя `IsWorking` у блока с включённым `Enabled`, но не
+  работающим по другой причине (нет энергии, нет топлива). Мод его не читает: «включён и
+  работает» и «включён и не работает» на карточке различить нечем, и требование этого не
+  просило.

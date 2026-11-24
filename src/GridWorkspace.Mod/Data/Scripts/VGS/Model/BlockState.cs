@@ -24,7 +24,9 @@ namespace Vgs.Model
     /// every block has it, and it is the first thing the live schema shows. <see cref="Metrics"/>
     /// is reserved for the values only some categories have (charge, fill level): which key means
     /// what is the category descriptor's business and is decided in Step 3 of the organisation
-    /// plan, not here.
+    /// plan, not here. <see cref="Power"/> is the block's own on/off switch (ADR-0035): a second
+    /// value every functional block has, read on the same pass, and kept apart from the integrity
+    /// because a block can be switched off without being damaged and damaged without being off.
     /// </summary>
     public sealed class BlockState
     {
@@ -61,6 +63,30 @@ namespace Vgs.Model
         /// draw path would allocate an enumerator and hash a string sixty times a second.
         /// </summary>
         public readonly float[] Metrics;
+
+        /// <summary>
+        /// The block's own on/off switch, as the card draws it (ADR-0035).
+        ///
+        /// <b>Read from the game, never from the graph.</b> The value is the block's
+        /// <c>IMyFunctionalBlock.Enabled</c>, combined with <c>IMyCubeBlock.IsFunctional</c>: a
+        /// block below its critical integrity reports enabled-and-not-working, and the switch has
+        /// to say "you cannot switch this on" rather than "on". The two are read together by the
+        /// same pass that reads the integrity, so the picture cannot show a block that is on and
+        /// broken at the same time.
+        ///
+        /// <b>Starts at <see cref="BlockPower.Unknown"/>, which is not drawn.</b> Unlike the
+        /// integrity there is no safe default: "on" and "off" are both claims, and half a second
+        /// of a wrong claim on a block the player just looked at is exactly the lie
+        /// <see cref="Integrity"/>'s comment refuses. The card's state column keeps its width
+        /// regardless — that width comes from the block's type, not from this value — so nothing
+        /// moves when the reading arrives.
+        ///
+        /// <b>Written only by the state pass</b> (<c>GridGraphBuilder.RefreshState</c> through
+        /// <see cref="GridGraph.ApplySwitch"/>) and by the click that switches the block, which
+        /// reads the value back from the block before writing it here. The object is reused
+        /// rather than replaced, so a reference taken during drawing stays valid across passes.
+        /// </summary>
+        public BlockPower Power = BlockPower.Unknown; // review:allow R009 rewritten in place by the state pass
 
         /// <summary>A state with no metrics: the common case until a category publishes one.</summary>
         public BlockState()
@@ -113,6 +139,35 @@ namespace Vgs.Model
             Integrity = value;
         }
 
+        /// <summary>
+        /// Stores what the block's switch says, from the two facts the game answers separately:
+        /// whether it is switched on and whether it is functional at all.
+        ///
+        /// <b>The functional flag wins.</b> A block below its critical integrity can still report
+        /// <c>Enabled = true</c> — the game leaves the flag alone and stops the block instead — so
+        /// taking <paramref name="enabled"/> at face value would paint a broken block green. The
+        /// precedence is here rather than at each reader, so the drawing code cannot get it
+        /// backwards in one place and right in another.
+        /// </summary>
+        public void SetPower(bool enabled, bool functional)
+        {
+            Power = !functional
+                ? BlockPower.Unavailable
+                : (enabled ? BlockPower.On : BlockPower.Off);
+        }
+
+        /// <summary>
+        /// True when the card's switch is a control that can be clicked right now: the value is
+        /// known and the block can be switched on. The red state and the unread one are not
+        /// clickable — one because the game will refuse, the other because nobody has read it
+        /// yet — and the caller turns the first of those into a sentence rather than into a
+        /// silent no-op.
+        /// </summary>
+        public bool CanToggle
+        {
+            get { return Power == BlockPower.On || Power == BlockPower.Off; }
+        }
+
         /// <summary>One category reading by index, or 0 when this state has no such metric.</summary>
         public float GetMetric(int index)
         {
@@ -134,6 +189,7 @@ namespace Vgs.Model
         public override string ToString()
         {
             return "integrity " + Integrity.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)
+                   + ", power " + Power
                    + ", metrics " + Metrics.Length;
         }
     }

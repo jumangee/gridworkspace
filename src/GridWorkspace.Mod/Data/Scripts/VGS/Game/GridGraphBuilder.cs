@@ -244,8 +244,14 @@ namespace Vgs.Game
 
         /// <summary>
         /// Refreshes the <em>state</em> of the nodes in <paramref name="entityIds"/>: the values
-        /// that change while the editor is open, and nothing else. Returns how many readings were
-        /// written.
+        /// that change while the editor is open, and nothing else. Returns how many visible cards
+        /// it managed to read.
+        ///
+        /// <b>Two values, one pass.</b> Damage (<c>BuildIntegrity / MaxIntegrity</c>) and the
+        /// block's own on/off switch (ADR-0035) are read from the same resolved block, because
+        /// they are two questions about one block and the pass runs for every visible card twice
+        /// a second. Each is written separately: a block whose integrity read threw can still
+        /// have a good switch reading, and losing one must not cost the other.
         ///
         /// <b>What it deliberately does not do:</b> it does not add or remove nodes, does not
         /// touch ports, groups, toolbars or edges, does not reconcile the schema with the world
@@ -259,9 +265,9 @@ namespace Vgs.Game
         /// five-hundred-block grid that is the difference between four reads per tick and five
         /// hundred. The list is reused by the caller, so this method allocates nothing.
         ///
-        /// <b>A block that cannot be read keeps its previous value.</b> It is not reset to 1:
-        /// one failed read is not evidence that the block was repaired, and a card that flickers
-        /// between damaged and pristine is worse than one that lags by half a second.
+        /// <b>A block that cannot be read keeps its previous value.</b> It is not reset to 1 or to
+        /// "off": one failed read is not evidence that the block was repaired or switched, and a
+        /// card that flickers between states is worse than one that lags by half a second.
         /// </summary>
         public static int RefreshState(GridGraph graph, IList<long> entityIds)
         {
@@ -277,28 +283,53 @@ namespace Vgs.Game
                 Node node = graph.GetNode(entityIds[i]);
                 if (node == null) continue;
 
+                // The block is resolved once and both values are read from it. They are two
+                // questions about one block — damage and the on/off switch (ADR-0035) — and the
+                // pass runs twice a second for every visible card, so resolving the entity twice
+                // would double the most expensive part of it.
+                IMyTerminalBlock block;
+                if (!EntityResolver.TryResolveTerminalBlock(node.EntityId, out block)) continue;
+
+                bool wrote = false;
+
                 float integrity;
-                if (!TryReadIntegrity(node.EntityId, out integrity)) continue;
-                if (graph.ApplyIntegrity(node.EntityId, integrity)) written++;
+                if (TryReadIntegrity(block, out integrity)
+                    && graph.ApplyIntegrity(node.EntityId, integrity))
+                {
+                    wrote = true;
+                }
+
+                // Only a block that has a switch is asked about it: a conveyor tube answers "off"
+                // forever, and writing that would be a claim about a control the card does not
+                // have.
+                if (node.CanBeEnabled)
+                {
+                    bool enabled, functional;
+                    if (BlockSwitch.TryRead(block, out enabled, out functional)
+                        && graph.ApplySwitch(node.EntityId, enabled, functional))
+                    {
+                        wrote = true;
+                    }
+                }
+
+                if (wrote) written++;
             }
             return written;
         }
 
         /// <summary>
-        /// Reads a block's integrity as a fraction of its maximum. False when the block is gone or
-        /// the game cannot answer, which the caller must treat as "no news", not as "undamaged".
+        /// Reads a block's integrity as a fraction of its maximum. False when the game cannot
+        /// answer, which the caller must treat as "no news", not as "undamaged".
         ///
         /// The value comes from the block's slim block — <c>BuildIntegrity / MaxIntegrity</c> —
         /// and not from <c>DamageRatio</c>: the ratio is the same number inverted, and reading the
         /// two parts keeps the arithmetic visible at the point where the units matter. Verified in
         /// <c>docs/01-research/api-block-state.md</c>.
         /// </summary>
-        private static bool TryReadIntegrity(long entityId, out float integrity)
+        private static bool TryReadIntegrity(IMyTerminalBlock block, out float integrity)
         {
             integrity = 1f;
-
-            IMyTerminalBlock block;
-            if (!EntityResolver.TryResolveTerminalBlock(entityId, out block)) return false;
+            if (block == null) return false;
 
             try
             {
@@ -338,6 +369,13 @@ namespace Vgs.Game
             node.HasTerminal = TryReadActions(block, actions);
             BlockPortCatalog.FillActions(node, actions);
             BlockPortCatalog.FillEvents(node);
+
+            // Whether the block has an on/off switch is a fact about its type, read once here with
+            // everything else the node needs from the world (ADR-0035). The card's state column is
+            // sized from it, so it must not be re-read per frame: a column that appeared and
+            // disappeared with the block's power would move the block's name sideways on every
+            // switch.
+            node.CanBeEnabled = BlockSwitch.CanBeEnabled(block);
 
             // The localized type name, for the search field (ADR-0023). Read here, with
             // everything else the node needs from the world, so no draw path ever touches it.

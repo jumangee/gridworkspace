@@ -110,6 +110,54 @@ namespace Vgs.Ui
         public static readonly Color ColPlusFill = new Color(244, 247, 252, 255);
         public static readonly Color ColPlusFillHot = new Color(255, 214, 140, 255);
 
+        /// <summary>
+        /// The card's block-power switch, in its three states (ADR-0035).
+        ///
+        /// <b>These are the only colours on the canvas that mean a state of the block itself.</b>
+        /// Every other control is near-white at rest and warms under the pointer, because its
+        /// colour says what the pointer is doing; the switch is different by requirement — its
+        /// colour *is* the reading, and it is the reading the player came to the schema for.
+        ///
+        /// Green for on: the same family as <see cref="ColPortOut"/> and <see cref="ColLine"/>,
+        /// which already mean "this is live" in this palette, so the picture has one green rather
+        /// than two.
+        ///
+        /// Grey <c>#777777</c> for off and dark red <c>#770000</c> for "too damaged to switch on":
+        /// both are the values the requirement names, kept verbatim rather than tuned, so the
+        /// acceptance check in the game is a comparison against a stated number. The red is dark
+        /// on purpose — it must not shout louder than the damage band it accompanies — and it
+        /// composites to about the same brightness as that band, which is the look the band was
+        /// accepted with (ADR-0028 §3).
+        /// </summary>
+        public static readonly Color ColPowerOn = new Color(110, 215, 130, 255);
+        public static readonly Color ColPowerOff = new Color(119, 119, 119, 255);
+        public static readonly Color ColPowerUnavailable = new Color(119, 0, 0, 255);
+
+        /// <summary>
+        /// Lightens a colour towards white, keeping its alpha, and returns it.
+        ///
+        /// It exists for the one control whose colour carries a state rather than an affordance:
+        /// the power switch cannot warm to <see cref="ColPlusFillHot"/> under the pointer without
+        /// losing the reading the player is about to act on, so hover brightens the state colour
+        /// instead of replacing it. A struct in, a struct out — nothing is allocated, which is what
+        /// lets it be called from the draw path.
+        /// </summary>
+        public static Color Brighten(Color color, float amount)
+        {
+            if (amount <= 0f) return color;
+            if (amount > 1f) amount = 1f;
+
+            int r = color.R + (int)((255 - color.R) * amount);
+            int g = color.G + (int)((255 - color.G) * amount);
+            int b = color.B + (int)((255 - color.B) * amount);
+
+            if (r > 255) r = 255;
+            if (g > 255) g = 255;
+            if (b > 255) b = 255;
+
+            return new Color(r, g, b, color.A);
+        }
+
         public static readonly Color ColMenu = new Color(26, 32, 42, 250);
         public static readonly Color ColMenuBorder = new Color(90, 106, 130, 255);
         public static readonly Color ColMenuRowHot = new Color(52, 66, 88, 255);

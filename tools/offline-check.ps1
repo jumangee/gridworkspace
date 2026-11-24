@@ -63,6 +63,7 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\Edge.cs'),
     (Join-Path $sourceRoot 'Model\Node.cs'),
     (Join-Path $sourceRoot 'Model\BlockState.cs'),
+    (Join-Path $sourceRoot 'Model\BlockPower.cs'),
     (Join-Path $sourceRoot 'Model\BlockCategory.cs'),
     (Join-Path $sourceRoot 'Model\ControllerState.cs'),
     (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),

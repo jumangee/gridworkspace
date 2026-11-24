@@ -187,6 +187,33 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// Writes what a block's on/off switch says into the node's state (ADR-0035). False when
+        /// the graph has no node for that id, which is normal — a block can be destroyed between
+        /// the state pass being scheduled and it running.
+        ///
+        /// <b>Same contract as <see cref="ApplyIntegrity"/>:</b> it touches
+        /// <see cref="Node.State"/> and nothing else, so the cheap pass stays cheap and a card's
+        /// ports, slots and frame cannot move because a block was switched off. Both values the
+        /// game answers are passed in rather than read here, because the model layer never touches
+        /// the world (ADR-0003) and because the precedence between them belongs to
+        /// <see cref="BlockState.SetPower"/>.
+        ///
+        /// <b>A node without a switch is not an error.</b> The pass asks about every visible card;
+        /// a conveyor tube answers "off" forever, and writing that would be a claim about a block
+        /// that has no switch at all. The write is therefore refused, and the caller treats the
+        /// refusal as "nothing to do" — the same way it treats a missing node.
+        /// </summary>
+        public bool ApplySwitch(long entityId, bool enabled, bool functional)
+        {
+            Node node = GetNode(entityId);
+            if (node == null) return false;
+            if (!node.CanBeEnabled) return false;
+
+            node.State.SetPower(enabled, functional);
+            return true;
+        }
+
+        /// <summary>
         /// Adds a node, or returns the existing one with the same entity id.
         /// Idempotent so a refresh can call it blindly.
         /// </summary>

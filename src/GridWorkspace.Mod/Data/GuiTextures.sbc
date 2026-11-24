@@ -40,6 +40,14 @@
         <SubtypeName>VGS_Sliders</SubtypeName>
         <Path>Textures\VGS\Icons\Sliders.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_ToggleOn</SubtypeName>
+        <Path>Textures\VGS\Icons\ToggleOn.png</Path>
+      </Texture>
+      <Texture>
+        <SubtypeName>VGS_ToggleOff</SubtypeName>
+        <Path>Textures\VGS\Icons\ToggleOff.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>

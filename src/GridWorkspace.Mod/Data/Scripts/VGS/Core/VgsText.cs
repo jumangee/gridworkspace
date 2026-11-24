@@ -147,6 +147,22 @@ namespace Vgs.Core
         public const string WatchGlyph = "#";
 
         /// <summary>
+        /// Fallback glyph of the card's power switch while the block is on (ADR-0035), used only
+        /// when the icon atlas is unavailable (ADR-0019). The switch is drawn as a <c>toggle-on</c>
+        /// icon — a filled pill with its knob at the right — and "|" is the ASCII mark that keeps
+        /// the one thing that matters: the two states are still distinguishable, because the mark
+        /// for "off" is a different character.
+        /// </summary>
+        public const string PowerOnGlyph = "|";
+
+        /// <summary>
+        /// Fallback glyph of the card's power switch while the block is off or cannot be switched
+        /// on. "o" for the empty half of the pill, which is what the knob has left.
+        /// </summary>
+        public const string PowerOffGlyph = "o";
+
+
+        /// <summary>
         /// Comparison sign for "less or equal" (the game's inverted condition). ASCII, see above.
         /// </summary>
         public const string WatchSignLower = "<=";
@@ -199,6 +215,25 @@ namespace Vgs.Core
         public static string WarnJumpNotTerminal { get { return S("WARN_JUMP_NOT_TERMINAL"); } }
         public static string WarnJumpNoAntenna { get { return S("WARN_JUMP_NO_ANTENNA"); } }
         public static string JumpHint { get { return S("JUMP_HINT"); } }
+
+        // ---- Block power switch (ADR-0035) ----
+
+        /// <summary>Hint for a card's power switch while the pointer is over it.</summary>
+        public static string PowerHint { get { return S("POWER_HINT"); } }
+
+        /// <summary>
+        /// Hint for the switch of a block that is too damaged to be switched on. A different
+        /// sentence, not a variant of the first: the player is looking at a control that will
+        /// refuse, and the only useful thing to say is why.
+        /// </summary>
+        public static string PowerUnavailableHint { get { return S("POWER_UNAVAILABLE_HINT"); } }
+
+        /// <summary>Shown when a switch-on is refused because of the block's damage.</summary>
+        public static string WarnPowerDamaged { get { return S("WARN_POWER_DAMAGED"); } }
+
+        /// <summary>Shown when the block did not accept the switch at all.</summary>
+        public static string WarnPowerRefused { get { return S("WARN_POWER_REFUSED"); } }
+
 
         // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
 

@@ -92,6 +92,13 @@ namespace Vgs.Core
                   "Jump failed: the block is out of reach and no antenna is transmitting" },
                 { "JUMP_HINT", "This block's terminal · the editor will close" },
 
+                // ---- Block power switch (ADR-0035) ----
+                { "POWER_HINT", "Block power · click to switch it on or off" },
+                { "POWER_UNAVAILABLE_HINT", "Block power · too damaged to switch on" },
+                { "WARN_POWER_DAMAGED",
+                  "Cannot switch on: the block is damaged below its critical integrity" },
+                { "WARN_POWER_REFUSED", "Switch refused: the block did not accept the change" },
+
                 // ---- Event controller watch mode (ADR-0017, ADR-0020) ----
                 { "WATCH_HINT",
                   "Watch mode: click the block the controller should watch · right-click to cancel" },
@@ -206,6 +213,13 @@ namespace Vgs.Core
                 { "WARN_JUMP_NOT_TERMINAL", "Переход не выполнен: у блока нет терминала" },
                 { "WARN_JUMP_NO_ANTENNA", "Переход не выполнен: блок далеко, антенна не передаёт" },
                 { "JUMP_HINT", "Терминал этого блока · редактор закроется" },
+
+                // ---- Block power switch (ADR-0035) ----
+                { "POWER_HINT", "Питание блока · нажмите, чтобы включить или выключить" },
+                { "POWER_UNAVAILABLE_HINT", "Питание блока · слишком повреждён, чтобы включить" },
+                { "WARN_POWER_DAMAGED",
+                  "Включить нельзя: блок повреждён ниже критической целостности" },
+                { "WARN_POWER_REFUSED", "Переключение не выполнено: блок не принял изменение" },
 
                 // ---- Event controller watch mode ----
                 { "WATCH_HINT",

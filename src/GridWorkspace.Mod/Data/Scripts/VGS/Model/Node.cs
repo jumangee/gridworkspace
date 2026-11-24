@@ -230,6 +230,28 @@ namespace Vgs.Model
         public bool CanDriveBlocks; // review:allow R009 set once by the probe, never re-read per frame
 
         /// <summary>
+        /// True when this block has an on/off switch of its own, i.e. when the game reports it as
+        /// a functional block (<c>Sandbox.ModAPI.IMyFunctionalBlock</c>, ADR-0035).
+        ///
+        /// <b>It is a fact about the type, not about the state.</b> A conveyor tube has no switch
+        /// and never will; a timer has one for its whole life. That is why the value is read once,
+        /// when the node is built, and why the card's state column is sized from it: whether the
+        /// column is reserved at all must not flicker with the block's power, or the block's name
+        /// would jump sideways every time somebody flipped the switch.
+        ///
+        /// <b>It is not the same question as "is it switched on".</b> The reading lives in
+        /// <see cref="BlockState.Power"/> and is refreshed by the state pass; this field only says
+        /// that the question can be asked. A block that is too damaged to switch on still has a
+        /// switch — it is drawn in the red "unavailable" colour, which is the whole point of
+        /// ADR-0035: the player learns *why* the block is dark without opening the terminal.
+        ///
+        /// Written once, by <c>Vgs.Game.GridGraphBuilder.CreateNode</c> through
+        /// <c>Vgs.Game.BlockSwitch.CanBeEnabled</c>; read by the geometry and the draw path for
+        /// every visible card on every frame, which is why it is a cached flag.
+        /// </summary>
+        public bool CanBeEnabled; // review:allow R009 set once when the node is built, never re-read per frame
+
+        /// <summary>
         /// What the block is doing right now — damage, and later the category's own readings
         /// (<see cref="BlockState"/>).
         ///
@@ -376,6 +398,10 @@ namespace Vgs.Model
             // every caller against the opposite assumption. It is also never an event
             // controller: the watch list belongs to one block, and a group is not a block.
             CanDriveBlocks = false;
+
+            // A group has no block, so it has no switch: the card's state column does not exist on
+            // a group's frame, and nothing can be clicked there (ADR-0035).
+            CanBeEnabled = false;
 
             // A group is not a block: it has no subtype to classify, and no controller state. The
             // null reference is what makes IsEventController false here, without a second flag.

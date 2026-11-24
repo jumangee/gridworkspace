@@ -210,6 +210,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== block state snapshot (Step 2) ===");
         BlockStateSnapshot();
 
+        Console.WriteLine("=== card power switch (ADR-0035) ===");
+        PowerSwitch();
+
         Console.WriteLine("=== block category and descriptor (ADR-0030) ===");
         BlockCategories();
 
@@ -1149,6 +1152,15 @@ internal static class OfflineChecks
             // Aspect at which the name still keeps its 30% floor.
             float keepsName = (VgsConstants.NodeWidth - textLeft - VgsConstants.NodeWidth * 0.3f)
                               / horizontalOverhead;
+
+            // <b>This block reproduces ADR-0021's numbers, and it is the "no state column"
+            // baseline on purpose.</b> The controller node here is built without a switch
+            // (`CanBeEnabled` left at its default), so the nameplate starts at the plain inner
+            // padding. That combination no longer occurs in the game — an event controller is an
+            // `IMyFunctionalBlock` and therefore always has a column — but the arithmetic is what
+            // ADR-0021 recorded, and keeping it here is what lets the two documents be compared.
+            // The real, switch-bearing case is asserted in `PowerSwitch` below, where the column
+            // costs the nameplate the difference between 1.00 and 0.78.
 
             // The three shapes the editor is used in keep the name, and the fourth — a square
             // window, which is legal but rare — keeps it too, exactly at the floor.
@@ -3271,13 +3283,21 @@ internal static class OfflineChecks
                   "the texture is at least as large as the ink it contains, and not absurdly "
                   + "larger (" + icon + ")");
 
-            // The transparent margin must stay a small fraction of the texture: the icon is drawn
-            // at every zoom now, so the margin is pure padding around the ink at all sizes. If it
-            // ever grew to a fifth of the texture, the visible mark would shrink noticeably
-            // against the control's own box.
-            Check(textureScale - 1f <= 0.2f,
-                  "the transparent margin is a small fraction of the texture, so the icon is not "
-                  + "drawn mostly as padding (" + icon + ")");
+            // The ink must fill the texture in its *longest* dimension; the padding in the other
+            // one is unavoidable and is what keeps the icon's proportions. So the margin is
+            // measured against the ink's own aspect rather than against a constant: a square icon
+            // fills the texture both ways, and a wide one — the card's toggle is 1.5 wide for every
+            // unit of height — fills it across and is padded above and below by construction.
+            //
+            // The bound is a drift detector, not a behaviour: both numbers come from the same
+            // generator, so it can only fail after a hand edit or a redrawn icon.
+            float fill = textureScale / Math.Max(1f, VgsIconAtlas.InkAspect(icon));
+            Check(fill >= 1.02f && fill <= 1.10f,
+                  "the ink fills the texture in its longest dimension, so the margin is the inset "
+                  + "and not extra padding (" + icon + ")");
+
+            Check(VgsIconAtlas.InkAspect(icon) > 0f,
+                  "every icon's ink has a positive aspect (" + icon + ")");
         }
 
         // The lookup has to refuse a value that is not a member, or an icon added to the enum but
@@ -3876,6 +3896,395 @@ internal static class OfflineChecks
     //   * the value is not clamped, and a card draws its damage indicator outside the card.
     //
     // Everything below is plain data, so it is asserted here rather than by a game launch.
+    // ------------------------------------------------------------------ power switch (ADR-0035)
+    //
+    // The card's left column holds the block's on/off switch. Four things about it can be wrong in
+    // ways that only the game would show, and all four are arithmetic or a rule:
+    //
+    //  * the slot is a fraction of the *card*, so it has to split a controller's taller card the
+    //    same way it splits a standard one — otherwise the switch floats on exactly the cards that
+    //    are the tallest;
+    //  * the icon is wider than it is tall, so a caller that reserved the sprite's square box would
+    //    reserve twice the room it needs, and one that assumed a square would let the ink run into
+    //    the block's name;
+    //  * the block's name starts to the right of the column, not under it;
+    //  * "too damaged to switch on" is not "off", and the state has to say which.
+    private static void PowerSwitch()
+    {
+        // A node built here has CanBeEnabled left at its default (false), which is what every
+        // existing card in the other checks is. It is set explicitly below, the way
+        // GridGraphBuilder sets it from the block's type.
+        Node block = MakeTarget(20, "LargeBlockConveyor", "OnOff");
+        block.Position = new Vector2(0.30f, 0.10f);
+        block.CanBeEnabled = true;
+
+        const float aspect = 0.5625f;   // 16:9, the shape the editor is normally used in
+
+        // ---- the column exists only where there is a switch ----
+        Check(PortGeometry.HasPowerSwitch(block), "a functional block carries a power switch");
+
+        Node noSwitch = MakeTarget(21, "LargeBlockConveyor", "OnOff");
+        Check(!PortGeometry.HasPowerSwitch(noSwitch),
+              "a block the game does not report as functional carries no switch");
+
+        var group = new Node("group P", "group P");
+        Check(!PortGeometry.HasPowerSwitch(group), "a group frame has no power switch");
+
+        Vector2 unusedTopLeft, unusedSize;
+        Check(!PortGeometry.TryPowerSwitchRect(noSwitch, aspect, out unusedTopLeft, out unusedSize),
+              "a block without a switch has no switch rectangle");
+        Check(!PortGeometry.TryPowerSwitchRect(group, aspect, out unusedTopLeft, out unusedSize),
+              "a group has no switch rectangle");
+        Check(!PortGeometry.TryPowerSwitchRect(null, aspect, out unusedTopLeft, out unusedSize),
+              "a null node has no switch rectangle");
+
+        // ---- the column is inset from the card on all four sides ----
+        //
+        // The column's inner box is the card less the vertical padding above and below, and the
+        // two bands split that box. The horizontal inset is the same margin the button row keeps
+        // from the trailing edge. Both are asserted here because "the icon lies on the frame" is
+        // exactly the defect the padding was added for, and it is invisible in a compile.
+        Vector2 cardTopLeft, cardSize;
+        PortGeometry.CardRect(block, out cardTopLeft, out cardSize);
+
+        Vector2 switchTopLeft, switchSize;
+        Check(PortGeometry.TryPowerSwitchRect(block, aspect, out switchTopLeft, out switchSize),
+              "a functional block has a switch rectangle");
+
+        CheckClose(VgsConstants.PowerSwitchPaddingPixels, 2f,
+                   "the column's vertical padding is the two conditional pixels the requirement names");
+
+        float inner = cardSize.Y - 2f * VgsConstants.PowerSwitchPadding;
+        CheckClose(PortGeometry.PowerSwitchContentHeight(block), inner,
+                   "the column's inner height is the card's height less the padding at both ends");
+
+        // Top gap, bottom gap, and the switch inside them.
+        CheckClose(switchTopLeft.Y - cardTopLeft.Y, VgsConstants.PowerSwitchPadding,
+                   "the switch keeps the padding from the card's top edge — it no longer lies on it");
+        Check(switchTopLeft.Y - cardTopLeft.Y > 0f,
+              "the switch is strictly below the card's top edge");
+
+        float bottomGap = cardTopLeft.Y + cardSize.Y
+                          - (switchTopLeft.Y + inner);
+        CheckClose(bottomGap, VgsConstants.PowerSwitchPadding,
+                   "the lower band keeps the same padding from the card's bottom edge");
+
+        CheckClose(switchSize.Y + (inner - switchSize.Y) + 2f * VgsConstants.PowerSwitchPadding,
+                   cardSize.Y,
+                   "the two bands and the two paddings add up to the card's height, with nothing left over");
+
+        // ---- the upper band is 40% of the column's inner height ----
+        CheckClose(switchSize.Y, inner * VgsConstants.PowerSwitchBandRatio,
+                   "the switch's ink fills the upper band of the column's inner box");
+        CheckClose(switchSize.Y, inner * 0.40f,
+                   "that band is exactly the 40% the requirement names");
+
+        // The ratio itself is a decision the requirement fixed, so it is pinned as a literal rather
+        // than only used: a test that derives its expected value from the constant it is checking
+        // can never fail, and this one exists precisely to catch a change of that constant.
+        CheckClose(VgsConstants.PowerSwitchBandRatio, 0.40f,
+                   "the upper band is 40% of the column's inner height, as the requirement states");
+
+        // ---- the width comes from the icon, and the icon is wider than tall ----
+        //
+        // The atlas build measures the toggle's ink at 576 × 384, an aspect of 1.5, so the band is
+        // 1.5 × its own height wide *on screen*. The rectangle is in layout units, whose X and Y do
+        // not share a scale (ADR-0009), so the comparison is made in the vertical unit: a width in
+        // X units divided by the client aspect is the same length measured the way heights are.
+        float inkAspect = PortGeometry.PowerSwitchInkAspect;
+        CheckClose(inkAspect, 1.5f, "the toggle icon's ink is one and a half times as wide as tall");
+        CheckClose(switchSize.X / aspect / switchSize.Y, inkAspect,
+                   "the switch is as wide on screen as the ink's own aspect says");
+        CheckClose(switchSize.X / aspect, inner * 0.60f,
+                   "the switch is 60% of the column's inner height wide");
+
+        // The padding costs the switch size, and the number is pinned rather than left implicit:
+        // the width is now 60% of the *inner* height, so it is a little under the row button's
+        // diameter (60% of the card's height) instead of exactly equal to it, as ADR-0035 first
+        // recorded. If the size is ever bought back, this is the assertion that has to change.
+        Check(switchSize.X / aspect < cardSize.Y * 0.60f,
+              "the switch is narrower than a row button's diameter, because the column is padded");
+        CheckClose((switchSize.X / aspect) / (cardSize.Y * 0.60f),
+                   1f - 2f * VgsConstants.PowerSwitchPadding / cardSize.Y,
+                   "and it is short by exactly the share the two paddings take from the card");
+
+        // The two states are one control and must not change size: the column's width is a
+        // property of the block's type, and a switch that grew when it lit up would move the name.
+        CheckClose(VgsIconAtlas.InkAspect(VgsIcon.ToggleOn), VgsIconAtlas.InkAspect(VgsIcon.ToggleOff),
+                   "the on and off icons have the same ink aspect, so the column cannot change width");
+
+        // ---- the switch is inset from the card, not on its border ----
+        CheckClose(switchTopLeft.X - cardTopLeft.X, VgsConstants.CardButtonMargin * aspect,
+                   "the switch keeps the same margin from the card's left border as a button does "
+                   + "from the right one");
+        Check(switchTopLeft.X >= cardTopLeft.X - 1e-6f, "the switch never starts left of the card");
+        Check(switchTopLeft.X + switchSize.X <= cardTopLeft.X + cardSize.X + 1e-6f,
+              "the switch stays inside the card's width");
+        Check(switchTopLeft.Y + switchSize.Y <= cardTopLeft.Y + cardSize.Y - VgsConstants.PowerSwitchPadding
+              + 1e-6f,
+              "the switch stays inside the card's height, with the lower band and both paddings below it");
+
+        // The lower band is what is left of the inner box, and it is the majority of it: nothing is
+        // drawn there yet, but the number is asserted so that a later change to the ratio has to
+        // be a decision rather than a drift. 60% is the requirement's own figure.
+        float lowerSlot = inner - switchSize.Y;
+        CheckClose(lowerSlot, inner * 0.60f,
+                   "the lower band takes the other 60% of the column's inner height");
+        Check(lowerSlot > switchSize.Y,
+              "the lower band is taller than the switch — the switch is wide, not tall");
+
+        // ---- a controller's taller card splits the same way ----
+        var controller = new Node(22, "EventControllerLarge", "controller", Vector3I.Zero,
+                                  SensorToolbar(), true);
+        BlockPortCatalog.FillEvents(controller);
+        controller.CanBeEnabled = true;
+        controller.Position = new Vector2(0.30f, 0.50f);
+
+        Vector2 controllerCardTopLeft, controllerCardSize;
+        PortGeometry.CardRect(controller, out controllerCardTopLeft, out controllerCardSize);
+        Check(controllerCardSize.Y > cardSize.Y, "a controller's card is taller than a standard one");
+
+        Vector2 controllerSwitchTopLeft, controllerSwitchSize;
+        Check(PortGeometry.TryPowerSwitchRect(controller, aspect, out controllerSwitchTopLeft,
+                                              out controllerSwitchSize),
+              "a controller carries a switch as well");
+
+        float controllerInner = controllerCardSize.Y - 2f * VgsConstants.PowerSwitchPadding;
+        CheckClose(controllerSwitchSize.Y, controllerInner * 0.40f,
+                   "the switch splits a taller card's inner box by the same 40%, not by the "
+                   + "standard height");
+        CheckClose(controllerSwitchTopLeft.Y - controllerCardTopLeft.Y,
+                   VgsConstants.PowerSwitchPadding,
+                   "the padding is the same absolute gap on a taller card, not a share of it");
+        CheckClose((controllerSwitchSize.X / aspect) / controllerSwitchSize.Y, inkAspect,
+                   "the switch keeps its proportions on a taller card");
+
+        // ---- the name starts to the right of the column ----
+        float spanLeft, spanRight;
+        Check(PortGeometry.TryCardTextSpan(block, aspect, out spanLeft, out spanRight),
+              "the card's text span is defined with a switch present");
+        Check(spanLeft > switchTopLeft.X + switchSize.X,
+              "the block's name starts to the right of the switch, not under it");
+        CheckClose(spanLeft, switchTopLeft.X + switchSize.X + VgsConstants.CardButtonTextGap * aspect,
+                   "the name clears the column by exactly the row's own text gap");
+
+        // A card without a switch keeps its old span, so the column is paid for only where it is
+        // used. This is the assertion that keeps the feature from silently narrowing every card.
+        Node plain = MakeTarget(23, "LargeBlockConveyor", "OnOff");
+        plain.Position = block.Position;
+        float plainLeft, plainRight;
+        Check(PortGeometry.TryCardTextSpan(plain, aspect, out plainLeft, out plainRight),
+              "a card without a switch still has a text span");
+        CheckClose(plainLeft, plain.Position.X + VgsConstants.NodeWidth * PortGeometry.CardTextPaddingRatio,
+                   "a card without a switch keeps the plain inner padding");
+        Check(spanLeft > plainLeft, "the switch pushes the name to the right, as the requirement asks");
+
+        // ---- the budget: the switch costs the name, and the cost is bounded ----
+        //
+        // The widest row a card can carry is the controller's four buttons, and the switch sits on
+        // the other edge. At the three shapes the editor is used in the name still gets well over
+        // the 30% floor; the aspect at which it would fall to the floor drops from about 0.95
+        // (ADR-0021) to about 0.83, which is recorded in ADR-0035 as the cost of the column.
+        float[] shapes = { 0.5625f, 0.625f, 0.75f };   // 16:9, 16:10, 4:3
+        for (int i = 0; i < shapes.Length; i++)
+        {
+            float a = shapes[i];
+            float l, r;
+            Check(PortGeometry.TryCardTextSpan(controller, a, out l, out r),
+                  "the four-button card with a switch still has a name at aspect " + a);
+            Check(r - l >= VgsConstants.NodeWidth * 0.3f,
+                  "the switch and the four-button row leave the name 30% of the card at aspect " + a);
+        }
+
+        {
+            // The column's width is measured on the *controller's* card, not on a standard one:
+            // the switch is a fraction of the card it sits on, and the controller's card is one
+            // status line taller (ADR-0017). Using NodeHeight here understates the column by 6%
+            // and makes this very assertion too lenient — which is what the first version of it
+            // did, and why the number below is 0.779 rather than 0.83.
+            float rowWidth = 4 * VgsConstants.CardButtonDiameter + 3 * VgsConstants.CardButtonGap;
+            float switchWidth = PortGeometry.PowerSwitchInkWidth(controller);
+            float column = VgsConstants.CardButtonMargin + switchWidth + VgsConstants.CardButtonTextGap;
+            float row = VgsConstants.CardButtonMargin + rowWidth + VgsConstants.CardButtonTextGap;
+
+            // Aspect at which the nameplate falls to the 30% floor: the name fraction is
+            // (NodeWidth - (column + row) * aspect) / NodeWidth, so the floor is reached at
+            // 0.7 * NodeWidth / (column + row).
+            float keepsName = (VgsConstants.NodeWidth - VgsConstants.NodeWidth * 0.3f) / (column + row);
+
+            // 0.779 is the value the geometry produces; it is asserted as a range around it rather
+            // than as the same expression again, so that a change to the column or the row shows
+            // up here instead of cancelling out.
+            Check(keepsName > 0.76f && keepsName < 0.80f,
+                  "a four-button card with a switch keeps its name up to aspect ~0.78 (is " + keepsName + ")");
+
+            // And the switch is what costs it: without the column the same card would hold the
+            // floor in a square window, which is the number ADR-0021 recorded.
+            float withoutColumn = (VgsConstants.NodeWidth - VgsConstants.NodeWidth * 0.3f)
+                                  / (row + VgsConstants.NodeWidth * PortGeometry.CardTextPaddingRatio);
+            Check(Math.Abs(withoutColumn - 1f) < 0.001f,
+                  "without the state column the four-button card keeps its name up to a square "
+                  + "window — the figure ADR-0021 recorded, reproduced from the same constants "
+                  + "(got " + withoutColumn + ")");
+
+            // And the switch cannot be the thing that pushes the row out of the card: the row is
+            // right-anchored and knows nothing about the column.
+            Vector2 leftTopLeft, leftSize;
+            Check(PortGeometry.TryCardButtonRect(controller, CardButtonKind.Jump, 1.6f,
+                                                 out leftTopLeft, out leftSize),
+                  "jump button rectangle on a switch-bearing card");
+            Check(leftTopLeft.X >= controller.Position.X - 1e-5f,
+                  "the row still stays inside a switch-bearing card at aspect 1.6");
+        }
+
+        // ---- clicking ----
+        //
+        // The hit target is the ink plus a small padding, clipped to the card: a control may be
+        // forgiving inside its own shape, never outside it, or a click just above the card would
+        // switch a block the player did not point at.
+        Vector2 centre = switchTopLeft + switchSize * 0.5f;
+        Check(PortGeometry.HitPowerSwitch(block, centre, aspect), "the middle of the switch hits it");
+        Check(PortGeometry.HitPowerSwitch(block, switchTopLeft, aspect),
+              "the switch's own top-left corner hits it");
+        Check(PortGeometry.HitPowerSwitch(block,
+                                          new Vector2(switchTopLeft.X + switchSize.X,
+                                                      switchTopLeft.Y + switchSize.Y), aspect),
+              "the switch's own bottom-right corner hits it");
+
+        // Just past the ink, still inside the card: the padding covers it.
+        Check(PortGeometry.HitPowerSwitch(block,
+                                          new Vector2(centre.X, switchTopLeft.Y + switchSize.Y
+                                                                + VgsConstants.PowerSwitchHitPadding * 0.5f),
+                                          aspect),
+              "the padding below the ink still hits the switch");
+
+        // Well below the switch is the lower slot, which holds no control: a click there must fall
+        // through to the card and select the block.
+        Check(!PortGeometry.HitPowerSwitch(block,
+                                           new Vector2(centre.X, cardTopLeft.Y + cardSize.Y * 0.75f),
+                                           aspect),
+              "the reserved lower slot is not a hit target");
+
+        // Far to the right is the name, not the switch.
+        Check(!PortGeometry.HitPowerSwitch(block,
+                                           new Vector2(cardTopLeft.X + cardSize.X * 0.8f, centre.Y),
+                                           aspect),
+              "the right end of the card is not the switch");
+
+        // Outside the card entirely, even by the padding: refused. This is the vertical clamp, and
+        // it is the only one of the four that can fail today — the padding equals the switch's own
+        // margin from the border, so the padded box can never reach past the card's left edge. The
+        // relationship is asserted right below rather than left to be rediscovered.
+        Check(!PortGeometry.HitPowerSwitch(block,
+                                           new Vector2(centre.X, cardTopLeft.Y
+                                                                - VgsConstants.PowerSwitchHitPadding * 0.5f),
+                                           aspect),
+              "the padding is clipped to the card, so just above it is a miss");
+
+        Check(VgsConstants.PowerSwitchHitPadding >= VgsConstants.CardButtonMargin,
+              "the hit padding is at least the switch's margin from the border — which is why the "
+              + "horizontal clamps can never be exercised, and why they are defensive rather than "
+              + "load-bearing");
+
+        // The horizontal clamps still have to hold the rule for *any* aspect, because the aspect
+        // multiplies the padding and the margin alike: a probe just outside the card's left edge is
+        // a miss at every shape the editor is used in.
+        float[] clampShapes = { 0.5625f, 1f, 1.6f };
+        for (int i = 0; i < clampShapes.Length; i++)
+        {
+            Check(!PortGeometry.HitPowerSwitch(block,
+                                               new Vector2(cardTopLeft.X - 1e-4f, centre.Y),
+                                               clampShapes[i]),
+                  "just left of the card is a miss at aspect " + clampShapes[i]);
+        }
+
+        Check(!PortGeometry.HitPowerSwitch(noSwitch, centre, aspect),
+              "a block without a switch is never a hit");
+
+        // A portrait window makes every horizontal length larger, and the clip is what keeps that
+        // honest.
+        Check(!PortGeometry.HitPowerSwitch(block,
+                                           new Vector2(cardTopLeft.X - 0.02f, centre.Y), 1.6f),
+              "a wide horizontal padding cannot reach left of the card");
+
+        // ---- the state: three readings, and the functional flag wins ----
+        var state = new BlockState();
+        Check(state.Power == BlockPower.Unknown, "a fresh state knows nothing about the switch");
+        Check(!state.CanToggle, "an unread switch is not a control yet");
+
+        state.SetPower(true, true);
+        Check(state.Power == BlockPower.On, "enabled and functional reads as on");
+        Check(state.CanToggle, "a switch that is on can be clicked");
+
+        state.SetPower(false, true);
+        Check(state.Power == BlockPower.Off, "disabled but functional reads as off");
+        Check(state.CanToggle, "a switch that is off can be clicked");
+
+        // The case the game actually produces: a block below its critical integrity still reports
+        // Enabled = true and simply stops. Taking the flag at face value would paint it green.
+        state.SetPower(true, false);
+        Check(state.Power == BlockPower.Unavailable,
+              "a damaged block reads as unavailable even while its flag says enabled");
+        Check(!state.CanToggle, "a damaged block's switch is not a control");
+
+        state.SetPower(false, false);
+        Check(state.Power == BlockPower.Unavailable,
+              "a damaged block that is switched off is still unavailable, not merely off");
+
+        // ---- the write side touches the state and nothing else ----
+        var graph = new GridGraph(9);
+        Node switched = MakeTarget(30, "LargeBlockConveyor", "OnOff");
+        switched.CanBeEnabled = true;
+        graph.AddNode(switched);
+
+        Node bare = MakeTarget(31, "LargeBlockConveyor", "OnOff");
+        graph.AddNode(bare);
+
+        Check(graph.ApplySwitch(30, true, true), "a switch reading for a switchable node is applied");
+        Check(switched.State.Power == BlockPower.On, "the reading lands in the node's state");
+
+        Check(!graph.ApplySwitch(31, true, true),
+              "a switch reading for a node without a switch is refused");
+        Check(bare.State.Power == BlockPower.Unknown,
+              "the refused reading leaves the node without a switch untouched");
+
+        Check(!graph.ApplySwitch(4242, true, true), "a reading for a node that is gone is refused");
+        Check(graph.NodeCount == 2, "a refused reading does not create a node");
+
+        // The switch must not be able to move anything else on the card: it is a state reading, and
+        // the pass that writes it is the cheap one.
+        Port firstAction = switched.Actions.Count > 0 ? switched.Actions[0] : null;
+        int actionCount = switched.Actions.Count;
+        float cardHeight = PortGeometry.CardHeight(switched);
+        int buttonCount = PortGeometry.CardButtonCount(switched);
+
+        Check(graph.ApplySwitch(30, false, true), "the same node can be switched off");
+        Check(switched.State.Power == BlockPower.Off, "the second reading lands as well");
+
+        Check(switched.Actions.Count == actionCount, "a switch reading does not add or drop ports");
+        if (firstAction != null)
+        {
+            Check(ReferenceEquals(switched.Actions[0], firstAction),
+                  "a switch reading does not replace the port objects");
+        }
+        CheckClose(PortGeometry.CardHeight(switched), cardHeight,
+                   "a switch reading does not resize the card");
+        Check(PortGeometry.CardButtonCount(switched) == buttonCount,
+              "a switch reading does not change the button row");
+
+        // The column is a property of the block's type, not of its power: it must be there while
+        // the switch is unread, on, off and unavailable alike. Otherwise the block's name would
+        // jump sideways every time somebody flipped the switch.
+        Vector2 onTopLeft, onSize, offTopLeft, offSize;
+        Check(PortGeometry.TryPowerSwitchRect(switched, aspect, out onTopLeft, out onSize),
+              "the column exists while the switch reads off");
+        switched.State.Power = BlockPower.Unknown;
+        Check(PortGeometry.TryPowerSwitchRect(switched, aspect, out offTopLeft, out offSize),
+              "the column exists before the first reading as well");
+        CheckClose(onSize.X, offSize.X, "the column's width does not depend on the reading");
+        CheckClose(onTopLeft.X, offTopLeft.X, "the column's position does not depend on the reading");
+    }
+
     private static void BlockStateSnapshot()
     {
         // ---- a node always has a state ----

@@ -589,6 +589,12 @@ classDiagram
         +TryCardButton(Node, CardButtonKind, float, out Vector2) bool
         +TryCardButtonRow(Node, float, out Vector2, out Vector2) bool
         +TryCardTextSpan(Node, float, out float, out float) bool
+        +HasPowerSwitch(Node) bool
+        +PowerSwitchInkHeight(Node) float
+        +PowerSwitchInkWidth(Node) float
+        +PowerSwitchInkAspect float
+        +TryPowerSwitchRect(Node, float, out Vector2, out Vector2) bool
+        +HitPowerSwitch(Node, Vector2, float) bool
         +TryDamageRect(Node, out Vector2, out Vector2) bool
         +FitDamageBand(ref Vector2, ref Vector2, Vector2, Vector2, float)
         +CardTextPaddingRatio float
@@ -686,6 +692,7 @@ classDiagram
         +CollectEdgesForPort(Node, string, PortDirection, List~Edge~) void
         +RemoveEdge(Edge) bool
         +ApplyIntegrity(long, float) bool
+        +ApplySwitch(long, bool, bool) bool
         +LayoutPorts()
         +LayoutUnplaced()
     }
@@ -718,6 +725,7 @@ classDiagram
         +bool HasTerminal
         +ToolbarLayout Toolbar
         +bool CanDriveBlocks
+        +bool CanBeEnabled
         +BlockCategory Category
         +ControllerState Controller
         +bool IsEventController
@@ -769,12 +777,23 @@ classDiagram
 
     class BlockState {
         +float Integrity
+        +BlockPower Power
         +float[] Metrics
         +int MetricCount
         +bool IsDamaged
+        +bool CanToggle
         +SetIntegrity(float)
+        +SetPower(bool, bool)
         +GetMetric(int) float
         +SetMetric(int, float)
+    }
+
+    class BlockPower {
+        <<enum>>
+        Unknown
+        On
+        Off
+        Unavailable
     }
 
     class WatchTarget {
@@ -876,6 +895,7 @@ classDiagram
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
     VgsEditorScreen --> TerminalJump : переход в терминал блока (ADR-0021)
     VgsEditorScreen --> EntityResolver : id блока → живой блок (из ввода)
+    VgsEditorScreen --> BlockSwitch : переключатель питания карточки (ADR-0035)
 
     TerminalJump --> IMyGui : ShowTerminalPage / ChangeInteractedEntity
     TerminalJump --> IMyTerminalBlock : проверка, что сущность терминальна
@@ -883,7 +903,8 @@ classDiagram
     TerminalJump --> VgsSession : есть ли локальный игрок
 
     GridGraphBuilder --> GridGraph
-    GridGraphBuilder ..> BlockState : RefreshState пишет через ApplyIntegrity
+    GridGraphBuilder ..> BlockState : RefreshState пишет через ApplyIntegrity и ApplySwitch
+    GridGraphBuilder --> BlockSwitch : читает и пишет флаг Enabled (ADR-0035)
     GridGraphBuilder --> Node
     GridGraphBuilder --> BlockPortCatalog
     GridGraphBuilder --> ToolbarProbe : форма тулбара
@@ -938,8 +959,9 @@ classDiagram
     GridGraph ..> GroupMemberActions : правило действий группы
     GridGraph ..> Node : OffsetGroupMembers двигает участников
     GridGraph ..> WatchTarget : LayoutPorts назначает Slot
-    GridGraph ..> BlockState : ApplyIntegrity пишет снимок
+    GridGraph ..> BlockState : ApplyIntegrity и ApplySwitch пишут снимок
     Node ..> NodeKind : различает блок и группу
+    BlockState ..> BlockPower : переключатель питания блока (ADR-0035)
 
     BlockPortCatalog --> Node
     BlockPortCatalog --> Port
@@ -1039,8 +1061,9 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `GroupMemberActions.cs` | `GroupMemberActions` — действие группы и то, включено ли оно на каждом участнике |
 | `WatchTarget.cs` | `WatchTarget` — одна запись списка отслеживания контроллера |
 | `Edge.cs` | `Edge` — связь между двумя портами |
-| `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам, запись снимка состояния (`ApplyIntegrity`) |
-| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории). Не сохраняется |
+| `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам, запись снимка состояния (`ApplyIntegrity`, `ApplySwitch`) |
+| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех), `Power` — переключатель питания (ADR-0035) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории). Не сохраняется |
+| `BlockPower.cs` | `BlockPower` — что говорит переключатель блока: `Unknown` (ещё не прочитан), `On`, `Off`, `Unavailable` (повреждён ниже критической целостности, включить нельзя). Три читаемых состояния, а не два: сломанный блок репортит `Enabled == true`, и флаг в лоб сделал бы его зелёным |
 | `BlockCategory.cs` | `BlockCategory` (enum, порядок членов = порядок проверок классификатора) и `CategoryDescriptor` (что знает категория: события + ключи метрик) |
 | `ControllerState.cs` | специфика event controller: описание режима, список отслеживания, идентификатор события. `Node.Controller` ссылается сюда только у контроллера — эта ссылка и есть признак |
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
@@ -1134,6 +1157,7 @@ public bool IsEventController { get { return Controller != null; } }
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 | `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
 | `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`»: `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
+| `BlockSwitch.cs` | переключатель питания блока (ADR-0035): `CanBeEnabled` (есть ли у блока `IMyFunctionalBlock`), `TryRead` (`Enabled` + `IsFunctional` за одно чтение) и `TrySetEnabled` (сеттер `Enabled` с проверкой, что флаг действительно принял значение) |
 | `GameLanguage.cs` | **единственное** место, которое знает `MyLanguagesEnum`: читает `MyAPIGateway.Session.Config.Language` и переключает таблицу `VgsText`; всё, что ниже, говорит на `VgsLanguage` (ADR-0033) |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
@@ -1204,7 +1228,7 @@ public bool IsEventController { get { return Controller != null; } }
 | Проход | Что читает | Что делает | Частота |
 |---|---|---|---|
 | **структурный** — `GridGraphBuilder.Refresh` | блоки грида, тулбары, группы, список отслеживания | добавляет и снимает узлы, пересобирает порты, сверяет связи с тулбарами, `LayoutPorts`, рамки групп | `VgsEditorScreen.RefreshIntervalFrames` = 90 кадров |
-| **состояния** — `GridGraphBuilder.RefreshState` | только целостность перечисленных блоков | пишет `Node.State` через `GridGraph.ApplyIntegrity` | `VgsConstants.StatePollIntervalFrames` = 30 кадров |
+| **состояния** — `GridGraphBuilder.RefreshState` | только целостность и флаг питания перечисленных блоков | пишет `Node.State` через `GridGraph.ApplyIntegrity` и `GridGraph.ApplySwitch` | `VgsConstants.StatePollIntervalFrames` = 30 кадров |
 
 Правила, которые делают разделение работающим:
 
@@ -1514,6 +1538,75 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 всю ширину экрана: защита от субпиксельной ширины сравнивала нормализованную величину с `1f`,
 то есть с целым экраном. Правило вынесено в `FitDamageBand` именно поэтому — его можно
 проверить офлайн, а в слое отрисовки оно было непроверяемым.
+
+### Переключатель питания блока ([ADR-0035](adr/0035-block-power-toggle.md))
+
+Второй потребитель снимка состояния и **третья часть карточки**. У карточки три части, и у
+каждой есть имя в словаре (`docs/06-terminology.md` §4, «Три части карточки») — по вопросу, на
+который она отвечает, а не по стороне, на которой стоит:
+
+| Часть | Вопрос | Что в ней | Геометрия |
+|---|---|---|---|
+| **колонка состояния** | что блок делает **сейчас** | тумблер питания в верхней полосе (40% внутренней высоты, с зазором 2 px от граней); нижние 60% зарезервированы и пусты | `PortGeometry.TryPowerSwitchRect`, `HitPowerSwitch` |
+| **шильдик** | что блок **есть** | имя, подтип, описание режима | `PortGeometry.TryCardTextSpan` |
+| **ряд кнопок** | что можно **сделать** со схемой | переход, отслеживание, привязки | `PortGeometry.TryCardButtonRow` |
+
+Три части не смешиваются: у каждой своё правило размера. Поэтому добавление тумблера не сдвинуло
+ряд кнопок ни на пиксель, а шильдик просто начался правее — и поэтому же имя «колонка состояния»
+не привязано к слову «питание»: в нижней полосе появится второй контрол, и он тоже будет
+относиться к блоку, а не к схеме.
+
+| Состояние `BlockState.Power` | Иконка | Цвет |
+|---|---|---|
+| `Unknown` — проход состояния ещё не дошёл | не рисуется | — |
+| `On` | `toggle-on` | `ColPowerOn`, зелёный |
+| `Off` | `toggle-off` | `ColPowerOff`, серый `#777777` |
+| `Unavailable` — повреждён ниже критической целостности | `toggle-off` | `ColPowerUnavailable`, тёмно-красный `#770000` |
+
+**Третье читаемое состояние — не «выключен».** Блок ниже критической целостности продолжает
+репортить `Enabled == true` и просто не работает (`MyComponentStack.get_IsFunctional` =
+`IsBuilt && Integrity > MaxIntegrity * CriticalIntegrityRatio`, прочитано IL); взяв флаг в лоб,
+схема показала бы сломанный блок зелёным. Поэтому `BlockState.SetPower(enabled, functional)`
+даёт функциональному флагу приоритет, а не флагу питания.
+
+**Колонка отступает от карточки со всех четырёх сторон.** По горизонтали — `CardButtonMargin`
+(4 px, как ряд кнопок от противоположного края), по вертикали — `PowerSwitchPadding` (2 px
+сверху и снизу). Внутренняя коробка колонки — `PortGeometry.PowerSwitchContentHeight` — это
+высота карточки минус оба отступа, и полосы 40/60 делят именно её: без этого нижняя полоса
+оказалась бы короче своей доли, а иконка легла бы на верхнюю грань.
+
+**Ширина не константа.** `PortGeometry.PowerSwitchInkWidth` = высота полосы × `InkAspect`
+иконки, а `InkAspect` — новое число, которое сборка иконок пишет в сгенерированную таблицу
+рядом с `TextureScale` (чернила тумблера 576 × 384 → 1,5). Отсюда полоса в 40% внутренней высоты
+даёт 60% её же ширины, и перерисованная иконка меняет колонку вместе с собой, а не расходится с
+литералом. Отступы при этом отнимают у тумблера около 10% размера: 20,9 × 14,0 px вместо
+23,3 × 15,6 px при 1080p.
+
+**Шильдик начинается за колонкой, и это одна функция.** `PortGeometry.TryCardTextSpan` уже
+отвечал «где начинается имя»; теперь он же учитывает колонку. Второй копии этого счёта нет — иначе имя
+оказалось бы на полконтрола левее нарисованного. У карточки без `IMyFunctionalBlock` колонки
+нет и имя стоит на старом месте.
+
+**Статус читается тем же проходом, что и повреждение** (`GridGraphBuilder.RefreshState`, ~2 Гц
+по видимым карточкам): блок резолвится один раз на узел, оба значения читаются из него и
+пишутся раздельно. Поэтому внешнее событие — выключение блоком-таймером, скриптом, другим
+игроком — отражается на схеме без переоткрытия редактора. Запись из редактора идёт в обратном
+порядке: сначала отказ (`Unavailable` → фраза, `Unknown` → тихий выход), затем сеттер `Enabled`
+блока, затем **перечитывание блока** и запись прочитанного в карточку. Переключить кэш вместо
+перечитывания значило бы догадаться о мире, а запрос на удалённом клиенте может быть отвергнут
+сервером (ADR-0018).
+
+**Цена — имя, и она посчитана.** У четырёхкнопочной карточки контроллера с колонкой состояния
+имя держит 50% ширины на 16:9, 45% на 16:10 и 34% на 4:3; аспект, при котором держится пол 30%,
+падает с 1,00 до 0,79. Квадратное окно пол не держит (11%) — это записано как цена колонки, а не
+спрятано. Числа печатает `tools/icon-atlas/card_layout_preview.py` из тех же констант, что и
+рисует [`01-research/images/card-layout.png`](01-research/images/card-layout.png).
+
+**«Шире — значит больше» не подтвердилось.** Тумблер на 9% шире кнопки ряда, но на 28% ниже
+её (23,3 × 15,6 px против 21,5 × 21,5 px), то есть по площади меньше. Это следствие 40% и
+аспекта 1,5, а не ошибка; картинка с измерением —
+[`01-research/images/power-switch-preview.png`](01-research/images/power-switch-preview.png).
+
 
 ### Пауза ([ADR-0029](adr/0029-editor-does-not-pause.md))
 

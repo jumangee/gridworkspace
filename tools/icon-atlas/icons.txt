@@ -19,3 +19,5 @@ LightbulbSolid  lightbulb-solid.svg       lightbulb (Solid): the bind button of 
 LightbulbRegular lightbulb-regular.svg    lightbulb (Regular): the bind button of the "false" group
 ShareFromSquare share-from-square-regular.svg share-from-square (Regular): the jump-to-terminal button of a block card
 Sliders         sliders-solid.svg          sliders (Solid): the modes button of the bottom bar
+ToggleOn        toggle-on-solid.svg        toggle-on (Solid): the card's block-power switch while the block is on
+ToggleOff       toggle-off-solid.svg       toggle-off (Solid): the card's block-power switch while the block is off or too damaged to be switched on

@@ -267,6 +267,16 @@ namespace Vgs.Ui
         private WatchTarget _hoverWatchRemoveTarget;
 
         /// <summary>
+        /// Node whose power switch is under the pointer, or null (ADR-0035).
+        ///
+        /// A field like the other hover targets, and for the same reason: the draw path reads it
+        /// once per visible card per frame and must not hit-test anything. It is one node rather
+        /// than a node plus a kind — a card has at most one switch, so "which switch" is "which
+        /// card".
+        /// </summary>
+        private Node _hoverPowerSwitch;
+
+        /// <summary>
         /// Edges collected for a removal click. Reused so that clicking a remove button does
         /// not allocate: the list is emptied before each collection and after each use.
         /// </summary>
@@ -1300,12 +1310,12 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Drops the pointer's hover targets: the card, its button row, the port remove button and
-        /// the watch remove button.
+        /// Drops the pointer's hover targets: the card, its button row, the power switch, the port
+        /// remove button and the watch remove button.
         ///
-        /// Six fields, because they are one fact — what the pointer is over — and every place
+        /// Seven fields, because they are one fact — what the pointer is over — and every place
         /// that recomputes it or leaves a mode has to forget it first. Keeping them in one method
-        /// is what stops the next mode from clearing four of the six and leaving a highlight on a
+        /// is what stops the next mode from clearing four of the seven and leaving a highlight on a
         /// control it does not offer.
         /// </summary>
         private void ClearHoverTargets()
@@ -1316,6 +1326,7 @@ namespace Vgs.Ui
             _hoverRemovePort = null;
             _hoverWatchRemoveNode = null;
             _hoverWatchRemoveTarget = null;
+            _hoverPowerSwitch = null;
         }
 
         /// <summary>

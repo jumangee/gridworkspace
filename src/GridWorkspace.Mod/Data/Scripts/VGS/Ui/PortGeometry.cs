@@ -58,29 +58,50 @@ namespace Vgs.Ui
     /// arithmetic in both places is how a port ends up drawn in one spot and clickable in
     /// another — a defect that is invisible in the code and obvious in the game.
     ///
-    /// <b>The shape.</b> A card is a label (name + subtype) with its buttons in a horizontal row
-    /// along the right edge, vertically centred. Ports are rectangles as wide as the card,
-    /// hanging underneath it, flush against each other. Each bar carries two round controls of
-    /// the same size, one at each end:
+    /// <b>The shape.</b> A card has three parts, and each has a name — because "left" and "right"
+    /// say nothing about what is there, and stop being true the day a part moves
+    /// (<c>docs/06-terminology.md</c> §4, «Три части карточки»):
+    ///
+    ///  * <b>the state column</b> (колонка состояния) — the narrow strip on the card's leading
+    ///    edge, inset from the card's border on all four sides, split into an upper band (40% of
+    ///    the inset height) and a lower one. It holds controls and readings about <em>the block
+    ///    itself</em>: today the power switch in the upper band, and the lower band is reserved.
+    ///    <see cref="TryPowerSwitchRect"/> owns it.
+    ///  * <b>the nameplate</b> (шильдик) — the middle: the block's name, its subtype and, for a
+    ///    controller, its mode description. It answers "what the block is".
+    ///    <see cref="TryCardTextSpan"/> owns its horizontal span.
+    ///  * <b>the button row</b> (ряд кнопок) — the row of gestures along the trailing edge: jump
+    ///    to the terminal, watch, bind. It answers "what can be done from the card".
+    ///    <see cref="TryCardButtonRow"/> owns it.
+    ///
+    /// The three questions — <i>what it is doing now / what it is / what can be done</i> — are the
+    /// reason the names differ: they are the same distinction <see cref="BlockState"/> draws
+    /// between a block's state and its identity, so a reader who has met one has met all three.
+    /// The three parts do not mix: each has its own sizing rule, which is why adding the switch did
+    /// not move the row by a pixel and only pushed the nameplate to the right (ADR-0035).
+    ///
+    /// Ports are rectangles as wide as the card, hanging underneath it, flush against each other.
+    /// Each bar carries two round controls of the same size, one at each end:
     ///
     /// <code>
-    ///   +-------------------------------+
-    ///   | Event Controller   (>) (#) (T) (F) |  card: name, subtype, and a right-hand button row
-    ///   | EventControllerLarge               |
-    ///   +-------------------------------+
+    ///   +------------------------------------+
+    ///   | (o=) Event Controller  (>) (#) (T) (F) |  card: state column, nameplate, button row
+    ///   |      EventControllerLarge              |
+    ///   +------------------------------------+
     ///   | (x) Fuel Changed          (o) |   output bar: dot at the right (lines leave), "x" at the left
     ///   | (x) Out Of Fuel           (o) |
-    ///   +-------------------------------+
+    ///   +------------------------------------+
     ///   | (o) On Off                (x) |   input bar: dot at the left (lines arrive), "x" at the right
-    ///   +-------------------------------+
+    ///   +------------------------------------+
     /// </code>
     ///
-    /// <b>All card buttons live in that row and nowhere else</b> (ADR-0020). Which buttons a card
+    /// <b>All of the button row is in that row and nowhere else</b> (ADR-0020). Which buttons a card
     /// has follows from what the block is: every block gets the jump button (ADR-0021), a timer
     /// then gets one bind button, a sensor two (one per fire group), an event controller four (the
     /// bell and the two bind buttons after the jump). They share one size and one vertical centre,
     /// so two cards side by side look like two instances of the same control vocabulary instead of
-    /// two different designs.
+    /// two different designs. The state column is deliberately <em>not</em> part of it: it holds a
+    /// control that acts on the block, not a gesture on the schema, so it has its own size rule.
     ///
     /// Outputs sit immediately under the card, inputs under them, because the outgoing side
     /// belongs to the block itself while the incoming side is what other blocks do to it.
@@ -617,12 +638,12 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Rectangle covering the whole button row of a node, in graph units. False when the card
-        /// carries no buttons.
+        /// Rectangle covering the whole <b>button row</b> of a node, in graph units. False when the
+        /// card carries no buttons.
         ///
         /// It exists for the one consumer that has to know where the row *ends* rather than where
-        /// a button is: the card's text is clipped to the span left of it, so a long block name
-        /// can neither run under a button nor spill over the card.
+        /// a button is: the nameplate is clipped to the span left of it, so a long block name can
+        /// neither run under a button nor spill over the card.
         /// </summary>
         public static bool TryCardButtonRow(Node node, float aspectX,
                                             out Vector2 topLeft, out Vector2 size)
@@ -711,8 +732,186 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Horizontal span of a card's text, in graph units: from the card's inner padding to the
-        /// left edge of the button row, less one gap.
+        /// True when this node's card carries a state column with the block-power switch in it
+        /// (ADR-0035).
+        ///
+        /// The switch is a control on a *block*: it acts on the block's own on/off flag, so a
+        /// group — which is not an entity and has no flag — has none, and a block the game does not
+        /// report as functional has none either, because it has nothing to switch. That is a fact
+        /// about the block's type, cached on the node when it was built
+        /// (<see cref="Node.CanBeEnabled"/>), not about its power: the column is reserved for the
+        /// block's whole life, so switching it off cannot move its own name sideways.
+        ///
+        /// This is also the predicate that decides whether the card has a <b>state column</b> at
+        /// all — the part's existence and its one control's existence are the same fact today, and
+        /// keeping one predicate for both is what stops the nameplate from being indented for a
+        /// column that is not drawn.
+        /// </summary>
+        public static bool HasPowerSwitch(Node node)
+        {
+            return node != null && !node.IsGroup && node.CanBeEnabled;
+        }
+
+        /// <summary>
+        /// Inner height of a node's <b>state column</b>, in the layout's vertical units: the card's
+        /// height less the vertical padding above and below (ADR-0035).
+        ///
+        /// This is the box the column's bands are measured against. It exists as a method rather
+        /// than as arithmetic inside <see cref="PowerSwitchInkHeight"/> because two consumers need
+        /// it — the switch's rectangle and the offline gate's assertion that the column leaves the
+        /// same gap at both ends — and because "the column's inner box" is the thing the padding
+        /// actually defines. A second subtraction elsewhere is how one of the two ends ends up
+        /// padded and the other not.
+        ///
+        /// Returns 0 for a null node, and clamps at 0 for a card too short to hold the padding at
+        /// all: a negative height would place the switch above its own card.
+        /// </summary>
+        public static float PowerSwitchContentHeight(Node node)
+        {
+            if (node == null) return 0f;
+
+            float inner = CardHeight(node) - 2f * VgsConstants.PowerSwitchPadding;
+            return inner > 0f ? inner : 0f;
+        }
+
+        /// <summary>
+        /// Height of the power switch's ink, in the layout's vertical units: the upper band of the
+        /// card's state column, which the icon fills exactly.
+        ///
+        /// The band is a fraction of the column's *inner* height (<see cref="PowerSwitchContentHeight"/>),
+        /// not of the card's: the column keeps a two-pixel gap from the card's top and bottom edges,
+        /// and the two bands split what is left between them.
+        /// </summary>
+        public static float PowerSwitchInkHeight(Node node)
+        {
+            if (node == null) return 0f;
+            return PowerSwitchContentHeight(node) * VgsConstants.PowerSwitchBandRatio;
+        }
+
+        /// <summary>
+        /// Width of the power switch's ink, in the layout's vertical units.
+        ///
+        /// <b>It is derived from the icon, not chosen.</b> The switch fills its slot by height, and
+        /// the icon is wider than it is tall — the atlas build measures the ink at 576 × 384, an
+        /// aspect of 1.5 — so the width is 1.5 × the slot. That is exactly 60% of the card's height,
+        /// the same figure the row's buttons use for their diameter, which is what makes a switch
+        /// and a button read as one size on one card (ADR-0035).
+        ///
+        /// The value is in *vertical* units on purpose, like every other width in this type: the
+        /// conversion to layout X units goes through the client aspect at the call site, so the
+        /// switch is as wide on screen as the icon really is. Multiplying by the aspect here would
+        /// make the number depend on the window's shape and lose its meaning.
+        /// </summary>
+        public static float PowerSwitchInkWidth(Node node)
+        {
+            return PowerSwitchInkHeight(node) * PowerSwitchInkAspect;
+        }
+
+        /// <summary>
+        /// Width ÷ height of the switch icon's ink, taken from the generated atlas table.
+        ///
+        /// It is read from the table rather than written down, because it is a property of the
+        /// texture: a redrawn icon would change the number, and a copy here would keep reserving
+        /// the old column and let the ink run into the block's name. The offline gate asserts that
+        /// both switch icons have the same aspect, so the column cannot change width between the
+        /// two states of one block.
+        /// </summary>
+        public static float PowerSwitchInkAspect
+        {
+            get { return VgsIconAtlas.InkAspect(VgsIcon.ToggleOn); }
+        }
+
+        /// <summary>
+        /// Rectangle of the power switch's ink on a node's card, in graph units, or false when the
+        /// node has no switch. It is the upper band of the card's <b>state column</b>.
+        ///
+        /// The rectangle is the *ink*, not the sprite's destination: the texture is square and the
+        /// pill inside it is wider than tall, so a caller that reserved the sprite's box would
+        /// reserve twice the room it needs. Both the draw pass and the hit test start here, which
+        /// is why the ink box is what this returns — the two cannot disagree about how big the
+        /// control is.
+        ///
+        /// <b>The switch is inset from every card edge it faces.</b> Horizontally it keeps
+        /// <see cref="VgsConstants.CardButtonMargin"/> from the leading border — "close to the left
+        /// edge", as the requirement puts it, and the same margin the button row keeps from the
+        /// trailing edge. Vertically it keeps <see cref="VgsConstants.PowerSwitchPadding"/> from the
+        /// card's top edge, and the lower band keeps the same gap from the bottom one: a control
+        /// whose ink lies *on* the frame reads as part of the frame rather than as a control on the
+        /// card.
+        /// </summary>
+        public static bool TryPowerSwitchRect(Node node, float aspectX, out Vector2 topLeft,
+                                              out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (!HasPowerSwitch(node)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            Vector2 cardTopLeft, cardSize;
+            CardRect(node, out cardTopLeft, out cardSize);
+
+            float inkHeight = PowerSwitchInkHeight(node);
+            if (inkHeight <= 0f) return false;
+
+            float inkWidth = inkHeight * PowerSwitchInkAspect * aspectX;
+
+            topLeft = new Vector2(cardTopLeft.X + VgsConstants.CardButtonMargin * aspectX,
+                                  cardTopLeft.Y + VgsConstants.PowerSwitchPadding);
+            size = new Vector2(inkWidth, inkHeight);
+            return true;
+        }
+
+        /// <summary>
+        /// True when a graph-space point is on a node's power switch.
+        ///
+        /// The target is the drawn ink plus <see cref="VgsConstants.PowerSwitchHitPadding"/> on
+        /// every side, and the padded rectangle is <b>clipped to the card</b>: the switch sits on
+        /// the card's top-left corner, so an unclipped tolerance would make a click just above the
+        /// card toggle a block the player did not point at. A control is allowed to be forgiving
+        /// inside its own shape, not outside it.
+        ///
+        /// <b>Only the vertical clamp is load-bearing today, and that is stated rather than
+        /// implied.</b> The padding and the switch's own margin from the border are the same four
+        /// pixels, so the padded box can never reach past the card's left edge: the two constants
+        /// cancel. The horizontal clamps are kept because the rule must not depend on two
+        /// constants staying equal — raising the padding or lowering the margin would otherwise
+        /// silently push the target outside the card — but no test can tell them apart while the
+        /// constants match, and
+        /// <c>offline-check</c> asserts the relationship instead of pretending to test the clamp.
+        /// </summary>
+        public static bool HitPowerSwitch(Node node, Vector2 graphPoint, float aspectX)
+        {
+            Vector2 topLeft, size;
+            if (!TryPowerSwitchRect(node, aspectX, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            Vector2 cardTopLeft, cardSize;
+            CardRect(node, out cardTopLeft, out cardSize);
+
+            float padY = VgsConstants.PowerSwitchHitPadding;
+            float padX = padY * aspectX;
+
+            float left = topLeft.X - padX;
+            float top = topLeft.Y - padY;
+            float right = topLeft.X + size.X + padX;
+            float bottom = topLeft.Y + size.Y + padY;
+
+            if (left < cardTopLeft.X) left = cardTopLeft.X;
+            if (top < cardTopLeft.Y) top = cardTopLeft.Y;
+            if (right > cardTopLeft.X + cardSize.X) right = cardTopLeft.X + cardSize.X;
+            if (bottom > cardTopLeft.Y + cardSize.Y) bottom = cardTopLeft.Y + cardSize.Y;
+
+            if (right <= left || bottom <= top) return false;
+
+            return Contains(new Vector2(left, top), new Vector2(right - left, bottom - top), graphPoint);
+        }
+
+        /// <summary>
+        /// Horizontal span of the card's <b>nameplate</b>, in graph units: from the card's inner
+        /// padding (or from the state column, when there is one) to the leading edge of the button
+        /// row, less one gap.
         ///
         /// It exists so the two consumers cannot disagree about it: the draw pass clips the name,
         /// the subtype and the status line to this span, and the offline gate asserts that the
@@ -723,6 +922,12 @@ namespace Vgs.Ui
         ///
         /// Returns false when the card has no buttons (the whole card is text, so there is no
         /// span to compute) or when the row leaves no room at all.
+        ///
+        /// <b>The left end is the state column when there is one</b> (ADR-0035). The nameplate
+        /// follows the column, because the name is what the player reads first and it must not run
+        /// under a control. That is a second consumer of the same rectangle the switch is drawn in
+        /// — which is why it is asked for here rather than recomputed: a span derived separately is
+        /// how a label ends up half a control away from where it should be.
         /// </summary>
         public static bool TryCardTextSpan(Node node, float aspectX, out float left, out float right)
         {
@@ -735,6 +940,13 @@ namespace Vgs.Ui
             if (aspectX <= 0f) aspectX = 1f;
 
             left = node.Position.X + VgsConstants.NodeWidth * CardTextPaddingRatio;
+
+            Vector2 switchTopLeft, switchSize;
+            if (TryPowerSwitchRect(node, aspectX, out switchTopLeft, out switchSize))
+            {
+                left = switchTopLeft.X + switchSize.X + VgsConstants.CardButtonTextGap * aspectX;
+            }
+
             right = rowTopLeft.X - VgsConstants.CardButtonTextGap * aspectX;
             return right > left;
         }

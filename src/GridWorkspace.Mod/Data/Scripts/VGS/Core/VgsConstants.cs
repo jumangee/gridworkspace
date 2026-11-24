@@ -550,6 +550,88 @@ namespace Vgs.Core
         /// </summary>
         public const float CardButtonGlyphScale = 0.35f;
 
+        // ---- Card parts: the state column (ADR-0035) ----
+        //
+        // A card has three parts, and each has a name because "left" and "right" say nothing about
+        // what is there (docs/06-terminology.md §4, «Три части карточки»):
+        //
+        //   * the STATE COLUMN (колонка состояния) — the strip on the card's leading edge, holding
+        //     controls and readings about the block itself. Everything in this section is its.
+        //   * the NAMEPLATE (шильдик) — the middle: name, subtype, mode description.
+        //   * the BUTTON ROW (ряд кнопок) — the gestures along the trailing edge (ADR-0020).
+        //
+        // The column is split into an upper band — the on/off switch — and a lower one, which is
+        // reserved and empty today. Both bands live inside the column's *inner* box: the card's
+        // height less the vertical padding above and below (PowerSwitchPadding), so neither icon
+        // touches a card edge.
+        //
+        // The column's width is not a constant. It follows from the icon: the switch fills the
+        // band by its *height*, and the icon is wider than it is tall (576 × 384 ink, an aspect of
+        // 1.5, measured by the atlas build), so the width comes out as 1.5 × the band.
+
+        /// <summary>
+        /// Height of the upper band of the card's <b>state column</b> — the power switch — as a
+        /// fraction of the column's <b>inner</b> height.
+        ///
+        /// The switch's ink fills this band exactly, and the rest of the inner box belongs to the
+        /// lower band, which is reserved for a second control and is deliberately empty.
+        ///
+        /// <b>Of the inner height, not of <see cref="NodeHeight"/>.</b> The inner height is the
+        /// card's own height less <see cref="PowerSwitchPadding"/> above and below, so an event
+        /// controller's taller card is split the same way a standard one is — the same rule the
+        /// damage band follows (ADR-0028 §1), and for the same reason: a band measured from the
+        /// standard height would leave the tallest cards with a switch that no longer looks like a
+        /// fraction of the column.
+        /// </summary>
+        public const float PowerSwitchBandRatio = 0.40f;
+
+        /// <summary>
+        /// Vertical padding of the card's <b>state column</b>, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>: the gap between the card's top edge and the switch,
+        /// and between the card's bottom edge and whatever the lower band will hold.
+        ///
+        /// <b>Why it exists.</b> The column already kept a horizontal margin from the leading edge
+        /// (<see cref="CardButtonMarginPixels"/>), but nothing from the top or bottom, so the
+        /// switch's ink sat *on* the card's top border. A control that touches the frame it belongs
+        /// to reads as part of the frame rather than as a control on the card — the same complaint
+        /// the button row would have if its icons were flush with the card's right edge.
+        ///
+        /// <b>Why both ends, when only the switch is drawn today.</b> The lower band is reserved for
+        /// a second control; padding it now means that control lands with the same gap without a
+        /// second decision, and it means the inner box is one rectangle rather than two rules.
+        ///
+        /// <b>Why the bands are a fraction of the inner height and not of the card.</b> "Available
+        /// height" is what the requirement asks to shrink by the two paddings; splitting the card's
+        /// height and then insetting would leave the lower band 4 px shorter than its share, which
+        /// is exactly the kind of half-applied rule that later reads as a bug.
+        ///
+        /// <b>The cost, stated.</b> The switch is 1.5 × its band wide, so shrinking the band by the
+        /// padding shrinks the switch with it: about 10% at 1080p, which makes it slightly narrower
+        /// than a row button's diameter (23.3 px) — the figure ADR-0035 originally matched. That is
+        /// a consequence of the gap, not a regression; raising <see cref="PowerSwitchBandRatio"/>
+        /// is what would buy the size back, at the price of the 40/60 split the requirement names.
+        /// </summary>
+        public const float PowerSwitchPaddingPixels = 2f;
+
+        /// <summary><see cref="PowerSwitchPaddingPixels"/> in the layout's vertical units.</summary>
+        public const float PowerSwitchPadding = PowerSwitchPaddingPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Hit padding of the card's power switch, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// A vertical length like <see cref="CardButtonMarginPixels"/>, multiplied by the client
+        /// aspect where a horizontal gap is needed. The switch is a wide, short target, so it is
+        /// easier to hit than a disc already; the padding exists so that a click on the card's very
+        /// edge — where the switch's ink stops — still counts as a click on the control rather than
+        /// starting a drag.
+        /// </summary>
+        public const float PowerSwitchHitPaddingPixels = 4f;
+
+        /// <summary><see cref="PowerSwitchHitPaddingPixels"/> in the layout's vertical units.</summary>
+        public const float PowerSwitchHitPadding = PowerSwitchHitPaddingPixels / ReferenceHeightPixels;
+
+
         // ---- Connection lines ----
 
         /// <summary>Thickness of a connection line.</summary>
