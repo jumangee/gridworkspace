@@ -48,6 +48,7 @@ if (-not (Test-Path $checks)) { throw "Offline checks not found: $checks" }
 $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
     (Join-Path $sourceRoot 'Model\Node.cs'),
+    (Join-Path $sourceRoot 'Model\BlockState.cs'),
     (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),
     (Join-Path $sourceRoot 'Model\GridViewFormat.cs'),
     (Join-Path $sourceRoot 'Model\BlockSearch.cs'),

@@ -561,6 +561,23 @@ namespace Vgs.Core
         /// </summary>
         public const int ViewSaveIntervalFrames = 120;
 
+        /// <summary>
+        /// How often the <em>state</em> of the visible cards is re-read from the world: damage
+        /// today, charge and fill level later. Half a second at 60 fps.
+        ///
+        /// Deliberately much faster than the structural refresh
+        /// (<c>VgsEditorScreen.RefreshIntervalFrames</c>, ninety frames): a card's damage changes
+        /// while the player watches a ship being shot, and a schema that only noticed every
+        /// second and a half would be a picture of the past. The pass is cheap enough to run at
+        /// this rate because it reads one float per visible block and rebuilds nothing — no
+        /// ports, no groups, no toolbars.
+        ///
+        /// Counted in frames of the screen (<c>VgsEditorScreen._screenFrame</c>), not of the
+        /// session: the editor pauses the game, and a session frame counter stops while paused
+        /// (ADR-0026).
+        /// </summary>
+        public const int StatePollIntervalFrames = 30;
+
         // ---- Bottom bar: modes menu and block search (ADR-0023) ----
         //
         // The bar used to carry a statistics line and a one-line help text. The statistics moved

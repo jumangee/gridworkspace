@@ -116,15 +116,15 @@ namespace Vgs.Game
         {
             if (node == null) return false;
 
+            IMyTerminalBlock block;
+            if (!EntityResolver.TryResolveTerminalBlock(node.EntityId, out block))
+            {
+                VgsLog.Throttled("nodestate.gone", "block gone, position not saved", 300);
+                return false;
+            }
+
             try
             {
-                var block = MyAPIGateway.Entities.GetEntityById(node.EntityId) as IMyTerminalBlock;
-                if (block == null)
-                {
-                    VgsLog.Throttled("nodestate.gone", "block gone, position not saved", 300);
-                    return false;
-                }
-
                 return Write(block, VgsConstants.LayoutStorageKey,
                              NodeStateFormat.FormatPosition(node.Position));
             }

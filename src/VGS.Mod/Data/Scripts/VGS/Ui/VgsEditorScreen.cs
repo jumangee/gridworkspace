@@ -76,6 +76,20 @@ namespace Vgs.Ui
         private static readonly Color ColNodeHover = new Color(110, 190, 255, 255);
         private static readonly Color ColText = new Color(226, 232, 240, 255);
         private static readonly Color ColTextDim = new Color(140, 152, 170, 255);
+
+        /// <summary>
+        /// The damage band on a card: a dark red at half opacity, so it reads as "this block is
+        /// hurt" without competing with the label, the buttons and the port colours that sit on
+        /// top of it (ADR-0028).
+        ///
+        /// Half opacity because the card's own fill is opaque and the band is composited over it:
+        /// (200,60,55) at 128 lands near (119,52,56) over the card's (38,45,58) — clearly red,
+        /// clearly darker than the text, and still a card rather than a warning box. A fully
+        /// opaque red would turn a damaged block into a different kind of object, and the player
+        /// would lose the card's own identity in a fight.
+        /// </summary>
+        private static readonly Color ColDamage = new Color(200, 60, 55, 128);
+
         private static readonly Color ColPortIn = new Color(110, 190, 255, 255);
         private static readonly Color ColPortInFill = new Color(28, 44, 62, 255);
         private static readonly Color ColPortOut = new Color(120, 220, 160, 255);
@@ -462,23 +476,58 @@ namespace Vgs.Ui
         /// <summary>
         /// The screen's own frame counter, advanced once per <see cref="OnUpdate"/>.
         ///
-        /// <b>Not <c>VgsSession.Frame</c>, and this is the whole point.</b> The editor pauses the
-        /// game (<c>PausesGameInSinglePlayer = true</c>), and a paused session reaches
-        /// <c>UpdateComponents</c> only through <c>UpdateComponentsWhilePaused</c>, which calls
-        /// <c>UpdateAfterSimulation</c> on a component only when its <c>UpdateOnPause</c> is set.
-        /// This mod's session component does not set it, so the session frame counter stands still
-        /// for as long as the editor is open — verified by IL, see
-        /// <c>docs/01-research/api-terminal-search.md</c> §2.5. Everything on this screen that
-        /// counts time (caret blink, warning expiry, the refresh throttle, the view-save throttle)
-        /// read that frozen counter, so none of them advanced: the caret never blinked and could
-        /// start invisible, warnings never expired, and blocks built with the editor open never
-        /// appeared.
+        /// <b>Not <c>VgsSession.Frame</c>, and this is the whole point.</b> The screen used to
+        /// pause the game in single player, and a paused session reaches <c>UpdateComponents</c>
+        /// only through <c>UpdateComponentsWhilePaused</c>, which calls <c>UpdateAfterSimulation</c>
+        /// on a component only when its <c>UpdateOnPause</c> is set. This mod's session component
+        /// never set it, so the session frame counter stood still for as long as the editor was
+        /// open — verified by IL, see <c>docs/01-research/api-terminal-search.md</c> §2.5.
+        /// Everything on this screen that counts time (caret blink, warning expiry, the refresh
+        /// throttle, the view-save throttle) read that frozen counter, so none of them advanced:
+        /// the caret never blinked and could start invisible, warnings never expired, and blocks
+        /// built with the editor open never appeared.
         ///
-        /// The screen's own counter is the fix, because <c>OnUpdate</c> is called by the mod screen
-        /// host without any pause gate — a GUI screen keeps updating while the world is paused,
-        /// which is how the pause menu works at all.
+        /// <b>The pause is gone (ADR-0029), and this counter stays.</b> With the world running the
+        /// session frame advances again, so the original symptom would not recur — but the screen
+        /// still must not depend on it: <c>OnUpdate</c> is called by the mod screen host without
+        /// any pause gate, so it is the one clock that is correct whether the world is paused or
+        /// not. Tying the screen's timers to a clock that can freeze is the defect, not the pause.
         /// </summary>
         private int _screenFrame;
+
+        /// <summary>
+        /// The frame of the last state pass (damage and, later, the category readings), so the
+        /// cheap pass runs on <see cref="VgsConstants.StatePollIntervalFrames"/> rather than on
+        /// every frame.
+        ///
+        /// Separate from <c>_lastRefreshFrame</c> on purpose: the structural pass and the state
+        /// pass have different periods and different costs, and one counter for both would tie
+        /// them together — the slow pass would drag the fast one down to its cadence, which is
+        /// exactly the behaviour this split exists to avoid.
+        /// </summary>
+        private int _lastStatePollFrame;
+
+        /// <summary>
+        /// Entity ids of the cards currently on the canvas, reused by every state pass.
+        ///
+        /// Reused rather than rebuilt: the pass runs twice a second for as long as the editor is
+        /// open, and a fresh list per pass would be an allocation on a timer. The list is only
+        /// read by <c>GridGraphBuilder.RefreshState</c>, which does not keep it.
+        /// </summary>
+        private readonly List<long> _statePollIds = new List<long>(64);
+
+        /// <summary>
+        /// True once the state pass has reported what it found, so the log carries exactly one
+        /// line per editor session instead of one per tick.
+        ///
+        /// The line exists because the damage band is the first thing the mod draws from a value
+        /// read out of the game, and "I see no red" has three very different causes that look
+        /// identical on screen: the block is not damaged, the state pass is not reaching the
+        /// card, or the draw path is not drawing. One line separates them: it names how many of
+        /// the visible cards came back damaged, so a report can be answered from the log rather
+        /// than by guessing.
+        /// </summary>
+        private bool _statePollReported;
 
         /// <summary>
         /// Line heights of the bottom bar's text scales, measured once each.
@@ -515,13 +564,30 @@ namespace Vgs.Ui
             _zoom = zoom;
             _showHidden = showHidden;
 
-            // The editor is a full-screen modal: Esc closes it, the pointer is visible, and in
-            // single player the world pauses behind it.
+            // The editor is a full-screen modal: Esc closes it, the pointer is visible.
             CloseOnEscape = true;
             CloseButtonEnabled = false;   // we draw and hit-test our own button
             DrawMouseCursor = true;
             EnabledBackgroundFade = true;
-            PausesGameInSinglePlayer = true;
+
+            // <b>The world keeps running while the editor is open.</b> This used to be `true`,
+            // which paused the game in single player — and a paused world does not change, so
+            // nothing the editor reads could ever move: damage could not be watched growing, a
+            // block destroyed by combat never disappeared, a ship never drifted. The editor's
+            // whole purpose in the live-schema stage is to show what the blocks are doing *now*,
+            // and a pause makes that question unanswerable.
+            //
+            // It also made the editor behave differently in single player than in multiplayer,
+            // where `MyModScreen.Open` never pauses (`PausePush` is gated on
+            // `!Sync.MultiplayerActive`): the same screen, two different worlds. Unpausing makes
+            // the single-player case match the one that already worked.
+            //
+            // The cost, accepted deliberately: the ship keeps flying while the editor is open, so
+            // a construct under thrust or under fire keeps changing behind the schema. That is
+            // the same exposure the player has while looking at the vanilla terminal, and the
+            // editor survives it — the structural pass already drops nodes for blocks that are
+            // gone and re-reads everything else. See ADR-0029.
+            PausesGameInSinglePlayer = false;
         }
 
         /// <summary>
@@ -978,6 +1044,15 @@ namespace Vgs.Ui
                     RefreshFromGrid();
                 }
 
+                // The state pass, on its own much faster timer. It runs after the structural
+                // pass on purpose: a structural refresh may have just created nodes, and their
+                // state would otherwise stay at its default for another half second.
+                if (_screenFrame - _lastStatePollFrame >= VgsConstants.StatePollIntervalFrames)
+                {
+                    _lastStatePollFrame = _screenFrame;
+                    RefreshNodeState();
+                }
+
                 // The camera and the zoom change on pointer events, not on a timer, so the save
                 // cannot live in the input pass: panning would write on every frame. It runs here
                 // instead, throttled, and writes only when the value really changed (ADR-0022).
@@ -1014,11 +1089,128 @@ namespace Vgs.Ui
                 PortGeometry.LayoutGroupFrames(_graph);
 
                 ValidateInteractionState();
+
+                // Nodes the structural pass just created start at the default state, so their
+                // damage is read now rather than on the next tick of the state timer. A card
+                // that showed "undamaged" for half a second after appearing would be wrong for
+                // exactly the blocks the player just placed.
+                RefreshNodeState();
+                _lastStatePollFrame = _screenFrame;
             }
             catch (Exception e)
             {
                 VgsLog.Error("editor refresh failed", e);
             }
+        }
+
+        /// <summary>
+        /// Reads the state of the cards on screen — damage today, the category's own readings
+        /// later — and writes it into the graph.
+        ///
+        /// <b>The cheap half of the two-pass refresh.</b> It asks
+        /// <see cref="GridGraphBuilder.RefreshState"/> for one value per <em>visible</em> block
+        /// and rebuilds nothing: no ports, no groups, no toolbars, no edge reconciliation. The
+        /// structural pass (<see cref="RefreshFromGrid"/>) does all of that, on a much slower
+        /// timer, because none of it changes between two frames of combat.
+        ///
+        /// <b>Only what is on screen.</b> The ids come from the same culling arithmetic the draw
+        /// path uses (<see cref="IsCardOnCanvas"/>), so the pass costs what the player can see
+        /// rather than what the ship contains. On a large grid with the camera zoomed in that is
+        /// a handful of blocks instead of hundreds.
+        ///
+        /// Guarded like every other entry from the game: this runs from <see cref="OnUpdate"/>,
+        /// and an exception escaping it would reach the game loop.
+        /// </summary>
+        private void RefreshNodeState()
+        {
+            if (_grid == null || _graph == null) return;
+
+            try
+            {
+                CollectVisibleNodeIds(_statePollIds);
+                if (_statePollIds.Count == 0) return;
+
+                int written = GridGraphBuilder.RefreshState(_graph, _statePollIds);
+                ReportStatePassOnce(written);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("screenstate", "could not refresh block state", e, 300);
+            }
+        }
+
+        /// <summary>
+        /// Writes one line about the first state pass of the session: how many visible cards were
+        /// read, and how many of them came back damaged.
+        ///
+        /// Once per session, not per pass: the pass runs twice a second, and a line each time
+        /// would be the noise the log is supposed to be free of. It is the answer to "the band
+        /// does not appear", which has three indistinguishable causes — an undamaged block, a
+        /// pass that never reached the card, and a draw path that never ran. The counts separate
+        /// them: zero reads means the pass is not running, reads with zero damaged means the
+        /// values are coming back clean, reads with damage but no band means the drawing.
+        ///
+        /// <b>Cheap and allocation-free in the steady state.</b> It returns immediately on every
+        /// frame after the first, and only the one line it does write allocates a string.
+        /// </summary>
+        private void ReportStatePassOnce(int written)
+        {
+            if (_statePollReported) return;
+            _statePollReported = true;
+
+            int damaged = 0;
+            for (int i = 0; i < _statePollIds.Count; i++)
+            {
+                Node node = _graph.GetNode(_statePollIds[i]);
+                if (node != null && !node.IsGroup && node.State.IsDamaged) damaged++;
+            }
+
+            VgsLog.Info("state pass: " + written + " of " + _statePollIds.Count
+                        + " visible card(s) read, " + damaged + " damaged");
+        }
+
+        /// <summary>
+        /// Fills <paramref name="into"/> with the entity ids of the cards the draw path would
+        /// draw right now, in draw order and under the same cap.
+        ///
+        /// Same predicate, same cap, same order as <see cref="DrawNodes"/> — deliberately, and
+        /// not by accident: "visible" has to mean one thing, or the state pass would poll cards
+        /// that are not drawn and miss cards that are. The list is cleared and reused, so this
+        /// allocates nothing.
+        /// </summary>
+        private void CollectVisibleNodeIds(List<long> into)
+        {
+            into.Clear();
+            if (_graph == null) return;
+
+            Vector2 canvasTopLeft, canvasSize;
+            GetCanvasRect(out canvasTopLeft, out canvasSize);
+
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = 0; i < nodes.Count && into.Count < VgsConstants.MaxRenderedBlocks; i++)
+            {
+                if (!IsCardOnCanvas(nodes[i], canvasTopLeft, canvasSize)) continue;
+                into.Add(nodes[i].EntityId);
+            }
+        }
+
+        /// <summary>
+        /// True when the node's card overlaps the canvas, i.e. when it is worth drawing and worth
+        /// polling for state.
+        ///
+        /// The rectangle is the card plus its port stack (<see cref="PortGeometry.TotalHeight"/>),
+        /// because the bars hang below the card and a card scrolled just off the top edge still
+        /// has its ports on screen. Not named <c>Draw…</c> on purpose: it is asked from the update
+        /// pass as well, and the review gate's allocation rule is about methods that draw.
+        /// </summary>
+        private bool IsCardOnCanvas(Node node, Vector2 canvasTopLeft, Vector2 canvasSize)
+        {
+            Vector2 screen = GraphToScreen(node.Position, canvasTopLeft);
+            Vector2 card = new Vector2(VgsConstants.NodeWidth, PortGeometry.TotalHeight(node)) * _zoom;
+
+            if (screen.X > canvasSize.X || screen.Y > canvasSize.Y) return false;
+            if (screen.X + card.X < 0f || screen.Y + card.Y < 0f) return false;
+            return true;
         }
 
         /// <summary>
@@ -1081,9 +1273,26 @@ namespace Vgs.Ui
         /// rebuild replaces the nodes, and the modes popup covers the canvas. In both cases the
         /// hover fields would otherwise freeze on whatever was under the pointer at that moment,
         /// and the card would keep its hover border — drawn every frame, because
-        /// <see cref="DrawNode"/> reads the field — for as long as the state lasted.
+        /// <see cref="DrawNode"/> reads the field — for as long as the state lasted. The two
+        /// search-field highlights go with them: they are the same fact on the bottom bar.
         /// </summary>
         private void ClearHoverHighlights()
+        {
+            ClearHoverTargets();
+            _searchHot = false;
+            _searchClearHot = false;
+        }
+
+        /// <summary>
+        /// Drops the pointer's hover targets: the card, its button row, the port remove button and
+        /// the watch remove button.
+        ///
+        /// Six fields, because they are one fact — what the pointer is over — and every place
+        /// that recomputes it or leaves a mode has to forget it first. Keeping them in one method
+        /// is what stops the next mode from clearing four of the six and leaving a highlight on a
+        /// control it does not offer.
+        /// </summary>
+        private void ClearHoverTargets()
         {
             _hoverNode = null;
             _hoverButton = null;
@@ -1091,8 +1300,22 @@ namespace Vgs.Ui
             _hoverRemovePort = null;
             _hoverWatchRemoveNode = null;
             _hoverWatchRemoveTarget = null;
-            _searchHot = false;
-            _searchClearHot = false;
+        }
+
+        /// <summary>
+        /// Drops the whole pointer overlay: the hover targets and the "the middle button is
+        /// holding a pan" flag.
+        ///
+        /// Called when a gesture ends, so the next frame starts from nothing rather than from a
+        /// highlight or a drag that is no longer happening. A gesture's own state — the bind
+        /// source and port, the watch source — is deliberately not touched: leaving the mode is
+        /// the caller's business, and a shared reset that quietly dropped it would make
+        /// <see cref="CancelBind"/> and <see cref="CancelWatch"/> mean the same thing.
+        /// </summary>
+        private void ResetPointerOverlay()
+        {
+            ClearHoverTargets();
+            _panning = false;
         }
 
         // ------------------------------------------------------------------ view state (ADR-0022)
@@ -1834,6 +2057,53 @@ namespace Vgs.Ui
             return true;
         }
 
+        /// <summary>
+        /// Pans the canvas while <paramref name="buttonDown"/> is held over it. Returns true when
+        /// this frame's pointer input belongs to the pan, so the caller must not also hover,
+        /// select or click.
+        ///
+        /// One implementation for the three places that pan: the idle canvas, the bind gesture
+        /// and the watch gesture. The gestures pan with the middle button only — their right
+        /// button already means "cancel" — while the idle canvas pans with either, which is why
+        /// the button state is a parameter rather than read here.
+        ///
+        /// The anchor survives a pointer that leaves the canvas while the button is held: the pan
+        /// resumes from where the drag left it instead of jumping. Dropping it on every frame
+        /// outside the canvas would make a drag that grazes the header twitch.
+        /// </summary>
+        private bool PanWhileHeld(bool buttonDown, Vector2 mouse, Vector2 canvasTopLeft,
+                                  Vector2 canvasSize)
+        {
+            if (!buttonDown)
+            {
+                _panning = false;
+                return false;
+            }
+
+            if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse)) return false;
+
+            if (!_panning)
+            {
+                _panning = true;
+                _panAnchor = mouse;
+                return true;
+            }
+
+            _camera -= (mouse - _panAnchor) / _zoom;
+            _panAnchor = mouse;
+            return true;
+        }
+
+        /// <summary>
+        /// Middle-button pan, shared by the bind and the watch gestures: both keep the middle
+        /// button free for panning while the pointer is busy picking a target.
+        /// </summary>
+        private bool PanWithMiddleButton(Vector2 mouse, Vector2 canvasTopLeft, Vector2 canvasSize)
+        {
+            return PanWhileHeld(MyAPIGateway.Input.IsMiddleMousePressed(),
+                                mouse, canvasTopLeft, canvasSize);
+        }
+
         private void HandleCanvasInput(Vector2 mouse)
         {
             Vector2 canvasTopLeft, canvasSize;
@@ -1869,23 +2139,7 @@ namespace Vgs.Ui
             bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
 
             // ---- pan (right or middle button) ----
-            if (insideCanvas && (rightDown || middleDown))
-            {
-                if (!_panning)
-                {
-                    _panning = true;
-                    _panAnchor = mouse;
-                }
-                else
-                {
-                    Vector2 delta = (mouse - _panAnchor) / _zoom;
-                    _camera -= delta;
-                    _panAnchor = mouse;
-                }
-                return;
-            }
-
-            if (_panning && !rightDown && !middleDown) _panning = false;
+            if (PanWhileHeld(rightDown || middleDown, mouse, canvasTopLeft, canvasSize)) return;
 
             // ---- hover: the remove button, the card's button row and the card ----
             UpdateHover(mouse, canvasTopLeft, canvasSize);
@@ -2101,39 +2355,19 @@ namespace Vgs.Ui
 
             // Middle-button pan keeps working so the user can reach a target off-screen
             // without losing the bind.
-            bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
-            if (insideCanvas && middleDown)
-            {
-                if (!_panning)
-                {
-                    _panning = true;
-                    _panAnchor = mouse;
-                }
-                else
-                {
-                    _camera -= (mouse - _panAnchor) / _zoom;
-                    _panAnchor = mouse;
-                }
-                return;
-            }
-            if (_panning && !middleDown) _panning = false;
+            if (PanWithMiddleButton(mouse, canvasTopLeft, canvasSize)) return;
 
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
 
             // A pointer over the header or the bottom bar is not over a card, even if a card
             // happens to be scrolled underneath: the bars are chrome, and the click there is
             // a click on chrome.
+            //
+            // The port controls are idle-mode targets only: while binding, every click picks the
+            // target, and a bar (with its button) counts as its block. Dropping those highlights
+            // is what stops a disc from looking clickable in a mode where it is not.
+            ClearHoverTargets();
             _hoverNode = insideCanvas ? HitTest(graphPos) : null;
-            _hoverButton = null;
-
-            // The remove button is a click target of the idle mode only: while binding, every
-            // click picks the target, and a bar (with its button) counts as its block. Clearing
-            // the highlight here is what stops a disc from looking clickable in a mode where it
-            // is not.
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
-            _hoverWatchRemoveNode = null;
-            _hoverWatchRemoveTarget = null;
 
             if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
 
@@ -2178,34 +2412,14 @@ namespace Vgs.Ui
             GetCanvasRect(out canvasTopLeft, out canvasSize);
             bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
-            bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
-            if (insideCanvas && middleDown)
-            {
-                if (!_panning)
-                {
-                    _panning = true;
-                    _panAnchor = mouse;
-                }
-                else
-                {
-                    _camera -= (mouse - _panAnchor) / _zoom;
-                    _panAnchor = mouse;
-                }
-                return;
-            }
-            if (_panning && !middleDown) _panning = false;
+            if (PanWithMiddleButton(mouse, canvasTopLeft, canvasSize)) return;
 
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
 
-            _hoverNode = insideCanvas ? HitTest(graphPos) : null;
-            _hoverButton = null;
-
             // The port controls are idle-mode targets only: while a watch is being attached,
             // every click picks a block, and a bar counts as its block.
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
-            _hoverWatchRemoveNode = null;
-            _hoverWatchRemoveTarget = null;
+            ClearHoverTargets();
+            _hoverNode = insideCanvas ? HitTest(graphPos) : null;
 
             if (!MyAPIGateway.Input.IsNewLeftMousePressed()) return;
 
@@ -2235,7 +2449,6 @@ namespace Vgs.Ui
             _dragging = false;
             _draggedNode = null;
             _draggedGroup = null;
-            _panning = false;
             CancelBind();
 
             VgsLog.Debug("watch mode started on controller " + controller.EntityId);
@@ -2250,13 +2463,7 @@ namespace Vgs.Ui
             if (_watchSource != null) VgsLog.Debug("watch mode cancelled");
 
             _watchSource = null;
-            _hoverButton = null;
-            _hoverNode = null;
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
-            _hoverWatchRemoveNode = null;
-            _hoverWatchRemoveTarget = null;
-            _panning = false;
+            ResetPointerOverlay();
         }
 
         /// <summary>
@@ -2583,11 +2790,7 @@ namespace Vgs.Ui
             if (_bindSource != null) VgsLog.Debug("bind cancelled");
             _bindSource = null;
             _bindPort = null;
-            _hoverNode = null;
-            _hoverButton = null;
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
-            _panning = false;
+            ResetPointerOverlay();
             CloseActionMenu();
         }
 
@@ -2602,10 +2805,8 @@ namespace Vgs.Ui
 
             // The target card keeps the hover outline while its menu is open, so it is obvious
             // which of several similar blocks the list belongs to.
+            ClearHoverTargets();
             _hoverNode = target;
-            _hoverButton = null;
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
 
             _menuRows.Clear();
             _menuLabels.Clear();
@@ -2992,18 +3193,15 @@ namespace Vgs.Ui
         /// <summary>
         /// Resolves a node back to its live block. The entity id can be stale — the block may
         /// have been destroyed since the last refresh — so the result is checked, never assumed.
+        ///
+        /// Shorthand for the call sites below; the lookup itself is
+        /// <see cref="EntityResolver.TryResolveTerminalBlock"/>, the one implementation of
+        /// "entity id → block" in the mod (it carries the try/catch and the log tag).
         /// </summary>
         private static IMyTerminalBlock ResolveBlock(long entityId)
         {
-            try
-            {
-                return MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
-            }
-            catch (Exception e)
-            {
-                VgsLog.Throttled("resolve-block", "could not resolve block", e, 120);
-                return null;
-            }
+            IMyTerminalBlock block;
+            return EntityResolver.TryResolveTerminalBlock(entityId, out block) ? block : null;
         }
 
         // ------------------------------------------------------------------ hit testing
@@ -3125,17 +3323,9 @@ namespace Vgs.Ui
         /// </summary>
         private void UpdateHover(Vector2 mouse, Vector2 canvasTopLeft, Vector2 canvasSize)
         {
-            _hoverRemoveNode = null;
-            _hoverRemovePort = null;
-            _hoverWatchRemoveNode = null;
-            _hoverWatchRemoveTarget = null;
+            ClearHoverTargets();
 
-            if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse))
-            {
-                _hoverNode = null;
-                _hoverButton = null;
-                return;
-            }
+            if (!PortGeometry.Contains(canvasTopLeft, canvasSize, mouse)) return;
 
             Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
 
@@ -3148,8 +3338,6 @@ namespace Vgs.Ui
             {
                 _hoverRemoveNode = removeNode;
                 _hoverRemovePort = removePort;
-                _hoverNode = null;
-                _hoverButton = null;
                 return;
             }
 
@@ -3160,8 +3348,6 @@ namespace Vgs.Ui
             {
                 _hoverWatchRemoveNode = watchRemoveNode;
                 _hoverWatchRemoveTarget = watchRemove;
-                _hoverNode = null;
-                _hoverButton = null;
                 return;
             }
 
@@ -3493,17 +3679,17 @@ namespace Vgs.Ui
             // "shown N of M" notice for the blocks this drops: the header already carries the
             // totals, and a line under the canvas that appears and disappears as the player zooms
             // was noise on top of a picture that is self-explanatory (ADR-0023).
+            //
+            // The same predicate answers "which cards are visible" for the state pass
+            // (CollectVisibleNodeIds): one definition of visible, so the values the player sees
+            // are refreshed for exactly the cards the player sees.
             int drawn = 0;
             for (int i = 0; i < nodes.Count && drawn < VgsConstants.MaxRenderedBlocks; i++)
             {
                 Node n = nodes[i];
-                Vector2 screen = GraphToScreen(n.Position, topLeft);
-                Vector2 nodeSize = new Vector2(VgsConstants.NodeWidth, PortGeometry.TotalHeight(n)) * _zoom;
+                if (!IsCardOnCanvas(n, topLeft, size)) continue;
 
-                if (screen.X > size.X || screen.Y > size.Y) continue;
-                if (screen.X + nodeSize.X < 0f || screen.Y + nodeSize.Y < 0f) continue;
-
-                DrawNode(n, screen, topLeft, size);
+                DrawNode(n, GraphToScreen(n.Position, topLeft), topLeft, size);
                 drawn++;
             }
         }
@@ -3534,6 +3720,42 @@ namespace Vgs.Ui
             // below it and must *not* be covered by this fill, or the stack would read as one
             // tall block instead of as ports attached to the card's bottom edge.
             VgsScreenDraw.RectClipped(screenPos, cardSize, clipTopLeft, clipSize, Fade(ColNode, alpha));
+
+            // Damage, drawn over the card's fill and under everything the player reads on it:
+            // the border, the labels, the buttons and the port bars all come later. Half-opacity
+            // red from the right edge inward, as wide as the damage is — see
+            // PortGeometry.TryDamageRect for why it is the damage and not the health (ADR-0028).
+            //
+            // <b>The width is the damage, with no threshold.</b> 1% of damage paints 1% of the
+            // card and 7% paints 7%: there is no "visible from N%" step, and the only value that
+            // draws nothing is a block at full integrity. The single adjustment is a floor of one
+            // screen pixel, and it is expressed in the same units it is compared against — see
+            // PortGeometry.FitDamageBand, which also clamps the band to the card. The first
+            // version of this code compared a *normalized* width against 1f, i.e. against the
+            // whole screen, so the comparison was always true and every damaged card painted a
+            // band a full screen wide. Found in game.
+            Vector2 damageTopLeft, damageSize;
+            if (PortGeometry.TryDamageRect(node, out damageTopLeft, out damageSize))
+            {
+                // One screen pixel in graph units. Normalized X is graph X times the zoom, and a
+                // pixel is 1/clientWidth of the normalized width, so the conversion goes through
+                // both. Zero when the screen has not been measured yet, which leaves the band
+                // exactly as the geometry computed it.
+                float onePixel = 0f;
+                if (VgsScreenDraw.ClientWidth > 0f && _zoom > 0f)
+                {
+                    onePixel = 1f / (VgsScreenDraw.ClientWidth * _zoom);
+                }
+
+                PortGeometry.FitDamageBand(
+                    ref damageTopLeft, ref damageSize, node.Position,
+                    new Vector2(VgsConstants.NodeWidth, PortGeometry.CardHeight(node)),
+                    onePixel);
+
+                VgsScreenDraw.RectClipped(
+                    screenPos + (damageTopLeft - node.Position) * _zoom,
+                    damageSize * _zoom, clipTopLeft, clipSize, Fade(ColDamage, alpha));
+            }
 
             Color border = selected ? ColNodeSelected : (hovered ? ColNodeHover : ColNodeBorder);
             border = Fade(border, alpha);

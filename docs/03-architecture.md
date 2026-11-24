@@ -34,7 +34,9 @@
 | [0023](adr/0023-workbench-bar-modes-and-search.md) | Компоновка окна: «Workbench» и статистика в шапке; нижняя панель — кнопка режимов с подменю «Show/hide invisible» и строка поиска блоков по правилу терминала; надпись «Показано X из Y» и постоянная подсказка убраны |
 | [0024](adr/0024-text-field-caret-selection-clipboard.md) | Своё текстовое поле: каретка, выделение (якорь + каретка), Ctrl+A/C/X/V; движковое поле запрещено вайтлистом; рамка чинится устранением совпадения краёв (`Panel`) |
 | [0025](adr/0025-clipboard-read-via-platform.md) | ~~Буфер обмена читается через `VRage.MyVRage.Platform.System.Clipboard`~~ — **вывод неверен**, игра отвергает эти типы как `is prohibited`; мод не загрузился. Заменён ADR-0027 | superseded by 0027 |
-| [0026](adr/0026-clocks-in-the-mod.md) | Часы: `VgsSession.Frame` замирает на паузе, поэтому экран считает свои кадры в `OnUpdate`, статические помощники — попытки; `VgsLog.Throttled` на попытках; `UpdateOnPause` отклонён |
+| [0026](adr/0026-clocks-in-the-mod.md) | Часы: `VgsSession.Frame` замирает на паузе, поэтому экран считает свои кадры в `OnUpdate`, статические помощники — попытки; `VgsLog.Throttled` на попытках; `UpdateOnPause` отклонён. **Пауза отменена ADR-0029**, правило осталось |
+| [0028](adr/0028-block-damage-band.md) | Повреждение блока — красная полоса справа на карточке, ширина = 1 − целостность, прозрачность 50%, под рамкой/подписями/портами/кнопками; порога по величине нет, у группы полосы нет |
+| [0029](adr/0029-editor-does-not-pause.md) | Редактор **не ставит игру на паузу**: пауза останавливала симуляцию, поэтому повреждение нельзя было увидеть растущим; часы экрана — свои кадры, `UpdateOnPause` не включается |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -68,13 +70,14 @@
         │                  GridViewStore         состояние вида грида (камера, зум, режим)
         │                  TextClipboard         буфер обмена (системный + свой запасной)
         │                  TerminalJump          открывает терминал игры на блоке
+        │                  EntityResolver        id сущности → живой блок (один поиск)
         │                  EventControllerProbe  список отслеживания контроллера
         │                  EventControllerKeeper проигрывает список после загрузки
         │                  (единственное место, где трогаются живые сущности)
         │
-        ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockPortCatalog,
-        │                  ToolbarPlanner, NodeStateFormat, GridViewFormat, BlockSearch,
-        │                  TextEditor
+        ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockState,
+        │                  BlockPortCatalog, ToolbarPlanner, NodeStateFormat, GridViewFormat,
+        │                  BlockSearch, TextEditor
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
         └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
@@ -177,6 +180,8 @@ classDiagram
         <<static>>
         +Build(IMyCubeGrid, bool includeHidden) GridGraph
         +Refresh(GridGraph, IMyCubeGrid, bool includeHidden)
+        +RefreshState(GridGraph, IList~long~) int
+        -TryReadIntegrity(long, out float) bool
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
         -TryReadActions(IMyTerminalBlock, List~string~) bool
@@ -285,6 +290,11 @@ classDiagram
         +Install()
         +Uninstall()
         +Update()
+    }
+
+    class EntityResolver {
+        <<static>>
+        +TryResolveTerminalBlock(long, out IMyTerminalBlock) bool
     }
 
     class WatchResult {
@@ -425,6 +435,14 @@ classDiagram
         #OnCancelling() bool
         #OnClosed(bool isUnloading)
         -HandleCanvasInput(Vector2) void
+        -PanWhileHeld(bool, Vector2, Vector2, Vector2) bool
+        -PanWithMiddleButton(Vector2, Vector2, Vector2) bool
+        -ClearHoverTargets() void
+        -ResetPointerOverlay() void
+        -ClearHoverHighlights() void
+        -RefreshNodeState() void
+        -CollectVisibleNodeIds(List~long~) void
+        -IsCardOnCanvas(Node, Vector2, Vector2) bool
         -SaveGroupPositions(Node) void
         -HandleBindInput(Vector2) void
         -HandleWatchInput(Vector2) void
@@ -534,6 +552,8 @@ classDiagram
         +TryCardButton(Node, CardButtonKind, float, out Vector2) bool
         +TryCardButtonRow(Node, float, out Vector2, out Vector2) bool
         +TryCardTextSpan(Node, float, out float, out float) bool
+        +TryDamageRect(Node, out Vector2, out Vector2) bool
+        +FitDamageBand(ref Vector2, ref Vector2, Vector2, Vector2, float)
         +CardTextPaddingRatio float
         +HitCardButton(Node, Vector2, float, out CardButtonKind) bool
         +TryWatchButton(Node, float, out Vector2) bool
@@ -628,6 +648,7 @@ classDiagram
         +CollectEdgesForPort(long, string, PortDirection, List~Edge~) void
         +CollectEdgesForPort(Node, string, PortDirection, List~Edge~) void
         +RemoveEdge(Edge) bool
+        +ApplyIntegrity(long, float) bool
         +LayoutPorts()
         +LayoutUnplaced()
     }
@@ -660,6 +681,7 @@ classDiagram
         +ToolbarLayout Toolbar
         +bool CanDriveBlocks
         +bool IsEventController
+        +BlockState State
         +string StatusText
         +long WatchEventId
         +List~WatchTarget~ Watched
@@ -683,6 +705,16 @@ classDiagram
         +PortGroup Group
         +float Anchor
         +int Slot
+    }
+
+    class BlockState {
+        +float Integrity
+        +float[] Metrics
+        +int MetricCount
+        +bool IsDamaged
+        +SetIntegrity(float)
+        +GetMetric(int) float
+        +SetMetric(int, float)
     }
 
     class WatchTarget {
@@ -768,7 +800,7 @@ classDiagram
     VgsTerminalControls --> VgsSession
 
     VgsEditorScreen --> GridGraph
-    VgsEditorScreen --> GridGraphBuilder : Build и Refresh
+    VgsEditorScreen --> GridGraphBuilder : Build, Refresh (структура) и RefreshState (2 Гц)
     VgsEditorScreen --> ToolbarWriter : запись и очистка связи
     VgsEditorScreen --> NodeStateStore : сохранение позиции
     VgsEditorScreen --> GridViewStore : камера, масштаб, режим
@@ -780,6 +812,7 @@ classDiagram
     VgsEditorScreen --> IMyInput : TextInput и клавиши поиска (ADR-0023)
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
     VgsEditorScreen --> TerminalJump : переход в терминал блока (ADR-0021)
+    VgsEditorScreen --> EntityResolver : id блока → живой блок (из ввода)
 
     TerminalJump --> IMyGui : ShowTerminalPage / ChangeInteractedEntity
     TerminalJump --> IMyTerminalBlock : проверка, что сущность терминальна
@@ -787,6 +820,7 @@ classDiagram
     TerminalJump --> VgsSession : есть ли локальный игрок
 
     GridGraphBuilder --> GridGraph
+    GridGraphBuilder ..> BlockState : RefreshState пишет через ApplyIntegrity
     GridGraphBuilder --> Node
     GridGraphBuilder --> BlockPortCatalog
     GridGraphBuilder --> ToolbarProbe : форма тулбара
@@ -799,6 +833,11 @@ classDiagram
     EventControllerKeeper --> NodeStateStore : сохранённый список
     EventControllerProbe --> NodeStateStore : список отслеживания
     EventControllerProbe --> IMyEventComponentWithGui : AddBlocks / RemoveBlocks
+    GridGraphBuilder --> EntityResolver : id блока → живой блок
+    EventControllerProbe --> EntityResolver : id блока → живой блок
+    EventControllerKeeper --> EntityResolver : id блока → живой блок
+    NodeStateStore --> EntityResolver : id блока → живой блок
+    EntityResolver --> IMyTerminalBlock
     GridGraphBuilder --> IMyTerminalBlock
     GridGraphBuilder --> IMyToolbar
     GridGraphBuilder --> IMyBlockGroup
@@ -827,6 +866,7 @@ classDiagram
     GridGraph "1" *-- "0..*" Node : содержит группы (по имени)
     GridGraph "1" *-- "0..*" Edge : содержит
     Node "1" *-- "0..*" Port : действия/события
+    Node "1" *-- "1" BlockState : снимок состояния
     Node --> ToolbarLayout
     Edge --> ToolbarCell : занимает ячейку
     Edge ..> Node : ссылается по EntityId или по имени группы
@@ -835,6 +875,7 @@ classDiagram
     GridGraph ..> GroupMemberActions : правило действий группы
     GridGraph ..> Node : OffsetGroupMembers двигает участников
     GridGraph ..> WatchTarget : LayoutPorts назначает Slot
+    GridGraph ..> BlockState : ApplyIntegrity пишет снимок
     Node ..> NodeKind : различает блок и группу
 
     BlockPortCatalog --> Node
@@ -908,7 +949,8 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | Файл | Ответственность |
 |---|---|
 | `Node.cs` | `Port`, `PortKind`, `PortDirection`, `PortGroup`, `NodeKind`, `GroupMemberActions`, `ToolbarLayout`, `ToolbarCell`, `Node`, `Edge` |
-| `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам |
+| `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам, запись снимка состояния (`ApplyIntegrity`) |
+| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории, Шаг 3). Не сохраняется |
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
@@ -967,6 +1009,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `EventControllerProbe.cs` | что проверяет event controller, кому из блоков он это разрешает и запись его списка |
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 | `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
+| `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`»: `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
 `Refresh` сохраняет позиции выживших узлов, удаляет узлы уничтоженных блоков, **сверяет
@@ -1026,6 +1069,41 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 мир по действию пользователя. Разделение намеренное: чтение происходит при каждом
 обновлении, запись — только по клику, и смешивать их значило бы дать пути обновления
 возможность менять блоки.
+
+### Два прохода обновления: структура и состояние
+
+Чтение мира разделено на два прохода с разной ценой и разной частотой. Это не оптимизация
+ради оптимизации: карточка должна показывать повреждение живым, а полная перестройка схемы
+дважды в секунду пересоздавала бы порты и рамки под указателем игрока.
+
+| Проход | Что читает | Что делает | Частота |
+|---|---|---|---|
+| **структурный** — `GridGraphBuilder.Refresh` | блоки грида, тулбары, группы, список отслеживания | добавляет и снимает узлы, пересобирает порты, сверяет связи с тулбарами, `LayoutPorts`, рамки групп | `VgsEditorScreen.RefreshIntervalFrames` = 90 кадров |
+| **состояния** — `GridGraphBuilder.RefreshState` | только целостность перечисленных блоков | пишет `Node.State` через `GridGraph.ApplyIntegrity` | `VgsConstants.StatePollIntervalFrames` = 30 кадров |
+
+Правила, которые делают разделение работающим:
+
+- **проход состояния ничего не перестраивает.** Он не трогает порты, группы, тулбары и рёбра
+  и не вызывает `LayoutPorts`. Инвариант проверяется офлайн: после записи состояния объекты
+  `Port` те же по ссылке, их слоты не изменились, число узлов и рёбер прежнее
+  (`tests/OfflineChecks.cs`, раздел «block state snapshot»);
+- **набор id — это набор видимых карточек.** Экран считает его тем же предикатом, что и
+  отрисовка (`VgsEditorScreen.IsCardOnCanvas`, он же — culling в `DrawNodes`), и тем же
+  потолком `MaxRenderedBlocks`. Одно определение «видимого» на оба прохода: иначе проход
+  состояния опрашивал бы карточки, которых не видно, и пропускал бы те, что видно;
+- **«не прочиталось» ≠ «не повреждено».** Блок, который исчез или не ответил, сохраняет
+  предыдущее значение: сброс в 1 превратил бы одну неудачную читку в ложное «блок починили»,
+  а карточка мигала бы между повреждённой и целой;
+- **состояние — снимок, а не сохранённая сущность.** Оно живёт только в памяти и никогда не
+  попадает в `MyModStorageComponent`; в сохранении по-прежнему только то, что выбрал игрок —
+  позиция и видимость ([ADR-0012](adr/0012-layout-lives-on-the-block.md));
+- **счётчики разные.** `_lastRefreshFrame` и `_lastStatePollFrame` — два независимых
+  счётчика кадров экрана (ADR-0026: не `VgsSession.Frame`, он замирает на паузе). Общий
+  счётчик связал бы проходы и опустил бы частый до частоты редкого.
+
+Факты о том, откуда берётся целостность (`IMyCubeBlock.SlimBlock` →
+`IMySlimBlock.BuildIntegrity / MaxIntegrity`) и почему читается именно эта пара чисел, —
+[`01-research/api-block-state.md`](01-research/api-block-state.md).
 
 ### Список отслеживания event controller
 
@@ -1271,6 +1349,50 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 знает о формате ничего, он разрешает материал по имени, поэтому смена контейнера не тронула ни
 одной строки рисования — изменились только сборщик ассетов и `GuiTextures.sbc`.
 
+### Повреждение на карточке ([ADR-0028](adr/0028-block-damage-band.md))
+
+Единственный пока потребитель снимка состояния — красная полоса на карточке. Правило: **ширина
+полосы — это повреждение, а не целостность**, она прижата к правому краю и занимает всю высоту
+карточки.
+
+| Целостность | Красная часть карточки |
+|---|---|
+| 100% (в пределах допуска `BlockState.IntegrityTolerance`) | нет полосы |
+| 70% | правые 30% |
+| 50% | правая половина |
+| 10% | правые 90% |
+| 0% | вся карточка |
+
+Геометрия — `PortGeometry.TryDamageRect` (графовые единицы, как `CardRect`) плюс
+`PortGeometry.FitDamageBand` (нижняя граница ширины в один пиксель экрана и зажим по карточке —
+в графовых единицах, потому что слой отрисовки один знает, сколько стоит пиксель), значение —
+`Node.State` (никогда не из мира), порог «повреждён» — `BlockState.IsDamaged`, тот же, что у
+остального кода. Отрисовка в `DrawNode` идёт в фиксированном порядке: заливка карточки →
+**полоса** → рамка → подписи → полосы портов → кнопки. Так полоса композитится поверх
+непрозрачной заливки (иначе её 50% прозрачности смешивались бы с холстом по-разному), не
+перекрывает рамку выбора/наведения и не мешает читать подписи и контролы. Полосы портов под
+карточкой не красятся: карточка — то, чем блок *является*, полосы — то, что он *делает*.
+У группы полосы нет: у неё нет целостности.
+
+**Порога по величине повреждения нет** — сколько процентов, столько и красного. «70%» и «50%» в
+требовании были примерами доли, а не уровнями включения. Первая версия кода рисовала полосу на
+всю ширину экрана: защита от субпиксельной ширины сравнивала нормализованную величину с `1f`,
+то есть с целым экраном. Правило вынесено в `FitDamageBand` именно поэтому — его можно
+проверить офлайн, а в слое отрисовки оно было непроверяемым.
+
+### Пауза ([ADR-0029](adr/0029-editor-does-not-pause.md))
+
+Экран **не** ставит игру на паузу (`PausesGameInSinglePlayer = false`). Пауза останавливает
+симуляцию (`MySession.Update` выходит до `UpdateComponents`), а значит при открытом редакторе
+блоки не получают урон, не строятся и не разрушаются — то есть «живая схема» физически не
+может показать изменение. В мультиплеере паузы не было никогда, так что один экран вёл себя
+по-разному в двух режимах.
+
+Следствие для часов: экран по-прежнему считает свои кадры в `OnUpdate` (`_screenFrame`), и это
+теперь единственная верная привязка — она работает и с паузой, и без неё (ADR-0026 остаётся в
+силе, но перестаёт зависеть от паузы). `UpdateOnPause` у сессионного компонента **не**
+включается: это вернуло бы работу мода за меню паузы.
+
 `PortGeometry.LayoutGroupFrames` применяет результат к узлам. Вызывается после построения
 графа, после каждого `Refresh` и после изменения связей — и никогда из `OnDraw`: рамка
 производна от позиций, но пересчитывать её каждый кадр значило бы делать работу, которую никто
@@ -1387,7 +1509,13 @@ OnOpened()    ресурсы отрисовки (шрифт, кисть, мат�
 
 OnUpdate()    каждые RefreshIntervalFrames кадров:
                 перечитать грид → GridGraphBuilder.Refresh
-                (добавить новые блоки, убрать уничтоженные, обновить имена)
+                (добавить новые блоки, убрать уничтоженные, обновить имена,
+                 пересобрать порты и группы, сверить тулбары)
+                └─ и сразу после него — проход состояния (RefreshNodeState)
+              каждые StatePollIntervalFrames кадров (30, т.е. ~2 Гц):
+                собрать id видимых карточек (CollectVisibleNodeIds)
+                → GridGraphBuilder.RefreshState: только целостность,
+                  без портов/групп/тулбаров/LayoutPorts
               если грид исчез → Close()
 
 OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:

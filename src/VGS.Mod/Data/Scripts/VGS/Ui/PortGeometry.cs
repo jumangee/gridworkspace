@@ -735,6 +735,80 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// Rectangle of the damage band on a card, in graph units, or false when the block is not
+        /// damaged and there is nothing to draw.
+        ///
+        /// <b>The band is on the right and its width is the damage, not the health.</b> Integrity
+        /// 70% leaves 30% of the card red; 50% leaves half; a block welded full leaves nothing.
+        /// Anchoring it to the right edge is what makes the picture read without a legend: the
+        /// card is "eaten away" from one side, and a fuller card is a healthier block. Sizing it
+        /// by integrity instead would grow the red as the block gets better, which is the same
+        /// number saying the opposite thing.
+        ///
+        /// <b>Full card height, the card's own rectangle.</b> Not the port bars under it: those
+        /// are what the block *does*, the card is what the block *is*, and the band answers a
+        /// question about the block. Insetting it from the border would leave a dark sliver
+        /// between two reds at the seam of a neighbouring card and read as a gap rather than as a
+        /// fill.
+        ///
+        /// The tolerance is <see cref="BlockState.IsDamaged"/>'s, not a second one: the draw pass
+        /// must not disagree with the rest of the code about whether a block counts as damaged.
+        /// </summary>
+        public static bool TryDamageRect(Node node, out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            if (node == null || node.IsGroup) return false;
+            if (node.State == null || !node.State.IsDamaged) return false;
+
+            float damage = 1f - node.State.Integrity;
+            if (damage <= 0f) return false;
+            if (damage > 1f) damage = 1f;
+
+            float width = VgsConstants.NodeWidth * damage;
+
+            CardRect(node, out topLeft, out size);
+            topLeft = new Vector2(topLeft.X + VgsConstants.NodeWidth - width, topLeft.Y);
+            size = new Vector2(width, size.Y);
+            return true;
+        }
+
+        /// <summary>
+        /// Keeps a damage band inside its card and gives it a floor of <paramref name="minWidth"/>
+        /// so a barely-scratched block still shows something. All arguments and the result are in
+        /// graph units; the caller converts the pixel floor into graph units, because only the
+        /// drawing layer knows how big a pixel is.
+        ///
+        /// <b>Why this exists as a separate step.</b> The band is derived from a fraction, so at a
+        /// low zoom a 1% scratch is a fraction of a pixel and a sprite that thin is not reliably
+        /// rasterised at all. The floor is therefore a rendering limit, not a meaning: it may
+        /// exaggerate damage by a pixel, and it must never hide it — rounding *down* would make a
+        /// lightly damaged block indistinguishable from a pristine one, which is the one error
+        /// this indicator cannot afford.
+        ///
+        /// <b>The band is re-derived from the card, never trusted.</b> Width is clamped to the
+        /// card and the left edge is recomputed from the right edge, so the band is always flush
+        /// with the card's right side and can never spill outside it. That is not defensive
+        /// padding: the first version of this code compared a normalized width against the number
+        /// 1 (the whole screen) instead of against one pixel, and every damaged card painted a
+        /// band a full screen wide. The rule is now in one place, in graph units, and the offline
+        /// gate asserts it.
+        /// </summary>
+        public static void FitDamageBand(ref Vector2 topLeft, ref Vector2 size,
+                                         Vector2 cardTopLeft, Vector2 cardSize, float minWidth)
+        {
+            if (size.X <= 0f || cardSize.X <= 0f) return;
+
+            float width = size.X;
+            if (minWidth > 0f && width < minWidth) width = minWidth;
+            if (width > cardSize.X) width = cardSize.X;
+
+            topLeft = new Vector2(cardTopLeft.X + cardSize.X - width, cardTopLeft.Y);
+            size = new Vector2(width, cardSize.Y);
+        }
+
+        /// <summary>
         /// Left padding of a card's text, as a fraction of the card's width. A fraction rather than
         /// a constant because it has to scale with the card: the card is drawn wider than it is
         /// tall, and a padding written in the layout's vertical units would look inset on a narrow

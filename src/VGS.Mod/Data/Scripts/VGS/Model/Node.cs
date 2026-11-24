@@ -578,6 +578,23 @@ namespace Vgs.Model
         public bool CanDriveBlocks; // review:allow R009 set once by the probe, never re-read per frame
 
         /// <summary>
+        /// What the block is doing right now — damage, and later the category's own readings
+        /// (<see cref="BlockState"/>).
+        ///
+        /// <b>Always present, never null.</b> The draw path reads it for every visible card on
+        /// every frame, and a null check there would be one branch per card per frame forever in
+        /// exchange for saving a small object per node once. A group gets one too: it has no
+        /// integrity of its own and never reads it, but "every node has a state" is a rule the
+        /// renderer can rely on without asking what kind of node it is holding.
+        ///
+        /// <b>Written only by the state pass</b> (<c>GridGraphBuilder.RefreshState</c> through
+        /// <see cref="GridGraph.ApplyIntegrity"/>), which is the only code allowed to read the
+        /// world on its behalf. The object is reused rather than replaced, so a reference taken
+        /// during drawing stays valid across passes.
+        /// </summary>
+        public readonly BlockState State;
+
+        /// <summary>
         /// True when this node's block is an event controller — the one block that owns a list
         /// of blocks it *observes* (ADR-0017).
         ///
@@ -672,6 +689,7 @@ namespace Vgs.Model
             GridPosition = gridPosition;
             Toolbar = toolbar ?? ToolbarLayout.None;
             IsEventController = isEventController;
+            State = new BlockState();
 
             // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
             // placed, and the automatic layout would then never place it. A new node starts
@@ -700,6 +718,10 @@ namespace Vgs.Model
             // controller: the watch list belongs to one block, and a group is not a block.
             CanDriveBlocks = false;
             IsEventController = false;
+
+            // A group has no block and therefore no state of its own; it carries the default one
+            // only so that every node answers the same question the same way.
+            State = new BlockState();
         }
 
         /// <summary>

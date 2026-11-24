@@ -498,8 +498,8 @@ namespace Vgs.Game
             {
                 for (int i = 0; i < list.Count; i++)
                 {
-                    IMyTerminalBlock block = Resolve(list[i]);
-                    if (block == null) continue;
+                    IMyTerminalBlock block;
+                    if (!EntityResolver.TryResolveTerminalBlock(list[i], out block)) continue;
                     if (!controller.IsInSameLogicalGroupAs(block)) continue;
                     blocks.Add(block);
                 }
@@ -595,19 +595,6 @@ namespace Vgs.Game
             {
                 VgsLog.Throttled("ec-name", "could not read the event name", e, 600);
                 return string.Empty;
-            }
-        }
-
-        private static IMyTerminalBlock Resolve(long entityId)
-        {
-            try
-            {
-                return MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
-            }
-            catch (Exception e)
-            {
-                VgsLog.Throttled("ec-resolve", "could not resolve block", e, 300);
-                return null;
             }
         }
 

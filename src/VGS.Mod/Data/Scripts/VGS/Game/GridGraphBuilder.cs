@@ -83,6 +83,15 @@ namespace Vgs.Game
         /// ones, refreshes names, rebuilds the group nodes and reconciles the edges with the
         /// blocks' toolbars. Positions and edges of surviving nodes are preserved, which is
         /// what makes the editor feel stable while the ship is being edited.
+        ///
+        /// <b>This is the structural pass.</b> It answers "what is on the grid and how is it
+        /// wired", and it is expensive: it walks every slim block, probes toolbars, reads action
+        /// lists and re-derives the port slots. It therefore runs on a slow timer
+        /// (<c>VgsEditorScreen.RefreshIntervalFrames</c>), while the values that change every
+        /// second — damage today, charge and fill level later — go through
+        /// <see cref="RefreshState"/>, which reads nothing but those values and rebuilds nothing.
+        /// Keeping the two apart is what lets the schema look live without paying for a full
+        /// rebuild twice a second (see <c>docs/03-architecture.md</c>, «два прохода»).
         /// </summary>
         public static void Refresh(GridGraph graph, IMyCubeGrid grid, bool includeHidden)
         {
@@ -163,6 +172,82 @@ namespace Vgs.Game
 
             VgsLog.Debug("graph refresh: " + graph.NodeCount + " nodes, " + graph.GroupCount
                          + " groups, " + graph.EdgeCount + " edges");
+        }
+
+        /// <summary>
+        /// Refreshes the <em>state</em> of the nodes in <paramref name="entityIds"/>: the values
+        /// that change while the editor is open, and nothing else. Returns how many readings were
+        /// written.
+        ///
+        /// <b>What it deliberately does not do:</b> it does not add or remove nodes, does not
+        /// touch ports, groups, toolbars or edges, does not reconcile the schema with the world
+        /// and does not call <see cref="GridGraph.LayoutPorts"/>. Those are the structural pass's
+        /// job (<see cref="Refresh"/>), and re-running them on this cadence would rebuild the
+        /// picture under the player's pointer several times a second for no reason.
+        ///
+        /// <b>Why a list of ids instead of the whole graph.</b> The caller passes the nodes that
+        /// are actually on screen (<c>VgsEditorScreen.CollectVisibleNodeIds</c>), so the cost is
+        /// proportional to what the player can see rather than to the size of the ship. On a
+        /// five-hundred-block grid that is the difference between four reads per tick and five
+        /// hundred. The list is reused by the caller, so this method allocates nothing.
+        ///
+        /// <b>A block that cannot be read keeps its previous value.</b> It is not reset to 1:
+        /// one failed read is not evidence that the block was repaired, and a card that flickers
+        /// between damaged and pristine is worse than one that lags by half a second.
+        /// </summary>
+        public static int RefreshState(GridGraph graph, IList<long> entityIds)
+        {
+            if (graph == null || entityIds == null) return 0;
+
+            int written = 0;
+            for (int i = 0; i < entityIds.Count; i++)
+            {
+                // A null node is the normal answer for two different things, and both mean "no
+                // news": the block was destroyed since the structural pass, or the id belongs to
+                // nothing this graph holds. A group is never reachable here — groups live in the
+                // graph's own map keyed by name, and `GetNode` looks only at blocks.
+                Node node = graph.GetNode(entityIds[i]);
+                if (node == null) continue;
+
+                float integrity;
+                if (!TryReadIntegrity(node.EntityId, out integrity)) continue;
+                if (graph.ApplyIntegrity(node.EntityId, integrity)) written++;
+            }
+            return written;
+        }
+
+        /// <summary>
+        /// Reads a block's integrity as a fraction of its maximum. False when the block is gone or
+        /// the game cannot answer, which the caller must treat as "no news", not as "undamaged".
+        ///
+        /// The value comes from the block's slim block — <c>BuildIntegrity / MaxIntegrity</c> —
+        /// and not from <c>DamageRatio</c>: the ratio is the same number inverted, and reading the
+        /// two parts keeps the arithmetic visible at the point where the units matter. Verified in
+        /// <c>docs/01-research/api-block-state.md</c>.
+        /// </summary>
+        private static bool TryReadIntegrity(long entityId, out float integrity)
+        {
+            integrity = 1f;
+
+            IMyTerminalBlock block;
+            if (!EntityResolver.TryResolveTerminalBlock(entityId, out block)) return false;
+
+            try
+            {
+                IMySlimBlock slim = block.SlimBlock;
+                if (slim == null) return false;
+
+                float max = slim.MaxIntegrity;
+                if (max <= 0f) return false;         // not a cube block with integrity at all
+
+                integrity = slim.BuildIntegrity / max;
+                return true;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("state-integrity", "could not read block integrity", e, 600);
+                return false;
+            }
         }
 
         private static Node CreateNode(IMyTerminalBlock block)
@@ -313,11 +398,14 @@ namespace Vgs.Game
         /// </summary>
         private static string SafeNameOf(long entityId, string fallback)
         {
+            IMyTerminalBlock block;
+            if (!EntityResolver.TryResolveTerminalBlock(entityId, out block))
+            {
+                return fallback ?? entityId.ToString();
+            }
+
             try
             {
-                var block = MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
-                if (block == null) return fallback ?? entityId.ToString();
-
                 string name = SafeName(block);
                 return string.IsNullOrEmpty(name) ? (fallback ?? entityId.ToString()) : name;
             }
@@ -760,11 +848,11 @@ namespace Vgs.Game
         /// </summary>
         private static IMyToolbar ResolveToolbar(long entityId, int toolbarIndex)
         {
+            IMyTerminalBlock block;
+            if (!EntityResolver.TryResolveTerminalBlock(entityId, out block)) return null;
+
             try
             {
-                var block = MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
-                if (block == null) return null;
-
                 return ToolbarProbe.GetToolbar(block, toolbarIndex);
             }
             catch (Exception e)

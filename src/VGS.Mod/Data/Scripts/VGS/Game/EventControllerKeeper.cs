@@ -214,8 +214,8 @@ namespace Vgs.Game
         {
             try
             {
-                var block = MyAPIGateway.Entities.GetEntityById(entityId) as IMyTerminalBlock;
-                if (block == null) return true;
+                IMyTerminalBlock block;
+                if (!EntityResolver.TryResolveTerminalBlock(entityId, out block)) return true;
 
                 var ids = new List<long>();
                 if (!NodeStateStore.TryReadWatchList(block, ids))

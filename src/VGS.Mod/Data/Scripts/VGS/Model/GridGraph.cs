@@ -166,6 +166,27 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// Writes one integrity reading into the node's state. False when the graph has no node
+        /// for that id, which is normal: a block can be destroyed between the state pass being
+        /// scheduled and it running.
+        ///
+        /// <b>This is the whole write side of the state pass.</b> It touches <see cref="Node.State"/>
+        /// and nothing else — no ports, no groups, no frames, no edges — which is what makes the
+        /// cheap 2 Hz pass cheap: the expensive derived layout (<see cref="LayoutPorts"/>,
+        /// group frames) belongs to the structural pass and must not be re-run twice a second.
+        /// The value is clamped by <see cref="BlockState.SetIntegrity"/>, so a caller may pass
+        /// whatever the game reported.
+        /// </summary>
+        public bool ApplyIntegrity(long entityId, float integrity)
+        {
+            Node node = GetNode(entityId);
+            if (node == null) return false;
+
+            node.State.SetIntegrity(integrity);
+            return true;
+        }
+
+        /// <summary>
         /// Adds a node, or returns the existing one with the same entity id.
         /// Idempotent so a refresh can call it blindly.
         /// </summary>

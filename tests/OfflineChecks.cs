@@ -199,6 +199,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== block search rule (ADR-0023) ===");
         BlockSearchRule();
 
+        Console.WriteLine("=== block state snapshot (Step 2) ===");
+        BlockStateSnapshot();
+
         Console.WriteLine("=== text field editing (ADR-0024) ===");
         TextFieldEditing();
 
@@ -3259,6 +3262,260 @@ internal static class OfflineChecks
               "runs of spaces produce no empty terms");
         Check(BlockSearch.Matches(terms, "Timer 1", "Timer Block"),
               "a query with extra spaces still matches");
+    }
+
+    // ------------------------------------------------------------------ block state (Step 2)
+    //
+    // The state pass exists so the schema can look live without a structural rebuild: a card's
+    // damage is read twice a second and written into the node, while ports, groups, toolbars and
+    // edges are left exactly as the structural pass left them. Two things can go wrong there, and
+    // both are invisible until the game is running:
+    //
+    //   * the write touches more than the state, and the picture is rebuilt under the player's
+    //     pointer twice a second (ports lose their slots, the group frame jumps);
+    //   * the value is not clamped, and a card draws its damage indicator outside the card.
+    //
+    // Everything below is plain data, so it is asserted here rather than by a game launch.
+    private static void BlockStateSnapshot()
+    {
+        // ---- a node always has a state ----
+        //
+        // The draw path reads `node.State` for every visible card on every frame; it must never
+        // have to ask whether one exists. A group has one too, even though it never reads it.
+        Node block = MakeNode(1, "LargeBlockConveyor", "OnOff");
+        Check(block.State != null, "a block node is created with a state");
+        CheckClose(block.State.Integrity, 1f, "a new node's integrity is 1 — not known to be damaged");
+        Check(block.State.MetricCount == 0, "a node without a category publishes no metrics");
+
+        var group = new Node("group A", "group A");
+        Check(group.State != null, "a group node carries a state as well");
+        CheckClose(group.State.Integrity, 1f, "a group's state is inert and reads as undamaged");
+
+        // ---- clamping ----
+        //
+        // The game can report a negative BuildIntegrity on a block mid-deconstruction and a value
+        // above the maximum on one a mod over-welded. Everything downstream treats the number as a
+        // fraction, so the clamp belongs at the write, not at each reader.
+        var state = new BlockState();
+        state.SetIntegrity(0.5f);
+        CheckClose(state.Integrity, 0.5f, "a reading inside the range is stored as is");
+        Check(state.IsDamaged, "half integrity counts as damaged");
+
+        state.SetIntegrity(-2f);
+        CheckClose(state.Integrity, 0f, "a negative reading is clamped to 0");
+        state.SetIntegrity(7f);
+        CheckClose(state.Integrity, 1f, "a reading above the maximum is clamped to 1");
+        Check(!state.IsDamaged, "full integrity is not damaged");
+
+        // The tolerance: the game's own welding leaves the last fraction of a percent unwelded, and
+        // a pristine block that reports damage is an alarm the player cannot act on.
+        state.SetIntegrity(1f - BlockState.IntegrityTolerance * 0.5f);
+        Check(!state.IsDamaged, "a block welded to within the tolerance counts as undamaged");
+        state.SetIntegrity(1f - BlockState.IntegrityTolerance * 2f);
+        Check(state.IsDamaged, "damage beyond the tolerance is reported");
+
+        // ---- metrics are an indexed, pre-sized array ----
+        //
+        // The index → meaning mapping is the category descriptor's business (Step 3); what is
+        // asserted here is that the container cannot throw from the frame path: an index the
+        // category does not publish is ignored rather than an exception in the game loop.
+        var withMetrics = new BlockState(2);
+        Check(withMetrics.MetricCount == 2, "a state sized for a category carries that many metrics");
+        CheckClose(withMetrics.GetMetric(1), 0f, "a metric starts at zero");
+        withMetrics.SetMetric(1, 0.25f);
+        CheckClose(withMetrics.GetMetric(1), 0.25f, "a metric is written and read back by index");
+        CheckClose(withMetrics.GetMetric(9), 0f, "reading an index the category lacks is 0, not a throw");
+        withMetrics.SetMetric(-1, 5f);
+        withMetrics.SetMetric(9, 5f);
+        CheckClose(withMetrics.GetMetric(9), 0f, "writing an index the category lacks is ignored");
+
+        // The damage band: where it is and how wide, in graph units, for the whole range of
+        // integrity. It is the only visual the state snapshot produces today, and both of its
+        // rules are arithmetic that a game launch would only show as "looks wrong" (ADR-0028).
+        Console.WriteLine("=== damage band on the card (ADR-0028) ===");
+        DamageBand();
+
+        // ---- the state write touches nothing but the state ----
+        //
+        // This is the invariant the whole split rests on: the cheap pass must not rebuild the
+        // picture. Ports are compared by reference, because that is what the draw path holds —
+        // a pass that replaced the Port objects would leave every bar drawn from a stale slot.
+        var graph = new GridGraph(7);
+        graph.AddNode(block);
+        var target = MakeTarget(2, "LargeBlockConveyor", "OnOff");
+        graph.AddNode(target);
+
+        graph.TryConnect(1, block.PrimaryEvent.Key, 2, target.Actions[0].Key, new ToolbarCell(0, 0));
+        graph.LayoutPorts();
+
+        Check(block.Actions.Count > 0 && block.Events.Count > 0, "the node has ports to protect");
+        Check(graph.EdgeCount == 1, "the connection exists before the state pass");
+
+        Port firstAction = block.Actions[0];
+        Port firstEvent = block.Events[0];
+        int actionCount = block.Actions.Count;
+        int eventCount = block.Events.Count;
+        int nodeCount = graph.NodeCount;
+        int groupCount = graph.GroupCount;
+        int edgeCount = graph.EdgeCount;
+        int firstActionSlot = firstAction.Slot;
+        Vector2 frameBefore = group.FrameSize;
+
+        Check(graph.ApplyIntegrity(1, 0.4f), "an integrity reading for a node in the graph is applied");
+        CheckClose(block.State.Integrity, 0.4f, "the reading lands in the node's state");
+
+        Check(ReferenceEquals(block.Actions[0], firstAction),
+              "the state pass does not replace the action ports");
+        Check(ReferenceEquals(block.Events[0], firstEvent),
+              "the state pass does not replace the event ports");
+        Check(block.Actions.Count == actionCount && block.Events.Count == eventCount,
+              "the state pass does not add or drop ports");
+        Check(firstAction.Slot == firstActionSlot, "the state pass does not move a port's slot");
+        Check(graph.NodeCount == nodeCount && graph.EdgeCount == edgeCount,
+              "the state pass does not add or drop nodes or edges");
+        Check(graph.GroupCount == groupCount, "the state pass does not add or drop groups");
+        Check(group.FrameSize == frameBefore, "the state pass does not resize a group frame");
+
+        // A block destroyed between the structural pass and the state pass is a normal outcome:
+        // the answer is "no node", not an exception and not a new node.
+        Check(!graph.ApplyIntegrity(4242, 0.5f), "a reading for a node that is gone is refused");
+        Check(graph.NodeCount == nodeCount, "a refused reading does not create a node");
+
+        // The previous value survives a refused reading: one failed read is not evidence of a
+        // repair, and a card that flickers between damaged and pristine is worse than a lagging one.
+        CheckClose(block.State.Integrity, 0.4f, "a refused reading leaves the previous value alone");
+    }
+
+    // ------------------------------------------------------------------ damage band (ADR-0028)
+    //
+    // The band is "how much of the card is red", and it is the one thing a damaged block shows.
+    // Three rules can be wrong in ways that are only visible in the game, and each is arithmetic:
+    // its width is the *damage* (not the health), it is anchored to the right edge, and it covers
+    // the card and nothing else. An off-by-inversion here would paint every healthy block red and
+    // every broken one clean, which is exactly the kind of mistake that survives a code read.
+    private static void DamageBand()
+    {
+        Node block = MakeTarget(10, "LargeBlockConveyor", "OnOff");
+        block.Position = new Vector2(0.40f, 0.20f);
+
+        Vector2 bandTopLeft, bandSize;
+
+        // A pristine block draws nothing at all: the card looks exactly as it did before the
+        // indicator existed, which is the requirement.
+        Check(!PortGeometry.TryDamageRect(block, out bandTopLeft, out bandSize),
+              "an undamaged card has no damage band");
+
+        // Width is the damage, from the right edge inward. 70% integrity → 30% of the card red.
+        block.State.SetIntegrity(0.7f);
+        Check(PortGeometry.TryDamageRect(block, out bandTopLeft, out bandSize),
+              "a damaged card has a damage band");
+        CheckClose(bandSize.X, VgsConstants.NodeWidth * 0.3f,
+                   "a band is as wide as the damage, not as the health (70% integrity → 30% red)");
+        CheckClose(bandTopLeft.X + bandSize.X, block.Position.X + VgsConstants.NodeWidth,
+                   "the band ends at the card's right edge");
+        CheckClose(bandTopLeft.X, block.Position.X + VgsConstants.NodeWidth * 0.7f,
+                   "the band starts where the intact part ends");
+
+        // Half integrity → exactly the right half, the case the requirement names explicitly.
+        block.State.SetIntegrity(0.5f);
+        Check(PortGeometry.TryDamageRect(block, out bandTopLeft, out bandSize),
+              "half integrity has a damage band");
+        CheckClose(bandSize.X, VgsConstants.NodeWidth * 0.5f, "half integrity paints the right half");
+
+        // Full card height: the band answers a question about the block, and the card is the
+        // block. Port bars under the card are what it *does* and are not painted.
+        Vector2 cardTopLeft, cardSize;
+        PortGeometry.CardRect(block, out cardTopLeft, out cardSize);
+        CheckClose(bandTopLeft.Y, cardTopLeft.Y, "the band starts at the card's top edge");
+        CheckClose(bandSize.Y, cardSize.Y, "the band covers the card's full height");
+        CheckClose(bandSize.Y, VgsConstants.NodeHeight,
+                   "a two-line card's band is exactly the card, not the port stack");
+
+        // A destroyed block is a full red card, not an empty one: the clamp at the bottom of the
+        // range is where an "invert the fraction" bug would show up as a clean card.
+        block.State.SetIntegrity(0f);
+        Check(PortGeometry.TryDamageRect(block, out bandTopLeft, out bandSize),
+              "a destroyed block still has a band");
+        CheckClose(bandSize.X, VgsConstants.NodeWidth, "zero integrity paints the whole card");
+
+        // The tolerance belongs to the state, and the geometry must use the same one: a block
+        // welded to within it draws nothing, exactly as BlockState.IsDamaged says.
+        block.State.SetIntegrity(1f - BlockState.IntegrityTolerance * 0.5f);
+        Check(!PortGeometry.TryDamageRect(block, out bandTopLeft, out bandSize),
+              "the geometry uses the state's own damage tolerance");
+
+        // A controller's card is a line taller (ADR-0017) and the band follows the card, not the
+        // standard height — otherwise the band would stop a line short on exactly the cards that
+        // are the tallest.
+        Node controller = MakeNode(11, "EventControllerBlock", TimerToolbar(), "OnOff");
+        controller.State.SetIntegrity(0.4f);
+        Vector2 controllerCardTopLeft, controllerCardSize;
+        PortGeometry.CardRect(controller, out controllerCardTopLeft, out controllerCardSize);
+        Check(PortGeometry.TryDamageRect(controller, out bandTopLeft, out bandSize),
+              "a controller's card can show damage too");
+        CheckClose(bandSize.Y, controllerCardSize.Y,
+                   "the band follows a taller card instead of the standard height");
+
+        // A group has no block, so it has no integrity and never paints a band — even though it
+        // carries a state object like every other node.
+        var group = new Node("group D", "group D");
+        group.State.SetIntegrity(0.2f);
+        Check(!PortGeometry.TryDamageRect(group, out bandTopLeft, out bandSize),
+              "a group never shows a damage band");
+
+        // ---- the band stays inside its card (the defect found in game) ----
+        //
+        // The first version widened a sub-pixel band by comparing a *normalized* width against
+        // the number 1 — the whole screen — so the comparison was always true and every damaged
+        // card painted a band a full screen wide. These assertions pin the rule down in graph
+        // units, where the mistake cannot hide behind a unit confusion.
+        Node clamped = MakeTarget(12, "LargeBlockConveyor", "OnOff");
+        clamped.Position = new Vector2(0.50f, 0.30f);
+        clamped.State.SetIntegrity(0.99f);
+        Check(PortGeometry.TryDamageRect(clamped, out bandTopLeft, out bandSize),
+              "a barely damaged card has a band");
+
+        Vector2 cardLeft, cardSize2;
+        PortGeometry.CardRect(clamped, out cardLeft, out cardSize2);
+
+        // No floor: the band is what the damage says, however thin.
+        Vector2 noFloorTopLeft = bandTopLeft, noFloorSize = bandSize;
+        PortGeometry.FitDamageBand(ref noFloorTopLeft, ref noFloorSize, clamped.Position,
+                                   cardSize2, 0f);
+        CheckClose(noFloorSize.X, VgsConstants.NodeWidth * 0.01f,
+                   "without a floor a 1% scratch is 1% of the card wide");
+        CheckClose(noFloorTopLeft.X + noFloorSize.X, cardLeft.X + cardSize2.X,
+                   "the band still ends at the card's right edge");
+
+        // With a floor wider than the damage, the band grows to the floor and stays flush right.
+        float floor = VgsConstants.NodeWidth * 0.02f;
+        Vector2 flooredTopLeft = bandTopLeft, flooredSize = bandSize;
+        PortGeometry.FitDamageBand(ref flooredTopLeft, ref flooredSize, clamped.Position,
+                                   cardSize2, floor);
+        CheckClose(flooredSize.X, floor, "a band thinner than the floor grows to the floor");
+        CheckClose(flooredTopLeft.X + flooredSize.X, cardLeft.X + cardSize2.X,
+                   "the floored band is still flush with the card's right edge");
+        CheckClose(flooredSize.Y, cardSize2.Y, "the band keeps the card's height");
+        Check(flooredTopLeft.X >= cardLeft.X, "the floored band never starts left of the card");
+
+        // A floor wider than the card cannot push the band out of it: the card wins.
+        Vector2 hugeTopLeft = bandTopLeft, hugeSize = bandSize;
+        PortGeometry.FitDamageBand(ref hugeTopLeft, ref hugeSize, clamped.Position,
+                                   cardSize2, VgsConstants.NodeWidth * 3f);
+        CheckClose(hugeSize.X, cardSize2.X, "a floor wider than the card is clamped to the card");
+        CheckClose(hugeTopLeft.X, cardLeft.X, "the clamped band starts at the card's left edge");
+        CheckClose(hugeTopLeft.X + hugeSize.X, cardLeft.X + cardSize2.X,
+                   "the clamped band ends at the card's right edge");
+
+        // A fully damaged card is exactly the card — the case that must not look like a spill.
+        clamped.State.SetIntegrity(0f);
+        Check(PortGeometry.TryDamageRect(clamped, out bandTopLeft, out bandSize),
+              "a destroyed card has a band");
+        PortGeometry.FitDamageBand(ref bandTopLeft, ref bandSize, clamped.Position, cardSize2, floor);
+        CheckClose(bandSize.X, cardSize2.X, "a destroyed card's band is exactly the card's width");
+        CheckClose(bandTopLeft.X, cardLeft.X, "a destroyed card's band starts at the card's left");
+        Check(bandTopLeft.X + bandSize.X <= cardLeft.X + cardSize2.X + 1e-6f,
+              "no band ever extends past the card's right edge");
     }
 
     // ------------------------------------------------------------------ text field (ADR-0024)
