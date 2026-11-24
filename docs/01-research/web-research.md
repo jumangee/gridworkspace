@@ -1,5 +1,27 @@
 # Веб-ресёрч: Space Engineers modding для проекта «Grid Logic Editor»
 
+> ## ⚠️ Это исторический документ, а не руководство
+>
+> Ресёрч сделан 2026-11-18, **до** первой строки кода и без доступа к сборкам игры. С тех пор
+> мод написан и работает, API проверен по сборкам (`dump-se-api.ps1`, `dump-se-il.ps1`), и
+> часть выводов ниже **опровергнута практикой**. Читать его стоит только ради «почему мы
+> рассматривали именно это» и ради ссылок на внешние источники.
+>
+> **Истина — здесь:** [`api-*.md`](.) (проверенные факты игры), [`docs/adr/`](../adr/README.md)
+> (принятые решения), [`docs/03-architecture.md`](../03-architecture.md) (как устроено).
+>
+> Что опровергнуто и чем заменено:
+>
+> | Утверждение ресёрча | Что верно на самом деле |
+> |---|---|
+> | `LangVersion 6` (§1.2, §9 п.1, §12) | **C# 7.3** — компилятор игры Roslyn 2.9, `-langversion:7.3` в `tools/verify-compile.ps1` |
+> | `MyModScreen` недокументирован → обязателен план Б (Rich HUD), спайк 1–2 дня (§0, §3.2) | Спайк сделан, план Б не понадобился: экран на `MyModScreen` принят, сигнатуры сняты — [`api-modscreen.md`](api-modscreen.md), [ADR-0008](../adr/0008-mod-screen-api.md) |
+> | `Sandbox.Game.*` разрешён целиком, значит `MyGuiScreenBase` технически доступен (§4, §9 п.16) | Вайтлист привязан к **сборке-владельцу**: `Sandbox.Graphics.dll` секции не имеет, четыре её типа отвергнуты игрой при загрузке — [ADR-0008](../adr/0008-mod-screen-api.md) |
+> | «Буфер обмена ОС доступен» (образец Build Vision, §5) | **Недоступен**: `IVRageSystem`/`MyVRage` отвергнуты игрой, поле игры запрещено; своё поле и свой буфер — [ADR-0027](../adr/0027-clipboard-is-own-buffer-only.md), [ADR-0024](../adr/0024-text-field-caret-selection-clipboard.md) |
+> | Пауза: «`HandleInput` работает на паузе, `UpdateAfterSimulation` — нет» (§2.3) | Верно, но главное — `MyModScreen.Open` сам ставил паузу в одиночной игре; пауза снята, часы экрана — свои кадры в `OnUpdate` — [ADR-0029](../adr/0029-editor-does-not-pause.md), [ADR-0026](../adr/0026-clocks-in-the-mod.md) |
+> | «Данные графа — на грид/кокпит, синхронизировать пакетами» (§7.2) | Раскладка — на самом блоке ([ADR-0012](../adr/0012-layout-lives-on-the-block.md)), связь — элемент тулбара ([ADR-0011](../adr/0011-toolbar-is-the-connection.md)), состояние вида — на гриде ([ADR-0022](../adr/0022-view-state-lives-on-the-grid.md)); сетевых пакетов в коде нет |
+> | «`IsServer`, `GetBlocks`, ownership не проверены» (§3.3, §7.3, §9 п.25) | Проверены и используются: `MyAPIGateway.Multiplayer.IsServer`, `GetTerminalSystemForGrid(grid).GetBlocks(...)` — [`api-grid-construct.md`](api-grid-construct.md), [`api-surface.md`](api-surface.md) |
+
 **Дата ресёрча:** 2026-11-18
 **Актуальная версия игры на момент ресёрча:** `1.211.017` («Warfare 3»)
 **Предмет:** мод на C# для Space Engineers (Keen Software House, VRAGE/Unity, .NET Framework), который добавляет в кокпит кнопку «Grid setup» и открывает полноэкранный редактор графа (узлы блоков, поля, связи).
@@ -91,7 +113,8 @@
 
 ### 1.4. Версия игры и target framework
 
-✅ **VERIFIED: `net48`** (`.NET Framework 4.8`), платформа `x64`, `LangVersion` = **6**.
+✅ **VERIFIED: `net48`** (`.NET Framework 4.8`), платформа `x64`, `LangVersion` = **6** в шаблоне
+(но компилятор игры принимает **7.3** — см. правку ниже).
 
 Канонический `.csproj` из официальной вики ([Convert old projects to new SDK](https://spaceengineers.wiki.gg/wiki/Modding/Tutorials/Programming/Convert_old_projects_to_new_SDK)):
 
@@ -115,7 +138,12 @@
 Что это значит практически:
 
 - ✅ `net48` — можно пользоваться `System.Collections.Immutable`, `System.Linq`, `Span`-а нет.
-- ⚠️ **`LangVersion 6`** — это уровень языка в шаблоне. Значит: нет `out var`, нет локальных функций, нет pattern matching, нет кортежей `(int, int)`, нет `switch`-выражений. Есть интерполяция строк (`$""`), `nameof`, `?.`. **Точный уровень языка, который принимает компилятор игры, в этой сессии не проверен** — но шаблон MDK² ставит 6, и это безопасный ориентир.
+- ✅ **`LangVersion 6`** — это уровень языка **в шаблоне**, а не предел компилятора игры.
+  **Проверено практикой (позже этого ресёрча):** компилятор игры — Roslyn 2.9, и он принимает
+  **C# 7.3**; проект собирается с `-langversion:7.3` в `tools/verify-compile.ps1` и использует
+  `out var`, локальные функции и pattern matching. Более новый синтаксис запрещён правилом
+  `R003` шлюза `tools/review-check.ps1` — не потому, что игра не примет, а потому что
+  `verify-compile.ps1` воспроизводит именно 7.3.
 - ✅ **`System.Threading.Tasks` в вайтлисте отсутствует** (в `mscorlib.dll` разрешены только `AutoResetEvent`, `Interlocked`, `ManualResetEvent`, `Monitor`; в `System.dll` — `System.Timers.*`, `System.Collections.Concurrent.*`) → **`async/await` в модах недоступен**. Асинхронность — только через `MyAPIGateway.Utilities.InvokeOnGameThread`, корутины-подобные паттерны на тиках, `ParallelTasks.Task` (ограниченно, см. вайтлист).
 - ✅ `System.Text.RegularExpressions.*` разрешён (в 1.211 ему добавили таймаут 250 мс — «Added a 250 ms time limit to regular expressions»).
 
