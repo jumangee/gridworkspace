@@ -1,4 +1,4 @@
-# Реализуемость: мод «Grid setup» для Space Engineers
+# Реализуемость: мод «Grid Workspace» для Space Engineers
 
 Документ отвечает на один вопрос: **можно ли сделать то, что задумано, средствами
 мода Space Engineers, и какими именно**. Все утверждения помечены уровнем доверия.
@@ -26,7 +26,7 @@
 
 | Что нужно | Чем делается | Статус |
 |---|---|---|
-| Кнопка «Grid setup» в кокпите | `IMyTerminalControlButton` + `CustomControlGetter` | [ПРОВЕРЕНО] компилируется, работает в игре |
+| Кнопка «Grid Workspace» в кокпите | `IMyTerminalControlButton` + `CustomControlGetter` | [ПРОВЕРЕНО] компилируется, работает в игре |
 | Полноэкранный редактор | `MyModScreen` + `MyScreenSpace*` | [ПРОВЕРЕНО] в игре мод компилируется, экран открывается |
 | Поле-сетка, скролл, зум | `MyScreenSpaceSprite.Draw` + `MyScreenSpaceText.Draw`, нормализованные координаты | [ПРОВЕРЕНО] сигнатуры; 0..1 — это safe-GUI 4:3, см. [ADR-0009](adr/0009-screen-coordinate-space.md) |
 | Блоки на поле | `IMyGridTerminalSystem.GetBlocks` (домен — конструкт) → `IMySlimBlock.FatBlock` | [ПРОВЕРЕНО] сигнатуры, см. §4 |

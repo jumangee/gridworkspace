@@ -165,7 +165,7 @@ namespace Vgs.Core
             return new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 // ---- Terminal controls ----
-                { "BUTTON_TITLE", "Центр Управление Гридом" },
+                { "BUTTON_TITLE", "Центр Управления Гридом" },
                 { "BUTTON_TOOLTIP", "Открыть редактор логики грида" },
                 { "SHOW_IN_VGS_TITLE", "Показывать в ЦУГ" },
                 { "SHOW_IN_VGS_TOOLTIP",
@@ -175,7 +175,7 @@ namespace Vgs.Core
                 { "SHOW_IN_VGS_OFF", "Выкл" },
 
                 // ---- Editor chrome ----
-                { "EDITOR_TITLE", "Центр Управление Гридом" },
+                { "EDITOR_TITLE", "Центр Управления Гридом" },
                 { "STATS_FORMAT", " // блоков: {0} · групп: {1} · связей: {2} · зум: {3}%" },
                 { "CLOSE_BUTTON", "Закрыть" },
                 { "EMPTY_GRID", "На этом гриде нет блоков для отображения" },
