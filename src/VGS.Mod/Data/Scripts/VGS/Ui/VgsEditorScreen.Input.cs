@@ -195,9 +195,7 @@ namespace Vgs.Ui
                 // reads as a stuck control.
                 ClearHoverHighlights();
 
-                Vector2 rowTopLeft, rowSize;
-                GetModesRowRect(out rowTopLeft, out rowSize);
-                _modesRowHot = PortGeometry.Contains(rowTopLeft, rowSize, mouse);
+                _modesRowHot = HitModesRow(mouse);
 
                 if (leftNew)
                 {
@@ -211,9 +209,9 @@ namespace Vgs.Ui
                         return true;
                     }
 
-                    if (_modesRowHot)
+                    if (_modesRowHot >= 0)
                     {
-                        ToggleShowHidden();
+                        ToggleModesRow(_modesRowHot);
                         return true;
                     }
 
@@ -231,7 +229,7 @@ namespace Vgs.Ui
                 return true;
             }
 
-            _modesRowHot = false;
+            _modesRowHot = -1;
 
             // ---- modes button ----
             if (leftNew && _modesHot)
@@ -307,6 +305,55 @@ namespace Vgs.Ui
             SaveView();
 
             VgsLog.Info("show invisible blocks: " + (_view.ShowHidden ? "on" : "off"));
+        }
+
+        /// <summary>
+        /// Flips whether blocks standing on subgrids are part of the schema (ADR-0032).
+        ///
+        /// Rebuilds the graph for the same reason "show invisible" does: whether a node exists is
+        /// decided while the graph is built. A draw-time filter would leave the edges of the
+        /// hidden cards in place, and an edge to a card that is not painted is a line ending in
+        /// nothing — worse than not drawing the line at all.
+        /// </summary>
+        private void ToggleShowSubgrids()
+        {
+            _view.ShowSubgrids = !_view.ShowSubgrids;
+
+            RebuildGraph();
+            SaveView();
+
+            VgsLog.Info("show subgrid blocks: " + (_view.ShowSubgrids ? "on" : "off"));
+        }
+
+        /// <summary>
+        /// Flips whether the frame around each grid's cards is drawn (ADR-0032).
+        ///
+        /// <b>No rebuild.</b> This changes nothing about the graph — only whether a border is
+        /// painted — so it is free even on a large construct, and it cannot disturb a connection.
+        /// The frames are recomputed by the draw pass's own layout call, which runs anyway.
+        /// </summary>
+        private void ToggleShowGridBorders()
+        {
+            _view.ShowGridBorders = !_view.ShowGridBorders;
+
+            SaveView();
+
+            VgsLog.Info("show grid borders: " + (_view.ShowGridBorders ? "on" : "off"));
+        }
+
+        /// <summary>
+        /// Applies the toggle in the given modes-menu row. One place that maps a row index to an
+        /// action, so the menu's drawing, its hit test and its behaviour cannot disagree about
+        /// what a row means.
+        /// </summary>
+        private void ToggleModesRow(int index)
+        {
+            switch (index)
+            {
+                case 0: ToggleShowHidden(); return;
+                case 1: ToggleShowSubgrids(); return;
+                case 2: ToggleShowGridBorders(); return;
+            }
         }
 
 

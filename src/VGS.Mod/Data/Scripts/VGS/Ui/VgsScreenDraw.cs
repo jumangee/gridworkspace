@@ -116,6 +116,49 @@ namespace Vgs.Ui
             get { return _clientWidthPixels; }
         }
 
+        /// <summary>
+        /// Client-area height in pixels; 0 before <see cref="SyncScreenSpace"/> has run.
+        ///
+        /// Needed wherever a size has to be expressed in device pixels rather than in layout
+        /// units, because the two axes of this layout do not share a scale (ADR-0009): one X unit
+        /// is the window width, one Y unit is the safe-GUI height. A "one pixel" border is
+        /// therefore two different layout values, one per axis.
+        /// </summary>
+        public static float ClientHeight
+        {
+            get { return _clientHeightPixels; }
+        }
+
+        /// <summary>
+        /// The horizontal part of the client → API transform: <c>api = client * scale + offset</c>.
+        ///
+        /// Exposed for diagnostics only — the draw path never needs it, because the conversion
+        /// happens inside this type. It exists so that a report about a border can carry the
+        /// transform that produced it, which is what turns "it looks wrong" into a measurement.
+        /// </summary>
+        public static float ApiScaleX
+        {
+            get { return _apiScaleX; }
+        }
+
+        /// <summary>The vertical part of the client → API transform.</summary>
+        public static float ApiScaleY
+        {
+            get { return _apiScaleY; }
+        }
+
+        /// <summary>The horizontal offset of the client → API transform.</summary>
+        public static float ApiOffsetX
+        {
+            get { return _apiOffsetX; }
+        }
+
+        /// <summary>The vertical offset of the client → API transform.</summary>
+        public static float ApiOffsetY
+        {
+            get { return _apiOffsetY; }
+        }
+
         /// <summary>True once <see cref="EnsureResources"/> found a usable font and brush.</summary>
         public static bool ResourcesReady
         {
@@ -361,7 +404,10 @@ namespace Vgs.Ui
 
         // ------------------------------------------------------------------ primitives
 
-        /// <summary>Fills a rectangle given in client-area coordinates.</summary>
+
+        /// <summary>
+        /// Fills a rectangle given in client-area coordinates.
+        /// </summary>
         public static void Rect(Vector2 position, Vector2 size, Color color)
         {
             if (!_solidReady || size.X <= 0f || size.Y <= 0f) return;
@@ -396,102 +442,234 @@ namespace Vgs.Ui
         /// </summary>
         public static void Border(Vector2 position, Vector2 size, Color color, float thickness)
         {
-            if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
-
-            // A frame thinner than its own thickness in either direction is drawn as a solid bar:
-            // there is no interior left, and four overlapping rectangles would be a guess.
-            if (size.X <= thickness * 2f || size.Y <= thickness * 2f)
-            {
-                Rect(position, size, color);
-                return;
-            }
-
-            Rect(position, new Vector2(size.X, thickness), color);
-            Rect(new Vector2(position.X, position.Y + size.Y - thickness), new Vector2(size.X, thickness), color);
-
-            float innerHeight = size.Y - thickness * 2f;
-            Rect(new Vector2(position.X, position.Y + thickness),
-                 new Vector2(thickness, innerHeight), color);
-            Rect(new Vector2(position.X + size.X - thickness, position.Y + thickness),
-                 new Vector2(thickness, innerHeight), color);
+            BorderClipped(position, size, NoClipTopLeft, NoClipSize, color, thickness);
         }
 
         /// <summary>
-        /// A filled panel with a frame, drawn so that neither the fill nor the frame can show past
-        /// the other.
+        /// A clip rectangle large enough to clip nothing, for the unclipped <see cref="Border"/>.
+        /// </summary>
+        private static readonly Vector2 NoClipTopLeft = new Vector2(-1000f, -1000f);
+        private static readonly Vector2 NoClipSize = new Vector2(2000f, 2000f);
+
+        /// <summary>
+        /// A frame around <paramref name="position"/>/<paramref name="size"/>, clipped to the
+        /// canvas.
         ///
-        /// <b>Why this exists next to <see cref="Rect"/> plus <see cref="Border"/>.</b> A fill and
-        /// a frame are two quads on the same nominal rectangle, rasterised independently: at a
-        /// fractional position the fill can cover one row past the frame's bottom edge, which reads
-        /// as a stray line under a control (measured on the search field: the fill painted row 69
-        /// while the frame ended at row 68).
+        /// <b>Every frame in the editor goes through here, and that is the point.</b> This method
+        /// used to build four quads of its own, from <c>position</c> and <c>size</c>, with one
+        /// thickness for both axes. Two defects followed, and both were reported from the game:
         ///
-        /// <b>The fill is inset by half the frame's thickness, not by all of it.</b> That is the
-        /// one value that is wrong in neither direction:
+        ///  * the axes do not share a scale (ADR-0009), so a "hairline" measured 1 px tall and
+        ///    1.78 px wide on a 16:9 window;
+        ///  * the four quads were rasterised independently, with position and size rounded
+        ///    separately per quad, so the bottom edge could end one pixel past the right edge — a
+        ///    stub sticking out of the corner. Measured on a reported screenshot: the horizontal
+        ///    line ran to x=34 while the vertical ran at x=33.
         ///
-        ///  * inset by less than the thickness, the fill's edge always lands *under* the frame,
-        ///    which is painted afterwards — so a rounding error in the fill is covered rather than
-        ///    visible;
-        ///  * inset by the full thickness, a fill that rounds the other way would leave a
-        ///    one-pixel gap of the underlying surface between the fill and the frame — a thin dark
-        ///    line inside the control, which is the same defect wearing a different hat.
+        /// Both are now impossible here, because the work is delegated to
+        /// <see cref="BorderPixels"/>: one set of snapped corners, one pixel thickness for both
+        /// axes. Keeping a second implementation beside it is what let the two drift apart in the
+        /// first place, so there is no second implementation any more.
+        /// </summary>
+        public static void BorderClipped(Vector2 position, Vector2 size, Vector2 clipTopLeft,
+                                         Vector2 clipSize, Color color, float thickness)
+        {
+            if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
+
+            BorderPixels(position, size, clipTopLeft, clipSize, color,
+                         ThicknessPixels(thickness));
+        }
+
+        /// <summary>
+        /// A layout-unit thickness converted to a whole number of pixels, at least one.
         ///
-        /// Half the thickness keeps the fill's outer edge at least half a frame away from the
-        /// control's real edge, so it cannot escape, while still reaching under the frame so no
-        /// gap can open. The border is drawn last, so its inner edge stays crisp.
+        /// The value is a fraction of the client <b>height</b>, which is the convention every
+        /// caller already uses (<c>Hairline</c> is defined that way). Converting it once and using
+        /// the result for <b>both</b> axes is what keeps a hairline one pixel wide on a window
+        /// whose axes do not share a scale (ADR-0009); converting per axis is the mistake that made
+        /// the horizontal edges translucent.
+        /// </summary>
+        private static float ThicknessPixels(float thickness)
+        {
+            if (_clientHeightPixels <= 0f) return 1f;
+
+            float pixels = (float)Math.Round(thickness * _clientHeightPixels);
+            return pixels < 1f ? 1f : pixels;
+        }
+
+        /// <summary>
+        /// A filled panel with a frame.
+        ///
+        /// <b>The fill is no longer inset.</b> An earlier version inset it by half the frame's
+        /// thickness to keep the fill from showing past the frame, because the two were separate
+        /// quads rounded independently. Both now go through the same snapped corners, so the fill's
+        /// outer edge and the frame's outer edge are the same pixel by construction: the frame
+        /// covers the fill's edge exactly, with no bleed to hide and no gap to avoid.
         /// </summary>
         public static void Panel(Vector2 position, Vector2 size, Color fill, Color border,
                                  float thickness)
         {
             if (size.X <= 0f || size.Y <= 0f) return;
 
-            if (thickness <= 0f)
-            {
-                Rect(position, size, fill);
-                return;
-            }
+            FillPixels(position, size, fill);
 
-            float inset = thickness * 0.5f;
-            float inner = inset * 2f;
+            if (thickness <= 0f) return;
 
-            if (size.X > inner && size.Y > inner)
-            {
-                Rect(new Vector2(position.X + inset, position.Y + inset),
-                     new Vector2(size.X - inner, size.Y - inner), fill);
-            }
-
-            Border(position, size, border, thickness);
+            BorderPixels(position, size, NoClipTopLeft, NoClipSize, border,
+                         ThicknessPixels(thickness));
         }
 
         /// <summary>
-        /// <see cref="Border"/> clipped to the canvas. Used for anything that scrolls, because
-        /// an unclipped frame paints over the header and the bottom bar — those are drawn
-        /// afterwards and would cover the overdraw, but relying on draw order to hide geometry
-        /// breaks the moment something is drawn later than them.
+        /// Fills a rectangle whose edges land on exactly the same whole pixels as
+        /// <see cref="BorderPixels"/> would use for the same box.
         ///
-        /// The vertical bars are inset exactly as in <see cref="Border"/>, for the reason given
-        /// there.
+        /// <b>Why a separate primitive and not <see cref="Rect"/>.</b> A fill drawn at a
+        /// fractional position and a frame drawn at snapped positions do not share their edges:
+        /// the fill can show past the frame by a fraction of a pixel, which on a dark canvas reads
+        /// as a one-pixel spur sticking out of a corner. That is the same defect ADR-0024 §5
+        /// records for the search field ("the stray line under the field"), and the answer is the
+        /// same: the fill and the frame must be derived from one set of edges, not two.
+        ///
+        /// Both go through <see cref="GridFrames.CornerToApiPixels"/>, so the fill's edge and the
+        /// frame's edge are the same pixel by construction.
         /// </summary>
-        public static void BorderClipped(Vector2 position, Vector2 size, Vector2 clipTopLeft,
-                                        Vector2 clipSize, Color color, float thickness)
+        public static void FillPixels(Vector2 position, Vector2 size, Color color)
         {
-            if (thickness <= 0f || size.X <= 0f || size.Y <= 0f) return;
+            if (!_solidReady) return;
+            if (size.X <= 0f || size.Y <= 0f) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
 
-            if (size.X <= thickness * 2f || size.Y <= thickness * 2f)
+            float left = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                                      position.X);
+            float top = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                                     position.Y);
+            float right = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                                       position.X + size.X);
+            float bottom = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                                        position.Y + size.Y);
+
+            DrawApiPixelRect(left, top, right, bottom, color);
+        }
+
+        /// <summary>
+        /// Draws a rectangle frame <paramref name="thicknessPixels"/> device pixels thick, with
+        /// every edge on a whole pixel.
+        ///
+        /// <b>Everything here happens in API-pixel space, and that is the fix for three separate
+        /// defects.</b> The editor draws in layout units whose axes do not share a scale
+        /// (ADR-0009), and the API takes a normalised coordinate — so converting a "one pixel"
+        /// border into layout units is where every previous version went wrong:
+        ///
+        ///  * one thickness for both axes came out 0.56 px tall on a 16:9 window, a *translucent*
+        ///    line rather than a thin one;
+        ///  * dividing by the zoom made it 2.9 px at 35% and 0.47 px at 213%;
+        ///  * snapping each edge on its own rounded the shared corner boundary twice, and the two
+        ///    roundings disagreed by a pixel — a spur sticking out of every corner.
+        ///
+        /// Working in pixels removes all three by construction: the thickness is a pixel count, so
+        /// there is no axis to get wrong and no zoom to divide by; and the box's four corners are
+        /// snapped once, so the edges that share them tile exactly.
+        ///
+        /// Clipping happens in the same space, after snapping, so a clipped edge cannot move off
+        /// the pixel it was rounded to.
+        /// </summary>
+        public static void BorderPixels(Vector2 position, Vector2 size, Vector2 clipTopLeft,
+                                        Vector2 clipSize, Color color, float thicknessPixels)
+        {
+            if (thicknessPixels <= 0f) return;
+            if (size.X <= 0f || size.Y <= 0f) return;
+
+            float safeX = SafePixelsX;
+            float safeY = SafePixelsY;
+            if (safeX <= 0f || safeY <= 0f) return;
+
+            // ---- corners, snapped once ----
+            float left = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                                      position.X);
+            float top = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                                     position.Y);
+            float right = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                                       position.X + size.X);
+            float bottom = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                                        position.Y + size.Y);
+
+            // ---- clip, in pixels ----
+            float clipLeft = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX,
+                                                          _clientWidthPixels, clipTopLeft.X);
+            float clipTop = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY,
+                                                         _clientHeightPixels, clipTopLeft.Y);
+            float clipRight = GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX,
+                                                           _clientWidthPixels,
+                                                           clipTopLeft.X + clipSize.X);
+            float clipBottom = GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY,
+                                                            _clientHeightPixels,
+                                                            clipTopLeft.Y + clipSize.Y);
+
+            if (left < clipLeft) left = clipLeft;
+            if (top < clipTop) top = clipTop;
+            if (right > clipRight) right = clipRight;
+            if (bottom > clipBottom) bottom = clipBottom;
+
+            if (right <= left || bottom <= top) return;
+
+            // A whole number of pixels, at least one: half a pixel is a translucent line, and a
+            // line that rounds to nothing is a missing border.
+            float t = (float)Math.Round(thicknessPixels);
+            if (t < 1f) t = 1f;
+
+            _borderEdges.Clear();
+            GridFrames.AppendBorderEdges(_borderEdges, left, top, right, bottom, t);
+
+            for (int i = 0; i < _borderEdges.Count; i++)
             {
-                RectClipped(position, size, clipTopLeft, clipSize, color);
-                return;
+                Vector4 edge = _borderEdges[i];
+                DrawApiPixelRect(edge.X, edge.Y, edge.Z, edge.W, color);
             }
+        }
 
-            RectClipped(position, new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
-            RectClipped(new Vector2(position.X, position.Y + size.Y - thickness),
-                        new Vector2(size.X, thickness), clipTopLeft, clipSize, color);
+        /// <summary>
+        /// Reused buffer for the four edge rectangles. The draw path must not allocate (R010), and
+        /// a border is four structs — refilling this list is a memcpy, not four allocations.
+        /// </summary>
+        private static readonly List<Vector4> _borderEdges = new List<Vector4>(4);
 
-            float innerHeight = size.Y - thickness * 2f;
-            RectClipped(new Vector2(position.X, position.Y + thickness),
-                        new Vector2(thickness, innerHeight), clipTopLeft, clipSize, color);
-            RectClipped(new Vector2(position.X + size.X - thickness, position.Y + thickness),
-                        new Vector2(thickness, innerHeight), clipTopLeft, clipSize, color);
+        /// <summary>
+        /// Fills a rectangle given in API-pixel coordinates. The only place that converts back to
+        /// the normalised coordinate the API expects, so the conversion exists once.
+        /// </summary>
+        private static void DrawApiPixelRect(float left, float top, float right, float bottom,
+                                             Color color)
+        {
+            if (!_solidReady) return;
+            if (right <= left || bottom <= top) return;
+
+            try
+            {
+                float apiLeft = GridFrames.ApiPixelsToApi(left, _apiScaleX, _clientWidthPixels);
+                float apiTop = GridFrames.ApiPixelsToApi(top, _apiScaleY, _clientHeightPixels);
+                float apiRight = GridFrames.ApiPixelsToApi(right, _apiScaleX, _clientWidthPixels);
+                float apiBottom = GridFrames.ApiPixelsToApi(bottom, _apiScaleY, _clientHeightPixels);
+
+                MyScreenSpaceSprite.Draw(_solidMaterial, new Vector2(apiLeft, apiTop),
+                                         new Vector2(apiRight - apiLeft, apiBottom - apiTop),
+                                         color, AlignTopLeft, 0f, Layer);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("drawapipixels", "pixel rectangle failed", e, 600);
+            }
+        }
+
+        /// <summary>Safe-area width in pixels: one API unit spans <c>_apiScaleX</c> client units.</summary>
+        private static float SafePixelsX
+        {
+            get { return _apiScaleX > 0f ? _clientWidthPixels / _apiScaleX : 0f; }
+        }
+
+        /// <summary>Safe-area height in pixels.</summary>
+        private static float SafePixelsY
+        {
+            get { return _apiScaleY > 0f ? _clientHeightPixels / _apiScaleY : 0f; }
         }
 
         /// <summary>

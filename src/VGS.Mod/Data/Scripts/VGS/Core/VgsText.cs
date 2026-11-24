@@ -66,10 +66,24 @@ namespace Vgs.Core
         public const string ModesGlyph = "=";
 
         /// <summary>
-        /// The single row of the modes menu. It is a toggle, not a command: the check mark says
+        /// First row of the modes menu. It is a toggle, not a command: the check mark says
         /// whether blocks with "Show in VGS" turned off are drawn as well.
         /// </summary>
         public const string ModesShowHidden = "Show/hide invisible";
+
+        /// <summary>
+        /// Second row: whether blocks standing on subgrids are part of the schema (ADR-0032).
+        /// Wording names the ship part, not the API term — "subgrid" is what the game's own
+        /// terminal and the player's vocabulary use.
+        /// </summary>
+        public const string ModesShowSubgrids = "Show subgrids";
+
+        /// <summary>
+        /// Third row: whether the frame around each grid's cards is drawn (ADR-0032). The frame
+        /// is a guide, not an object — nothing can be clicked on it, which is why the label says
+        /// "borders" rather than "frames" or "groups".
+        /// </summary>
+        public const string ModesShowGridBorders = "Show grid borders";
 
         /// <summary>
         /// Hover hint of the modes button, shown in the bottom bar's second line. Same role as

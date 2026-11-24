@@ -113,6 +113,11 @@ system». Параметры: `deploy-mod.cmd [FolderName] [/force]`, путь �
 # Только строки мода из последнего лога
 pwsh -File tools/tail-mod-log.ps1
 
+# То же там, где политика запрещает .ps1 (ошибка «running scripts is disabled»)
+tools\tail-mod-log.cmd
+tools\tail-mod-log.cmd 1000
+tools\tail-mod-log.cmd /all 400
+
 # Больше контекста
 pwsh -File tools/tail-mod-log.ps1 -Lines 1000
 

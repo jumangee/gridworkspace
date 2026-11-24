@@ -41,6 +41,29 @@ namespace Vgs.Ui
         /// </summary>
         public bool ShowHidden { get; set; }
 
+        /// <summary>
+        /// True while blocks standing on subgrids are part of the schema (ADR-0032).
+        ///
+        /// <b>On by default.</b> The graph covers the whole construct, and a connection from the
+        /// main grid to a subgrid block is a normal, working connection — hiding its card by
+        /// default would make the schema quietly disagree with the ship. The toggle exists to
+        /// take a busy subgrid out of the picture, the same way "Show in VGS" takes one block out.
+        ///
+        /// Changing it rebuilds the graph, for the same reason as <see cref="ShowHidden"/>:
+        /// whether a node exists is decided while the graph is built, and a draw-time filter would
+        /// leave edges pointing at cards that are not there.
+        /// </summary>
+        public bool ShowSubgrids { get; set; }
+
+        /// <summary>
+        /// True while the frame around each grid's cards is drawn (ADR-0032).
+        ///
+        /// <b>A drawing option, not a schema option.</b> It changes nothing about what is in the
+        /// graph — only whether the border is painted — so toggling it never rebuilds anything and
+        /// never touches a connection. That is also why it can be flipped freely on a big ship.
+        /// </summary>
+        public bool ShowGridBorders { get; set; }
+
         // ---- what was last written (ADR-0022) ----
 
         /// <summary>Camera as it was when the view was last written, or recorded as written.</summary>
@@ -50,6 +73,8 @@ namespace Vgs.Ui
         private float _savedZoom;
 
         private bool _savedShowHidden;
+        private bool _savedShowSubgrids;
+        private bool _savedShowGridBorders;
 
         private int _lastSaveFrame;
 
@@ -64,14 +89,28 @@ namespace Vgs.Ui
         /// it was only waste, and this is the one place that can rule it out.
         /// </summary>
         public ViewState(Vector2 camera, float zoom, bool showHidden)
+            : this(camera, zoom, showHidden, true, true)
+        {
+        }
+
+        /// <summary>
+        /// The full form, with the two construct options (ADR-0032). The overload above passes
+        /// the defaults: subgrids shown, grid borders drawn.
+        /// </summary>
+        public ViewState(Vector2 camera, float zoom, bool showHidden,
+                         bool showSubgrids, bool showGridBorders)
         {
             Camera = camera;
             Zoom = zoom;
             ShowHidden = showHidden;
+            ShowSubgrids = showSubgrids;
+            ShowGridBorders = showGridBorders;
 
             _savedCamera = camera;
             _savedZoom = zoom;
             _savedShowHidden = showHidden;
+            _savedShowSubgrids = showSubgrids;
+            _savedShowGridBorders = showGridBorders;
         }
 
         /// <summary>True when the camera, the zoom or the mode differs from what was last written.</summary>
@@ -81,6 +120,8 @@ namespace Vgs.Ui
             {
                 return _savedZoom != Zoom
                        || _savedShowHidden != ShowHidden
+                       || _savedShowSubgrids != ShowSubgrids
+                       || _savedShowGridBorders != ShowGridBorders
                        || _savedCamera != Camera;
             }
         }
@@ -94,6 +135,8 @@ namespace Vgs.Ui
             _savedCamera = Camera;
             _savedZoom = Zoom;
             _savedShowHidden = ShowHidden;
+            _savedShowSubgrids = ShowSubgrids;
+            _savedShowGridBorders = ShowGridBorders;
             _lastSaveFrame = frame;
         }
 

@@ -38,7 +38,7 @@ namespace Vgs.Ui
         {
             if (_grid == null) return false;
 
-            if (!GridViewStore.Save(_grid, _view.Camera, _view.Zoom, _view.ShowHidden))
+            if (!GridViewStore.Save(_grid, _view.Camera, _view.Zoom, _view.ShowHidden, _view.ShowSubgrids, _view.ShowGridBorders))
             {
                 return false;
             }

@@ -37,10 +37,15 @@ namespace Vgs.Ui
                 DrawBackdrop(canvasTopLeft, canvasSize);
                 DrawGrid(canvasTopLeft, canvasSize);
 
-                // Order matters: group frames are backdrops for their members' cards, so they
-                // go first of all; then lines, so a connection never crosses a block's text;
+                // Order matters: grid borders are the outermost backdrop, then group frames for
+                // their members' cards; then lines, so a connection never crosses a block's text;
                 // then cards, then the port bars of both kinds of node, so a bar is never
                 // hidden under a line that ends on its dot.
+                //
+                // Grid before group is the nesting order of the construct itself (ADR-0032): a
+                // grid contains groups, groups contain cards. Drawing them the other way round
+                // would paint a group's translucent fill over its own grid's border.
+                DrawGridBorders(canvasTopLeft, canvasSize);
                 DrawGroupFrames(canvasTopLeft, canvasSize);
                 DrawEdges(canvasTopLeft, canvasSize);
                 DrawWatchLines(canvasTopLeft, canvasSize);
@@ -586,9 +591,251 @@ namespace Vgs.Ui
         /// selection and hover highlight. That is also its only click target: the interior
         /// belongs to the members.
         /// </summary>
-        private void DrawGroupFrames(Vector2 clipTopLeft, Vector2 clipSize)
+        /// <summary>
+        /// Draws the border of every grid in the construct (ADR-0032).
+        ///
+        /// <b>A thin line at every zoom, never a filled band.</b> The border exists to say "these
+        /// cards are one ship part", and a line that grows with the zoom would compete with the
+        /// cards it encloses — at 2x it would be twice as thick as a card's own border and read as
+        /// a wall rather than a boundary. The thickness is therefore taken from
+        /// <see cref="VgsScreenDraw.ClientWidth"/> in graph units, the same conversion the caret
+        /// uses, so it lands on about one pixel at any resolution and any zoom.
+        ///
+        /// <b>Nothing is drawn for a construct with one grid.</b> A border around everything is
+        /// not a boundary — it is a picture frame, and it would appear on every single-grid ship
+        /// where it says nothing. The check is "does any node stand on a grid other than the one
+        /// the editor was opened on", not "how many frames are there": a construct whose subgrid
+        /// is entirely hidden still has one frame, and that frame means nothing.
+        ///
+        /// <b>Drawn first of everything on the canvas</b>, so it sits behind group frames, lines
+        /// and cards: a grid contains groups, groups contain cards.
+        /// </summary>
+        private void DrawGridBorders(Vector2 clipTopLeft, Vector2 clipSize)
         {
-            IList<Node> groups = _graph.Groups;
+            if (!_view.ShowGridBorders) return;
+
+            GridFrames.Layout(_graph, _gridFrames);
+            if (_gridFrames.Count == 0) return;
+
+            bool multiGrid = false;
+            for (int i = 0; i < _gridFrames.Count; i++)
+            {
+                if (_gridFrames[i].GridEntityId == _graph.GridEntityId) continue;
+                multiGrid = true;
+                break;
+            }
+            if (!multiGrid) return;
+
+            for (int i = 0; i < _gridFrames.Count; i++)
+            {
+                GridFrame frame = _gridFrames[i];
+
+                Vector2 screen = GraphToScreen(frame.TopLeft, clipTopLeft);
+                Vector2 screenSize = frame.Size * _view.Zoom;
+
+                // Cull the same way cards are culled: a grid scrolled off-screen costs two
+                // comparisons instead of a border.
+                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
+                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+
+                // The editor's own grid is the quieter of the two: the player is looking at the
+                // construct from that ship part, and a border at full strength around everything
+                // would read as the outer edge of the picture rather than as one grid among
+                // several.
+                Color color = frame.GridEntityId == _graph.GridEntityId
+                    ? ColGridFrameMain
+                    : ColGridFrameSub;
+
+                VgsScreenDraw.BorderPixels(screen, screenSize, clipTopLeft, clipSize,
+                                           color, VgsConstants.GridBorderPixels);
+            }
+
+            // One line per session, naming what was actually drawn. Without it, a report of "a
+            // border looks wrong" cannot be told apart from "a different border is wrong", and the
+            // geometry can only be guessed at — which has cost three wrong fixes already. The line
+            // carries the numbers the rasteriser was given, so the next report can be measured
+            // instead of reasoned about.
+            ReportGridGeometryOnce(clipTopLeft, clipSize);
+
+            // Tabs in a second pass, after every border. A tab belongs to its frame, but a frame
+            // drawn later would paint over it, and on a construct where a subgrid's box sits close
+            // to the main grid's corner that is not hypothetical: the tab would be half covered by
+            // a border belonging to another grid, which reads as a clipping defect.
+            for (int i = 0; i < _gridFrames.Count; i++)
+            {
+                GridFrame frame = _gridFrames[i];
+
+                Vector2 screen = GraphToScreen(frame.TopLeft, clipTopLeft);
+                Vector2 screenSize = frame.Size * _view.Zoom;
+
+                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
+                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+
+                Color color = frame.GridEntityId == _graph.GridEntityId
+                    ? ColGridFrameMain
+                    : ColGridFrameSub;
+
+                DrawGridName(frame, screen, screenSize, clipTopLeft, clipSize, color);
+            }
+        }
+
+        /// <summary>
+        /// Logs the geometry of the grid borders once per session, in pixels.
+        ///
+        /// <b>Why this exists.</b> Four fixes in a row were reasoned from a screenshot rather than
+        /// measured, and three were wrong. A report that says "the border has a spur" cannot
+        /// distinguish a wrong corner from a wrong clip from a second box drawn at almost the same
+        /// place; the numbers can. This prints the box <em>and the four edge rectangles</em> the
+        /// rasteriser was given, plus the tab, so the next report can be answered from data.
+        ///
+        /// One line per session, not per frame: it is a diagnostic, not telemetry.
+        /// </summary>
+        private void ReportGridGeometryOnce(Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (_gridGeometryReported) return;
+            if (_gridFrames.Count == 0) return;
+
+            _gridGeometryReported = true;
+
+            var report = new System.Text.StringBuilder();
+            report.Append("grid borders: ").Append(_gridFrames.Count).Append(" frame(s), zoom ")
+                  .Append(_view.Zoom.ToString("0.###"))
+                  .Append(", client ").Append((int)VgsScreenDraw.ClientWidth).Append('x')
+                  .Append((int)VgsScreenDraw.ClientHeight)
+                  .Append(", scale ").Append(VgsScreenDraw.ApiScaleX.ToString("0.#####"))
+                  .Append('/').Append(VgsScreenDraw.ApiScaleY.ToString("0.#####"))
+                  .Append(", offset ").Append(VgsScreenDraw.ApiOffsetX.ToString("0.#####"))
+                  .Append('/').Append(VgsScreenDraw.ApiOffsetY.ToString("0.#####"));
+
+            for (int i = 0; i < _gridFrames.Count; i++)
+            {
+                GridFrame frame = _gridFrames[i];
+
+                Vector2 screen = GraphToScreen(frame.TopLeft, clipTopLeft);
+                Vector2 screenSize = frame.Size * _view.Zoom;
+
+                float left = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleX,
+                                                          VgsScreenDraw.ApiOffsetX,
+                                                          VgsScreenDraw.ClientWidth, screen.X);
+                float top = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleY,
+                                                         VgsScreenDraw.ApiOffsetY,
+                                                         VgsScreenDraw.ClientHeight, screen.Y);
+                float right = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleX,
+                                                           VgsScreenDraw.ApiOffsetX,
+                                                           VgsScreenDraw.ClientWidth,
+                                                           screen.X + screenSize.X);
+                float bottom = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleY,
+                                                            VgsScreenDraw.ApiOffsetY,
+                                                            VgsScreenDraw.ClientHeight,
+                                                            screen.Y + screenSize.Y);
+
+                report.Append(" | grid ").Append(frame.GridEntityId)
+                      .Append(frame.GridEntityId == _graph.GridEntityId ? "(main)" : "(sub)")
+                      .Append(" box ").Append((int)left).Append(',').Append((int)top)
+                      .Append("..").Append((int)right).Append(',').Append((int)bottom);
+
+                // The four rectangles actually handed to the sprite. If two of them disagree by a
+                // pixel at a shared corner, that disagreement is visible here.
+                var edges = new List<Vector4>(4);
+                GridFrames.AppendBorderEdges(edges, left, top, right, bottom,
+                                             VgsConstants.GridBorderPixels);
+                for (int e = 0; e < edges.Count; e++)
+                {
+                    Vector4 edge = edges[e];
+                    report.Append(" e").Append(e).Append('[')
+                          .Append((int)edge.X).Append(',').Append((int)edge.Y).Append("..")
+                          .Append((int)edge.Z).Append(',').Append((int)edge.W).Append(']');
+                }
+            }
+
+            VgsLog.Info(report.ToString());
+        }
+
+        private static string FormatPoint(Vector2 point)
+        {
+            return point.X.ToString("0.####") + "," + point.Y.ToString("0.####");
+        }
+
+        /// <summary>Draws a grid's name as a tab sitting on the frame's top-left corner.
+        ///
+        /// <b>On the corner, not inside the frame.</b> A label inside would have to clear the
+        /// cards, and the frame's padding is only as large as it needs to be to keep the border
+        /// off them — there is no room for text there, which is why the label used to look
+        /// detached from its border. A tab whose bottom edge lies on the top edge reads as part of
+        /// the frame at any zoom, the way a filename tab reads as part of a folder.
+        ///
+        /// The tab is filled with the canvas colour so the border behind it does not show through
+        /// the glyphs, and outlined in the grid's own colour so the two are visibly one object.
+        ///
+        /// A name that cannot be read is not drawn: the border still says the cards belong
+        /// together, which is the part that matters.
+        /// </summary>
+        private void DrawGridName(GridFrame frame, Vector2 screen, Vector2 screenSize,
+                                  Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        {
+            string name = GridNameFor(frame.GridEntityId);
+            if (string.IsNullOrEmpty(name)) return;
+
+            const float scale = VgsConstants.GridTitleScale;
+            Vector2 textSize = VgsScreenDraw.Measure(name, scale);
+
+            float padX = VgsConstants.GridTabPaddingX;
+            float padY = VgsConstants.GridTabPaddingY;
+
+            float tabWidth = textSize.X + padX * 2f;
+            float tabHeight = textSize.Y + padY * 2f;
+            if (tabWidth <= 0f || tabHeight <= 0f) return;
+
+            // The tab's bottom edge sits on the frame's top edge; its left edge aligns with the
+            // frame's left edge. Rounded to whole pixels so the tab's outline and the border it
+            // rests on share a row instead of overlapping by a fraction.
+            float tabLeft = screen.X;
+            float tabTop = screen.Y - tabHeight;
+
+            // Cull with the frame: a tab alone, with its frame off-screen, is noise.
+            if (tabLeft > clipSize.X || tabTop > clipSize.Y) return;
+            if (tabLeft + tabWidth < 0f || tabTop + tabHeight < 0f) return;
+
+            Vector2 tabTopLeft = new Vector2(tabLeft, tabTop);
+            Vector2 tabSize = new Vector2(tabWidth, tabHeight);
+
+            // Filled with the canvas colour rather than left transparent: the frame's own top edge
+            // runs along the tab's bottom, and a translucent tab would show it through the text.
+            //
+            // Both the fill and the outline go through the pixel-snapped primitives, from the same
+            // corners. A fill at a fractional position beside a border on whole pixels leaves a
+            // fraction of the fill showing past the border — which on a dark canvas reads as a
+            // one-pixel spur at a corner. This is the same defect ADR-0024 §5 records for the
+            // search field, and the same answer: one set of edges, not two.
+            VgsScreenDraw.FillPixels(tabTopLeft, tabSize, ColCanvas);
+            VgsScreenDraw.BorderPixels(tabTopLeft, tabSize, clipTopLeft, clipSize, color,
+                                       VgsConstants.GridBorderPixels);
+
+            float textLeft = tabLeft + padX;
+            float textTop = tabTop + padY;
+            float textWidth = tabWidth - padX * 2f;
+            if (textWidth <= 0f) return;
+
+            VgsScreenDraw.Text(name, new Vector2(textLeft, textTop), scale, color, textWidth);
+        }
+
+        /// <summary>
+        /// Display name of a grid, cached per refresh. Empty when it cannot be read.
+        ///
+        /// Cached because the draw path runs every frame and reading a grid's display name is a
+        /// live world read (ADR-0003 forbids those while drawing). The cache is rebuilt by
+        /// <see cref="RefreshGridNames"/> on the structural pass, where world reads belong.
+        /// </summary>
+        private string GridNameFor(long gridEntityId)
+        {
+            if (_gridNames == null) return string.Empty;
+
+            string name;
+            return _gridNames.TryGetValue(gridEntityId, out name) ? name : string.Empty;
+        }
+
+        private void DrawGroupFrames(Vector2 clipTopLeft, Vector2 clipSize)
+        {            IList<Node> groups = _graph.Groups;
             for (int i = 0; i < groups.Count; i++)
             {
                 Node group = groups[i];
@@ -623,8 +870,27 @@ namespace Vgs.Ui
                 }
 
                 Color border = selected ? ColGroupSelected : (hovered ? ColNodeHover : ColGroupBorder);
-                VgsScreenDraw.BorderClipped(screen, screenSize, clipTopLeft, clipSize, Fade(border, alpha),
-                                            selected ? Hairline * 2f : Hairline);
+
+                // The group frame goes through the same pixel-snapped border as the grid frames.
+                //
+                // <b>Why this is not cosmetic.</b> The old call used `BorderClipped` with a
+                // `Hairline` thickness — a fraction of the client *height*, in layout units, at
+                // unsnapped coordinates. Two consequences, and the second is the visible one:
+                //
+                //  * the two axes do not share a scale (ADR-0009), so a hairline is 1 px tall and
+                //    1.78 px wide on a 16:9 window;
+                //  * the vertical bars and the horizontal ones are separate quads on a shared
+                //    nominal coordinate, rasterised independently, so one can reach a pixel past
+                //    the other — a stub sticking out of a corner. `Border`'s own documentation
+                //    records exactly this defect ("two little feet sticking out under a field's
+                //    bottom edge"), and it is the same one reported here at every zoom.
+                //
+                // Using one construction for every frame in the editor means a corner cannot be
+                // assembled from two different rounding rules.
+                VgsScreenDraw.BorderPixels(screen, screenSize, clipTopLeft, clipSize,
+                                           Fade(border, alpha),
+                                           selected ? VgsConstants.GridBorderPixels * 2f
+                                                    : VgsConstants.GridBorderPixels);
 
                 if (titleSize.Y > 0f)
                 {
@@ -1288,10 +1554,22 @@ namespace Vgs.Ui
             // must not be able to round a row past the frame (ADR-0024 §5).
             VgsScreenDraw.Panel(menuTopLeft, menuSize, ColMenu, ColMenuBorder, Hairline);
 
-            Vector2 rowTopLeft, rowSize;
-            GetModesRowRect(out rowTopLeft, out rowSize);
+            for (int i = 0; i < ModesMenuRowCount; i++) DrawModesRow(i);
+        }
 
-            if (_modesRowHot) VgsScreenDraw.Rect(rowTopLeft, rowSize, ColMenuRowHot);
+        /// <summary>
+        /// Draws one toggle row: the check square, its filled interior when the option is on, and
+        /// the label. The label of row 0 is "show/hide invisible", row 1 "show subgrids", row 2
+        /// "show grid borders" (ADR-0023, ADR-0032).
+        /// </summary>
+        private void DrawModesRow(int index)
+        {
+            Vector2 rowTopLeft, rowSize;
+            GetModesRowRect(index, out rowTopLeft, out rowSize);
+
+            if (_modesRowHot == index) VgsScreenDraw.Rect(rowTopLeft, rowSize, ColMenuRowHot);
+
+            bool on = ModesRowValue(index);
 
             float checkLeft = rowTopLeft.X + VgsConstants.ModesMenuPadding;
             float checkTop = rowTopLeft.Y + (rowSize.Y - VgsConstants.ModesMenuCheckSize) * 0.5f;
@@ -1299,9 +1577,9 @@ namespace Vgs.Ui
             VgsScreenDraw.Border(new Vector2(checkLeft, checkTop),
                                  new Vector2(VgsConstants.ModesMenuCheckSize,
                                              VgsConstants.ModesMenuCheckSize),
-                                 _view.ShowHidden ? ColNodeSelected : ColMenuBorder, Hairline);
+                                 on ? ColNodeSelected : ColMenuBorder, Hairline);
 
-            if (_view.ShowHidden)
+            if (on)
             {
                 // A filled square inside the frame rather than a tick glyph: the editor's font
                 // may be any of several, and a tick that is missing from one of them draws as a
@@ -1320,8 +1598,32 @@ namespace Vgs.Ui
             float labelTop = rowTopLeft.Y + (rowSize.Y - ModesMenuLabelHeight) * 0.5f;
             if (labelTop < rowTopLeft.Y) labelTop = rowTopLeft.Y;
 
-            VgsScreenDraw.Text(VgsText.ModesShowHidden, new Vector2(labelLeft, labelTop),
+            VgsScreenDraw.Text(ModesRowLabel(index), new Vector2(labelLeft, labelTop),
                                VgsConstants.ModesMenuLabelScale, ColText, labelWidth);
+        }
+
+        /// <summary>Whether the option in a modes-menu row is currently on.</summary>
+        private bool ModesRowValue(int index)
+        {
+            switch (index)
+            {
+                case 0: return _view.ShowHidden;
+                case 1: return _view.ShowSubgrids;
+                case 2: return _view.ShowGridBorders;
+            }
+            return false;
+        }
+
+        /// <summary>Label of a modes-menu row.</summary>
+        private static string ModesRowLabel(int index)
+        {
+            switch (index)
+            {
+                case 0: return VgsText.ModesShowHidden;
+                case 1: return VgsText.ModesShowSubgrids;
+                case 2: return VgsText.ModesShowGridBorders;
+            }
+            return string.Empty;
         }
 
         /// <summary>

@@ -62,7 +62,7 @@ namespace Vgs.Game
         /// The flag is not touched — the mode only decides what the schema draws, so turning it
         /// back off hides those cards again and nothing in the world has changed.
         /// </summary>
-        public static GridGraph Build(IMyCubeGrid grid, bool includeHidden)
+        public static GridGraph Build(IMyCubeGrid grid, bool includeHidden, bool includeSubgrids)
         {
             long gridId = 0;
             if (grid != null)
@@ -74,7 +74,7 @@ namespace Vgs.Game
             var graph = new GridGraph(gridId);
             if (grid == null) return graph;
 
-            Refresh(graph, grid, includeHidden);
+            Refresh(graph, grid, includeHidden, includeSubgrids);
             return graph;
         }
 
@@ -93,7 +93,8 @@ namespace Vgs.Game
         /// Keeping the two apart is what lets the schema look live without paying for a full
         /// rebuild twice a second (see <c>docs/03-architecture.md</c>, «два прохода»).
         /// </summary>
-        public static void Refresh(GridGraph graph, IMyCubeGrid grid, bool includeHidden)
+        public static void Refresh(GridGraph graph, IMyCubeGrid grid, bool includeHidden,
+                                   bool includeSubgrids)
         {
             if (graph == null || grid == null) return;
 
@@ -170,12 +171,27 @@ namespace Vgs.Game
                     // back the moment the block is shown again.
                     if (!includeHidden && !NodeStateStore.IsShown(terminal)) continue;
 
+                    // A block on another grid of the same construct is a subgrid block
+                    // (ADR-0032). It is part of the schema by default; the player can take the
+                    // whole subgrid out of the picture, and then it is filtered here rather than
+                    // at draw time — "is this node in the graph" is decided while the graph is
+                    // built, and a draw-time filter would leave edges pointing at cards that are
+                    // not painted.
+                    //
+                    // 0 means the grid could not be read, which is not a subgrid: the block stays,
+                    // because "could not read" is never "does not belong here".
+                    long blockGridId = SafeGridId(terminal);
+                    if (!includeSubgrids && blockGridId != 0 && blockGridId != graph.GridEntityId)
+                    {
+                        continue;
+                    }
+
                     live.Add(terminal.EntityId);
 
                     Node node = graph.GetNode(terminal.EntityId);
                     if (node == null)
                     {
-                        graph.AddNode(CreateNode(terminal));
+                        graph.AddNode(CreateNode(terminal, blockGridId));
                     }
                     else
                     {
@@ -302,7 +318,7 @@ namespace Vgs.Game
             }
         }
 
-        private static Node CreateNode(IMyTerminalBlock block)
+        private static Node CreateNode(IMyTerminalBlock block, long gridId)
         {
             // The toolbar is read once and before the node exists: the game builds it in the
             // block's Init and never resizes it, and the event port list depends on its shape
@@ -316,7 +332,7 @@ namespace Vgs.Game
                 SafePosition(block),
                 toolbar,
                 EventControllerProbe.IsController(block),
-                SafeGridId(block));
+                gridId);
 
             var actions = new List<string>();
             node.HasTerminal = TryReadActions(block, actions);

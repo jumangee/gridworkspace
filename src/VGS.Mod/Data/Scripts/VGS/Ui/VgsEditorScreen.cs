@@ -108,6 +108,32 @@ namespace Vgs.Ui
         /// </summary>
         private readonly ViewState _view;
 
+        /// <summary>
+        /// The grid frames of the current graph, recomputed on the structural pass and reused by
+        /// the draw pass (ADR-0032).
+        ///
+        /// One buffer for the lifetime of the screen: the draw path must not allocate (R010), and
+        /// a grid frame is a struct, so refilling this list is a memcpy rather than a collection
+        /// of new objects.
+        /// </summary>
+        private readonly List<GridFrame> _gridFrames = new List<GridFrame>(4);
+
+        /// <summary>
+        /// Display names of the grids in the construct, keyed by grid entity id, refreshed on the
+        /// structural pass (ADR-0032).
+        ///
+        /// A cache, because a grid's name is a live world read and the draw path is not allowed to
+        /// touch the world (ADR-0003). Null until the first refresh; an empty name means the read
+        /// failed and the border is drawn without a label.
+        /// </summary>
+        private Dictionary<long, string> _gridNames;
+
+        /// <summary>
+        /// True once the grid-border geometry has been written to the log for this session
+        /// (ADR-0032). A diagnostic, so it is one line per session rather than per frame.
+        /// </summary>
+        private bool _gridGeometryReported;
+
         // Interaction state: idle (all null), bind, or menu.
         private Node _draggedNode;
         private Vector2 _dragGrabOffset;
@@ -310,7 +336,12 @@ namespace Vgs.Ui
         private bool _modesHot;
 
         /// <summary>True while the pointer is over the modes menu's only row.</summary>
-        private bool _modesRowHot;
+        /// <summary>
+        /// Which modes-menu row the pointer is over, or -1. An index rather than a bool per row:
+        /// the menu is a list of toggles, and one index keeps "which row is hot" and "which row
+        /// was clicked" the same value instead of three flags that can all be true at once.
+        /// </summary>
+        private int _modesRowHot = -1;
 
         /// <summary>
         /// The search field: the query, the caret and the selection, the scroll that keeps the
@@ -412,7 +443,7 @@ namespace Vgs.Ui
         private float _hintLineHeight = -1f;
 
         private VgsEditorScreen(GridGraph graph, IMyCubeGrid grid, Vector2 camera, float zoom,
-                                bool showHidden)
+                                bool showHidden, bool showSubgrids, bool showGridBorders)
             : base(
                 name: "VGS.Workbench",
                 position: new Vector2(0.5f, 0.5f),
@@ -426,7 +457,7 @@ namespace Vgs.Ui
         {
             _graph = graph;
             _grid = grid;
-            _view = new ViewState(camera, zoom, showHidden);
+            _view = new ViewState(camera, zoom, showHidden, showSubgrids, showGridBorders);
 
             // The editor is a full-screen modal: Esc closes it, the pointer is visible.
             CloseOnEscape = true;
@@ -494,24 +525,36 @@ namespace Vgs.Ui
             float zoom = 1f;
             bool showHidden = false;
 
+            // Subgrids are shown and grid borders drawn by default (ADR-0032): a connection from
+            // the main grid to a subgrid block works in the game, so a schema that hid its card
+            // by default would quietly disagree with the ship.
+            bool showSubgrids = true;
+            bool showGridBorders = true;
+
             Vector2 savedCamera;
             float savedZoom;
             bool savedShowHidden;
-            if (GridViewStore.TryRead(grid, out savedCamera, out savedZoom, out savedShowHidden))
+            bool savedShowSubgrids;
+            bool savedShowGridBorders;
+            if (GridViewStore.TryRead(grid, out savedCamera, out savedZoom, out savedShowHidden,
+                                      out savedShowSubgrids, out savedShowGridBorders))
             {
                 camera = savedCamera;
                 zoom = savedZoom;
                 showHidden = savedShowHidden;
+                showSubgrids = savedShowSubgrids;
+                showGridBorders = savedShowGridBorders;
             }
 
-            GridGraph graph = GridGraphBuilder.Build(grid, showHidden);
+            GridGraph graph = GridGraphBuilder.Build(grid, showHidden, showSubgrids);
 
             // Group frames are derived from the cards of their members, so they are laid out
             // once the graph is complete — before the first frame is drawn, and outside any
             // draw path (ADR-0015).
             PortGeometry.LayoutGroupFrames(graph);
 
-            var screen = new VgsEditorScreen(graph, grid, camera, zoom, showHidden);
+            var screen = new VgsEditorScreen(graph, grid, camera, zoom, showHidden,
+                                             showSubgrids, showGridBorders);
 
             VgsScreenDraw.EnsureResources();
             if (!VgsScreenDraw.ResourcesReady)
@@ -805,20 +848,45 @@ namespace Vgs.Ui
             GetModesButtonRect(out buttonTopLeft, out buttonSize);
 
             size = new Vector2(VgsConstants.ModesMenuWidth,
-                               VgsConstants.ModesMenuRowHeight + VgsConstants.ModesMenuPadding * 2f);
+                               ModesMenuRowCount * VgsConstants.ModesMenuRowHeight
+                               + VgsConstants.ModesMenuPadding * 2f);
 
             topLeft = new Vector2(buttonTopLeft.X,
                                   buttonTopLeft.Y - size.Y - VgsConstants.ModesMenuGap);
         }
 
-        /// <summary>Rectangle of the modes menu's single row.</summary>
-        private static void GetModesRowRect(out Vector2 topLeft, out Vector2 size)
+        /// <summary>
+        /// How many toggle rows the modes menu has. A constant rather than a computed count: the
+        /// rows are a fixed list of options, and the menu's height, its hit test and its drawing
+        /// all have to agree about how many there are.
+        /// </summary>
+        private const int ModesMenuRowCount = 3;
+
+        /// <summary>Rectangle of one row of the modes menu, by index from the top.</summary>
+        private static void GetModesRowRect(int index, out Vector2 topLeft, out Vector2 size)
         {
             Vector2 menuTopLeft, menuSize;
             GetModesMenuRect(out menuTopLeft, out menuSize);
 
             size = new Vector2(menuSize.X, VgsConstants.ModesMenuRowHeight);
-            topLeft = new Vector2(menuTopLeft.X, menuTopLeft.Y + VgsConstants.ModesMenuPadding);
+            topLeft = new Vector2(menuTopLeft.X,
+                                  menuTopLeft.Y + VgsConstants.ModesMenuPadding
+                                  + index * VgsConstants.ModesMenuRowHeight);
+        }
+
+        /// <summary>
+        /// Which row the pointer is over, or -1. One hit test for all rows, so a click and the
+        /// highlight it produces cannot disagree about which row it was.
+        /// </summary>
+        private static int HitModesRow(Vector2 mouse)
+        {
+            for (int i = 0; i < ModesMenuRowCount; i++)
+            {
+                Vector2 topLeft, size;
+                GetModesRowRect(i, out topLeft, out size);
+                if (PortGeometry.Contains(topLeft, size, mouse)) return i;
+            }
+            return -1;
         }
 
         /// <summary>
@@ -927,6 +995,72 @@ namespace Vgs.Ui
             }
         }
 
+        /// <summary>
+        /// Reads the display name of every grid that has cards on the canvas (ADR-0032).
+        ///
+        /// Runs on the structural pass, never from the draw path: a grid's name is a live world
+        /// read. A grid whose name cannot be read keeps an empty entry rather than being dropped,
+        /// so the draw path does not have to distinguish "not read yet" from "has no name" — both
+        /// mean "draw the border without a label".
+        /// </summary>
+        private void RefreshGridNames()
+        {
+            if (_gridNames == null) _gridNames = new Dictionary<long, string>(4);
+
+            for (int i = 0; i < _gridFrames.Count; i++)
+            {
+                long gridId = _gridFrames[i].GridEntityId;
+                if (_gridNames.ContainsKey(gridId)) continue;
+
+                _gridNames[gridId] = ReadGridName(gridId);
+            }
+
+            // Drop entries for grids that no longer have cards: a construct can lose a subgrid,
+            // and a dictionary that only grows is a leak that outlives the picture.
+            if (_gridNames.Count > _gridFrames.Count)
+            {
+                var stale = new List<long>();
+                foreach (KeyValuePair<long, string> pair in _gridNames)
+                {
+                    bool found = false;
+                    for (int i = 0; i < _gridFrames.Count; i++)
+                    {
+                        if (_gridFrames[i].GridEntityId != pair.Key) continue;
+                        found = true;
+                        break;
+                    }
+                    if (!found) stale.Add(pair.Key);
+                }
+                for (int i = 0; i < stale.Count; i++) _gridNames.Remove(stale[i]);
+            }
+        }
+
+        /// <summary>
+        /// Display name of one grid, or empty when it cannot be read. The name is the grid's
+        /// <c>DisplayName</c>, which the game keeps in sync with the terminal's ship name.
+        /// </summary>
+        private string ReadGridName(long gridEntityId)
+        {
+            try
+            {
+                if (MyAPIGateway.Entities == null) return string.Empty;
+
+                VRage.ModAPI.IMyEntity entity;
+                if (!MyAPIGateway.Entities.TryGetEntityById(gridEntityId, out entity)) return string.Empty;
+
+                IMyCubeGrid cubeGrid = entity as IMyCubeGrid;
+                if (cubeGrid == null) return string.Empty;
+
+                string name = cubeGrid.DisplayName;
+                return name ?? string.Empty;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("grid-name", "could not read a grid's name", e, 600);
+                return string.Empty;
+            }
+        }
+
         private void RefreshFromGrid()
         {
             if (_grid == null) return;
@@ -945,11 +1079,16 @@ namespace Vgs.Ui
                     return;
                 }
 
-                GridGraphBuilder.Refresh(_graph, _grid, _view.ShowHidden);
+                GridGraphBuilder.Refresh(_graph, _grid, _view.ShowHidden, _view.ShowSubgrids);
 
                 // The refresh moves cards (LayoutUnplaced) and rebuilds the groups, so the
                 // frames have to be recomputed before the next draw reads them.
                 PortGeometry.LayoutGroupFrames(_graph);
+
+                // Grid frames and their names follow the same rule: computed here, on the pass
+                // that is allowed to touch the world, so the draw path only reads (ADR-0003).
+                GridFrames.Layout(_graph, _gridFrames);
+                RefreshGridNames();
 
                 ValidateInteractionState();
 
@@ -1101,8 +1240,15 @@ namespace Vgs.Ui
 
             DropNodeReferences();
 
-            _graph = GridGraphBuilder.Build(_grid, _view.ShowHidden);
+            _graph = GridGraphBuilder.Build(_grid, _view.ShowHidden, _view.ShowSubgrids);
             PortGeometry.LayoutGroupFrames(_graph);
+            GridFrames.Layout(_graph, _gridFrames);
+
+            // The rebuild can bring in grids the previous graph never had (a subgrid was just
+            // attached, or "show subgrids" was turned back on), so the name cache is rebuilt from
+            // scratch rather than added to.
+            _gridNames = null;
+            RefreshGridNames();
 
             VgsLog.Info("schema rebuilt: " + _graph.NodeCount + " blocks, invisible "
                         + (_view.ShowHidden ? "shown" : "hidden"));

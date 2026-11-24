@@ -74,6 +74,7 @@ $sources = @(
     # measurement) is an injected delegate, and the view state touches no grid at all.
     (Join-Path $sourceRoot 'Ui\SearchField.cs'),
     (Join-Path $sourceRoot 'Ui\ViewState.cs'),
+    (Join-Path $sourceRoot 'Ui\GridFrames.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.
     (Join-Path $sourceRoot 'Ui\IconPlacement.cs'),

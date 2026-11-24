@@ -111,5 +111,23 @@ namespace Vgs.Ui
         /// from a bar the user looks at only when something goes wrong.
         /// </summary>
         public static readonly Color ColWarning = new Color(255, 176, 120, 255);
+
+        /// <summary>
+        /// Border of the grid the editor was opened on (ADR-0032): the quieter of the two, because
+        /// the player is looking at the construct from that ship part and a border at full strength
+        /// around everything would read as the outer edge of the picture rather than as one grid
+        /// among several.
+        ///
+        /// A cool grey, deliberately unlike the group's warm light grey: the two borders nest, and
+        /// telling them apart by temperature is faster than telling them apart by position.
+        /// </summary>
+        public static readonly Color ColGridFrameMain = new Color(96, 120, 148, 150);
+
+        /// <summary>
+        /// Border of a subgrid (ADR-0032): slightly brighter than the main grid's, because a
+        /// subgrid is the thing the player came to look at — it is the part that was missing from
+        /// the schema before this feature existed.
+        /// </summary>
+        public static readonly Color ColGridFrameSub = new Color(126, 158, 194, 185);
     }
 }

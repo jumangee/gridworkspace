@@ -163,6 +163,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== construct layout keeps grids together (ADR-0032) ===");
         ConstructLayoutKeepsGridsTogether();
 
+        Console.WriteLine("=== grid frames enclose their own cards (ADR-0032) ===");
+        GridFramesEncloseTheirGrid();
+
         Console.WriteLine("=== block group action rule (ADR-0015) ===");
         GroupActionRule();
 
@@ -1982,6 +1985,288 @@ internal static class OfflineChecks
               "a card with no grid sorts before the grids, not inside one");
     }
 
+    /// <summary>
+    /// Grid frames (ADR-0032): each box contains exactly the cards of its own grid, and nothing
+    /// else.
+    ///
+    /// A frame is what makes the construct readable — "these cards are one ship part" — so the
+    /// failure that matters is a frame that includes a neighbouring grid's card or leaves one of
+    /// its own outside. Both are invisible in the game until a ship has a subgrid, and both make
+    /// the border a lie.
+    /// </summary>
+    private static void GridFramesEncloseTheirGrid()
+    {
+        const long main = 100L;
+        const long sub = 200L;
+
+        var graph = new GridGraph(main);
+
+        // Two grids, deliberately far apart so their boxes cannot overlap by accident.
+        Node m1 = OnGrid(1, main, new Vector3I(0, 0, 0));
+        Node m2 = OnGrid(2, main, new Vector3I(1, 0, 0));
+        Node s1 = OnGrid(3, sub, new Vector3I(20, 0, 0));
+        Node s2 = OnGrid(4, sub, new Vector3I(21, 0, 0));
+
+        graph.AddNode(m1);
+        graph.AddNode(m2);
+        graph.AddNode(s1);
+        graph.AddNode(s2);
+        graph.LayoutUnplaced();
+
+        var frames = new List<GridFrame>(4);
+        GridFrames.Layout(graph, frames);
+
+        Check(frames.Count == 2, "one frame per grid, not one per card");
+
+        // ---- each frame contains its own cards ----
+        for (int i = 0; i < frames.Count; i++)
+        {
+            GridFrame frame = frames[i];
+            long grid = frame.GridEntityId;
+
+            IList<Node> nodes = graph.Nodes;
+            for (int n = 0; n < nodes.Count; n++)
+            {
+                Node node = nodes[n];
+                if (node.GridEntityId != grid) continue;
+
+                Vector2 topLeft, size;
+                PortGeometry.TryBodyRect(node, out topLeft, out size);
+
+                Check(frame.Contains(topLeft) && frame.Contains(topLeft + size),
+                      "a grid's frame contains every card of that grid");
+            }
+        }
+
+        // ---- and no card of another grid ----
+        GridFrame mainFrame = frames[0];
+        GridFrame subFrame = frames[1];
+
+        Vector2 subCard, subSize;
+        PortGeometry.TryBodyRect(s1, out subCard, out subSize);
+        Check(!mainFrame.Contains(subCard) && !mainFrame.Contains(subCard + subSize),
+              "the main grid's frame does not reach into the subgrid's cards");
+
+        Vector2 mainCard, mainSize;
+        PortGeometry.TryBodyRect(m1, out mainCard, out mainSize);
+        Check(!subFrame.Contains(mainCard) && !subFrame.Contains(mainCard + mainSize),
+              "the subgrid's frame does not reach into the main grid's cards");
+
+        // ---- the padding clears a group frame ----
+        //
+        // A grid frame encloses group frames too. If its padding were not larger than a group's,
+        // the two borders would cross and read as a drawing defect rather than as nesting.
+        float groupOuter = VgsConstants.GroupFramePadding * 2f + VgsConstants.GroupTitleHeight;
+        Check(VgsConstants.GridFramePadding * 2f > groupOuter,
+              "a grid frame's padding clears a group frame, so the two borders do not cross");
+
+        // ---- a group and an unreadable block have no frame ----
+        var noFrames = new GridGraph(main);
+        noFrames.AddNode(new Node("grp", "Group"));
+        noFrames.AddNode(new Node(9, "LargeBlockConveyor", "unread", new Vector3I(0, 0, 0),
+                                  ToolbarLayout.None, false, 0));
+        var empty = new List<GridFrame>(2);
+        GridFrames.Layout(noFrames, empty);
+        Check(empty.Count == 0, "a group and an unreadable grid produce no frame");
+
+        // ---- the list is reused, not appended to ----
+        //
+        // The screen owns one buffer for its lifetime (R010). A Layout that appended would grow
+        // it every refresh, and the draw pass would paint stale frames over the live ones.
+        //
+        // The size check is the one that matters: without the clear, a second call would merge the
+        // new bounds into the old *and* apply the padding again, so the box would creep outward by
+        // a padding per refresh. The count alone cannot see that — it stays at two.
+        Vector2 beforeSize = frames[0].Size;
+        Vector2 beforeTopLeft = frames[0].TopLeft;
+        GridFrames.Layout(graph, frames);
+        Check(frames.Count == 2, "laying out twice does not duplicate the frames");
+        CheckClose(frames[0].Size.X, beforeSize.X, "laying out twice does not grow a frame's width");
+        CheckClose(frames[0].Size.Y, beforeSize.Y, "laying out twice does not grow a frame's height");
+        CheckClose(frames[0].TopLeft.X, beforeTopLeft.X,
+                   "laying out twice does not creep a frame's origin");
+
+        // ---- a border is drawn in API-pixel space ----
+        //
+        // Everything below is the arithmetic that decides where a border's edges land. It was
+        // wrong three times, each time in a way that looked fine in the reasoning:
+        //
+        //   1. one thickness for both axes -> 0.56 px tall on a 16:9 window, a translucent line;
+        //   2. dividing by the zoom -> 2.9 px at 35%, 0.47 px at 213%;
+        //   3. snapping each edge on its own -> the shared corner rounded twice, disagreeing by a
+        //      pixel, which is the spur that was reported at every zoom.
+        //
+        // The third one is why the border is now built from four snapped corners rather than four
+        // snapped edges: tiling is a property of the construction, so it cannot be got wrong by a
+        // rounding rule.
+
+        // The transform VgsScreenDraw applies: api = layout * scale + offset. On a 16:9 window
+        // whose safe area is 4:3, scale is 1920/1680 and the offset is -120/1680.
+        const float scale = 1920f / 1680f;
+        const float offset = -120f / 1680f;
+        const float clientPx = 1920f;
+
+        // Safe area in pixels: one API unit spans `scale` client units.
+        float safePx = clientPx / scale;
+
+        // ---- corners land on whole pixels, and stay where they were ----
+        //
+        // The defect, stated as a check: an unsnapped coordinate lands between pixels. This is
+        // what the very first version drew — the right thickness, positioned on a fraction, which
+        // a rasteriser turns into two half-covered columns rather than one solid one.
+        float rawPx = (0.3511f * scale + offset) * safePx;
+        Check(Math.Abs(rawPx - (float)Math.Round(rawPx)) > 0.05f,
+              "an unsnapped edge lands between pixels, which is what made it invisible");
+
+        float corner = GridFrames.CornerToApiPixels(scale, offset, clientPx, 0.3511f);
+        CheckClose(corner, (float)Math.Round(corner),
+                   "a snapped corner lands on a whole API pixel");
+
+        // Snapping must move an edge by at most half a pixel, never somewhere else. This is what
+        // catches "round the API value itself": that version also produces a whole pixel, but it
+        // puts every border at pixel 0 — a whole screen away.
+        Check(Math.Abs(corner - rawPx) <= 0.5f + 1e-3f,
+              "snapping moves a corner by at most half a pixel");
+
+        // API units are normalised, not pixels: a corner in API units must be a small fraction,
+        // not a pixel count. An early version rounded the API value and collapsed every border
+        // into one corner pixel.
+        float cornerApi = GridFrames.ApiPixelsToApi(corner, scale, clientPx);
+        Check(cornerApi >= 0f && cornerApi <= 1f,
+              "an API coordinate stays inside 0..1, which is what the drawing API expects");
+        CheckClose(cornerApi * safePx, corner,
+                   "converting back to pixels returns the same corner");
+
+        // ---- the four edges tile the outline exactly ----
+        //
+        // This is the assertion the spur would have failed. Each case is a box whose corners have
+        // already been snapped (whole pixels), because that is what the draw path passes.
+        float[][] boxes = new float[][]
+        {
+            new float[] { 100f, 200f, 340f, 300f },     // ordinary
+            new float[] { 0f, 0f, 1f, 1f },             // degenerate: one pixel
+            new float[] { 50f, 60f, 52f, 62f },         // 2x2: exactly two edges, no interior
+            new float[] { 10f, 20f, 300f, 22f },        // 2 px tall: solid fallback
+        };
+
+        for (int b = 0; b < boxes.Length; b++)
+        {
+            float left = boxes[b][0];
+            float top = boxes[b][1];
+            float right = boxes[b][2];
+            float bottom = boxes[b][3];
+
+            var edges = new List<Vector4>(4);
+            GridFrames.AppendBorderEdges(edges, left, top, right, bottom, 1f);
+
+            Check(edges.Count > 0, "a border box produces edges");
+
+            // Every edge must lie inside the box: an edge that sticks out is the spur.
+            bool inside = true;
+            for (int i = 0; i < edges.Count; i++)
+            {
+                Vector4 e = edges[i];
+                if (e.X < left || e.Y < top || e.Z > right || e.W > bottom) inside = false;
+            }
+            Check(inside, "no border edge extends past the box, at any size");
+
+            if (edges.Count != 4) continue;   // the solid fallback: nothing to tile
+
+            // Top edge spans the full width and the bottom edge does too; the vertical edges fit
+            // exactly between them. Any disagreement here is a gap or an overlap at a corner.
+            Vector4 topEdge = edges[0];
+            Vector4 bottomEdge = edges[1];
+            Vector4 leftEdge = edges[2];
+            Vector4 rightEdge = edges[3];
+
+            CheckClose(topEdge.X, left, "the top edge starts at the box's left corner");
+            CheckClose(topEdge.Z, right, "the top edge ends at the box's right corner");
+            CheckClose(bottomEdge.X, left, "the bottom edge starts at the box's left corner");
+            CheckClose(bottomEdge.Z, right, "the bottom edge ends at the box's right corner");
+
+            CheckClose(leftEdge.Y, topEdge.W,
+                       "the left edge starts exactly where the top edge ends");
+            CheckClose(leftEdge.W, bottomEdge.Y,
+                       "the left edge ends exactly where the bottom edge starts");
+            CheckClose(rightEdge.Y, topEdge.W,
+                       "the right edge starts exactly where the top edge ends");
+            CheckClose(rightEdge.W, bottomEdge.Y,
+                       "the right edge ends exactly where the bottom edge starts");
+
+            CheckClose(leftEdge.X, left, "the left edge sits on the box's left side");
+            CheckClose(rightEdge.Z, right, "the right edge sits on the box's right side");
+        }
+
+        // ---- the reported defect, stated exactly ----
+        //
+        // The screenshot showed the horizontal edge ending one pixel past the vertical edge: the
+        // bottom edge ran to x=34 while the right edge sat at x=33. That is what "a spur at the
+        // corner" means numerically, so this is what the check asserts — exact equality, not
+        // closeness. A one-pixel disagreement is the entire visible defect, and CheckClose with
+        // its tolerance would call it a pass.
+        for (int b = 0; b < boxes.Length; b++)
+        {
+            var edges = new List<Vector4>(4);
+            GridFrames.AppendBorderEdges(edges, boxes[b][0], boxes[b][1], boxes[b][2],
+                                         boxes[b][3], 1f);
+            if (edges.Count != 4) continue;
+
+            Check(edges[1].Z == edges[3].Z,
+                  "the bottom edge ends on the same column as the right edge");
+            Check(edges[0].Z == edges[3].Z,
+                  "the top edge ends on the same column as the right edge");
+            Check(edges[1].X == edges[2].X,
+                  "the bottom edge starts on the same column as the left edge");
+            Check(edges[2].Y == edges[0].W, "the left edge starts on the top edge's last row");
+            Check(edges[2].W == edges[1].Y, "the left edge ends on the bottom edge's first row");
+            Check(edges[3].Y == edges[0].W, "the right edge starts on the top edge's last row");
+            Check(edges[3].W == edges[1].Y, "the right edge ends on the bottom edge's first row");
+        }
+
+        // ---- one pixel tall, at every zoom ----
+        //
+        // The thickness is now a pixel count, so the zoom cannot affect it: there is no zoom in
+        // the expression. The check states that as a property of the output rather than of the
+        // formula — every edge is exactly one pixel thick in the box it is derived from.
+        float[] zoomSweep = new float[] { 0.35f, 1f, 1.35f, 1.7f, 2.13f, 3f };
+        for (int z = 0; z < zoomSweep.Length; z++)
+        {
+            var edges = new List<Vector4>(4);
+            GridFrames.AppendBorderEdges(edges, 10f, 20f, 310f, 220f, 1f);
+
+            bool onePixel = true;
+            for (int i = 0; i < edges.Count; i++)
+            {
+                Vector4 e = edges[i];
+                // Horizontal edges are one pixel tall, vertical ones one pixel wide.
+                bool horizontal = Math.Abs(e.Y - 20f) < 0.01f || Math.Abs(e.W - 220f) < 0.01f;
+                float span = horizontal ? e.W - e.Y : e.Z - e.X;
+                if (Math.Abs(span - 1f) > 1e-4f) onePixel = false;
+            }
+            Check(onePixel, "every border edge is one pixel thick at zoom " + zoomSweep[z]);
+        }
+
+        // ---- a box with no interior is filled, not guessed ----
+        //
+        // A 2x2 box with 1 px edges has no room between them; drawing four rectangles would
+        // overlap in a way that reads as a solid block with darker corners on a translucent
+        // colour. One rectangle is the honest answer.
+        var tiny = new List<Vector4>(4);
+        GridFrames.AppendBorderEdges(tiny, 0f, 0f, 2f, 2f, 1f);
+        Check(tiny.Count == 1, "a box with no interior is drawn as one filled rectangle");
+
+        // ---- degenerate inputs produce nothing rather than garbage ----
+        var noEdges = new List<Vector4>(4);
+        GridFrames.AppendBorderEdges(noEdges, 100f, 100f, 100f, 200f, 1f);
+        Check(noEdges.Count == 0, "a zero-width box produces no edges");
+
+        GridFrames.AppendBorderEdges(noEdges, 100f, 200f, 50f, 100f, 1f);
+        Check(noEdges.Count == 0, "an inverted box produces no edges");
+
+        GridFrames.AppendBorderEdges(noEdges, 10f, 10f, 100f, 100f, 0f);
+        Check(noEdges.Count == 0, "a zero thickness produces no edges");
+    }
+
     private static Node WithGridPosition(Node node, Vector3I position)
     {
         // Node.GridPosition is readonly and set in the constructor, so rebuild the node.
@@ -3180,77 +3465,108 @@ internal static class OfflineChecks
 
     // ------------------------------------------------------------------ view state (ADR-0022)
     //
-    // The camera, the zoom and the "show invisible" toggle are written on the grid and read back
-    // on the next open. The round trip is the part that can silently open the schema at the wrong
+    // The camera, the zoom and the three view toggles are written on the grid and read back on
+    // the next open. The round trip is the part that can silently open the schema at the wrong
     // place, and it is the only part that can be exercised without the game.
     private static void ViewStateFormat()
     {
         var camera = new Vector2(-0.26f, 1.75f);
 
-        string text = GridViewFormat.Format(camera, 1.37f, true);
+        string text = GridViewFormat.Format(camera, 1.37f, true, false, true);
 
         Vector2 parsedCamera;
         float parsedZoom;
         bool parsedHidden;
+        bool parsedSubgrids;
+        bool parsedBorders;
 
-        Check(GridViewFormat.TryParse(text, out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(GridViewFormat.TryParse(text, out parsedCamera, out parsedZoom, out parsedHidden,
+                                      out parsedSubgrids, out parsedBorders),
               "a formatted view state parses back");
         CheckClose(parsedCamera.X, camera.X, "the camera X of a round trip is unchanged");
         CheckClose(parsedCamera.Y, camera.Y, "the camera Y of a round trip is unchanged");
         CheckClose(parsedZoom, 1.37f, "the zoom of a round trip is unchanged");
         Check(parsedHidden, "the show-invisible flag of a round trip is unchanged");
+        Check(!parsedSubgrids, "the show-subgrids flag of a round trip is unchanged");
+        Check(parsedBorders, "the grid-borders flag of a round trip is unchanged");
 
-        // The same round trip with the flag off, so a formatter that always wrote "1" would be
-        // caught: the check above alone cannot tell "wrote 1" from "always reads 1".
-        string off = GridViewFormat.Format(camera, 1f, false);
-        Check(GridViewFormat.TryParse(off, out parsedCamera, out parsedZoom, out parsedHidden),
-              "a view state with the flag off parses back");
+        // The same round trip with the flags off, so a formatter that always wrote "1" would be
+        // caught: the checks above alone cannot tell "wrote 1" from "always reads 1".
+        string off = GridViewFormat.Format(camera, 1f, false, false, false);
+        Check(GridViewFormat.TryParse(off, out parsedCamera, out parsedZoom, out parsedHidden,
+                                      out parsedSubgrids, out parsedBorders),
+              "a view state with every flag off parses back");
         Check(!parsedHidden, "the show-invisible flag reads back as off");
+        Check(!parsedSubgrids, "the show-subgrids flag reads back as off");
+        Check(!parsedBorders, "the grid-borders flag reads back as off");
 
         // Invariant culture: on a locale with a decimal comma the format would otherwise contain
         // commas, and the value would be unreadable on the next open.
         Check(text.IndexOf(',') < 0,
               "the view format uses no comma, so a decimal comma locale cannot corrupt it");
         Check(text.Split(' ').Length == GridViewFormat.FieldCount,
-              "the view format writes exactly four space-separated fields");
+              "the view format writes exactly six space-separated fields");
 
-        // ---- a three-field value from an older build keeps the camera ----
+        // ---- older builds keep their camera ----
         //
         // Forward compatibility by field count rather than by a format version: a world saved
-        // before the toggle existed must keep its camera, and get the flag's default.
-        Check(GridViewFormat.TryParse("0.5 -0.25 2", out parsedCamera, out parsedZoom, out parsedHidden),
+        // before a toggle existed must keep its camera and get that toggle's default. Three
+        // fields is the oldest format; four added "show invisible"; six added the two construct
+        // options (ADR-0032). A missing field takes the default the new build shows.
+        Check(GridViewFormat.TryParse("0.5 -0.25 2", out parsedCamera, out parsedZoom, out parsedHidden,
+                                      out parsedSubgrids, out parsedBorders),
               "a three-field value from an older build still parses");
         CheckClose(parsedCamera.X, 0.5f, "an older value keeps its camera X");
         CheckClose(parsedZoom, 2f, "an older value keeps its zoom");
-        Check(!parsedHidden, "an older value defaults the toggle to off");
+        Check(!parsedHidden, "an older value defaults the show-invisible toggle to off");
+        Check(parsedSubgrids, "an older value defaults subgrids to shown");
+        Check(parsedBorders, "an older value defaults grid borders to drawn");
+
+        Check(GridViewFormat.TryParse("0.5 -0.25 2 1", out parsedCamera, out parsedZoom,
+                                      out parsedHidden, out parsedSubgrids, out parsedBorders),
+              "a four-field value from the previous build still parses");
+        Check(parsedHidden, "a four-field value keeps its show-invisible flag");
+        Check(parsedSubgrids && parsedBorders,
+              "a four-field value gets the construct options' defaults");
 
         // ---- rejections ----
         //
         // Each of these must fall back to the default view rather than producing a garbage camera.
-        Check(!GridViewFormat.TryParse(null, out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse(null, out parsedCamera, out parsedZoom, out parsedHidden,
+                                       out parsedSubgrids, out parsedBorders),
               "null is not a view state");
-        Check(!GridViewFormat.TryParse("", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("", out parsedCamera, out parsedZoom, out parsedHidden,
+                                       out parsedSubgrids, out parsedBorders),
               "an empty string is not a view state");
-        Check(!GridViewFormat.TryParse("0.5 0.5", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0.5 0.5", out parsedCamera, out parsedZoom, out parsedHidden,
+                                       out parsedSubgrids, out parsedBorders),
               "two fields are not a view state: there is no zoom");
-        Check(!GridViewFormat.TryParse("0.5 0.5 1 1 1", out parsedCamera, out parsedZoom, out parsedHidden),
-              "five fields are not a view state");
-        Check(!GridViewFormat.TryParse("0.5  0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0.5 0.5 1 1 1 1 1", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+              "seven fields are not a view state");
+        Check(!GridViewFormat.TryParse("0.5  0.5 1 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "an empty field is not a view state");
-        Check(!GridViewFormat.TryParse("a b c d", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("a b c d", out parsedCamera, out parsedZoom, out parsedHidden,
+                                       out parsedSubgrids, out parsedBorders),
               "non-numeric fields are not a view state");
-        Check(!GridViewFormat.TryParse("0,5 0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0,5 0.5 1 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "a decimal comma is not our format");
-        Check(!GridViewFormat.TryParse("NaN 0.5 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("NaN 0.5 1 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "NaN is not a view state");
-        Check(!GridViewFormat.TryParse("0.5 Infinity 1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0.5 Infinity 1 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "infinity is not a view state");
 
         // A zoom of zero or less is refused rather than clamped here: the clamp belongs to the
         // editor's own zoom limits, and a stored zero would divide by zero in ScreenToGraph.
-        Check(!GridViewFormat.TryParse("0.5 0.5 0 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0.5 0.5 0 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "a zero zoom is not a view state");
-        Check(!GridViewFormat.TryParse("0.5 0.5 -1 0", out parsedCamera, out parsedZoom, out parsedHidden),
+        Check(!GridViewFormat.TryParse("0.5 0.5 -1 0", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
               "a negative zoom is not a view state");
 
         // A rejected parse must not leak a half-built camera: the caller writes the out parameters
@@ -3258,11 +3574,16 @@ internal static class OfflineChecks
         Vector2 rejectedCamera = new Vector2(7f, 7f);
         float rejectedZoom = 7f;
         bool rejectedHidden = true;
-        Check(!GridViewFormat.TryParse("bogus", out rejectedCamera, out rejectedZoom, out rejectedHidden),
+        bool rejectedSubgrids = false;
+        bool rejectedBorders = false;
+        Check(!GridViewFormat.TryParse("bogus", out rejectedCamera, out rejectedZoom,
+                                       out rejectedHidden, out rejectedSubgrids, out rejectedBorders),
               "a bogus view state is rejected");
         Check(rejectedCamera == Vector2.Zero, "a rejected parse leaves the camera at zero");
         Check(rejectedZoom == 0f, "a rejected parse leaves the zoom at zero");
-        Check(!rejectedHidden, "a rejected parse leaves the toggle off");
+        Check(!rejectedHidden, "a rejected parse leaves the show-invisible toggle off");
+        Check(rejectedSubgrids && rejectedBorders,
+              "a rejected parse leaves the construct options at their defaults");
     }
 
     // ------------------------------------------------------------------ block search (ADR-0023)

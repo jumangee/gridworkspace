@@ -273,6 +273,46 @@ namespace Vgs.Core
         public const float GroupTitleScale = 0.5f;
 
         /// <summary>
+        /// Padding of a grid frame around the cards of that grid (ADR-0032).
+        ///
+        /// <b>Deliberately larger than <see cref="GroupFramePadding"/> plus
+        /// <see cref="GroupTitleHeight"/>.</b> A grid frame encloses cards, and a group frame
+        /// encloses cards too but extends beyond them by its own padding and title strip. If the
+        /// grid padding were the same, the grid frame would cut through every group frame on that
+        /// grid, and two overlapping frames that cross each other read as a drawing bug rather
+        /// than as two levels of nesting. The extra margin is what makes "a grid contains groups
+        /// contains cards" visible as nesting.
+        /// </summary>
+        public const float GridFramePadding = 0.048f;
+
+        /// <summary>
+        /// Font scale of a grid frame's name, drawn in its tab (ADR-0032).
+        ///
+        /// Smaller than <see cref="GroupTitleScale"/>: the grid name is an orienting label, not a
+        /// title of an object the player acts on, and it must not compete with the group names
+        /// inside the same frame.
+        /// </summary>
+        public const float GridTitleScale = 0.45f;
+
+        /// <summary>
+        /// Thickness of a grid border, in device pixels — deliberately not in layout units
+        /// (ADR-0032).
+        ///
+        /// <b>One pixel at every zoom, and that is the requirement.</b> A border that grew with
+        /// the zoom would compete with the cards it encloses; at 2x it would be twice as thick as
+        /// a card's own border and read as a wall rather than a boundary. Because layout units are
+        /// not square (ADR-0009), this number is converted to two different layout thicknesses,
+        /// one per axis — see <c>GridFrames.BorderThickness</c>.
+        /// </summary>
+        public const float GridBorderPixels = 1f;
+
+        /// <summary>Horizontal padding inside a grid's name tab (ADR-0032).</summary>
+        public const float GridTabPaddingX = 0.008f;
+
+        /// <summary>Vertical padding inside a grid's name tab (ADR-0032).</summary>
+        public const float GridTabPaddingY = 0.004f;
+
+        /// <summary>
         /// How many block groups one refresh reads from the grid's terminal system. Groups are
         /// cheap (a name and a member set), but the pass runs on a frame and a pathological
         /// ship should not be able to make it unbounded.

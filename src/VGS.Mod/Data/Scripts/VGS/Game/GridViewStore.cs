@@ -43,16 +43,20 @@ namespace Vgs.Game
         /// the default view rather than from a half-read one.
         /// </summary>
         public static bool TryRead(IMyCubeGrid grid, out Vector2 camera, out float zoom,
-                                   out bool showHidden)
+                                   out bool showHidden, out bool showSubgrids,
+                                   out bool showGridBorders)
         {
             camera = Vector2.Zero;
             zoom = 0f;
             showHidden = false;
+            showSubgrids = true;
+            showGridBorders = true;
 
             string raw;
             if (!TryReadValue(grid, out raw)) return false;
 
-            return GridViewFormat.TryParse(raw, out camera, out zoom, out showHidden);
+            return GridViewFormat.TryParse(raw, out camera, out zoom, out showHidden,
+                                           out showSubgrids, out showGridBorders);
         }
 
         /// <summary>
@@ -60,7 +64,8 @@ namespace Vgs.Game
         /// refused, which is a normal outcome rather than an error: the player loses nothing but a
         /// remembered camera position.
         /// </summary>
-        public static bool Save(IMyCubeGrid grid, Vector2 camera, float zoom, bool showHidden)
+        public static bool Save(IMyCubeGrid grid, Vector2 camera, float zoom, bool showHidden,
+                                bool showSubgrids, bool showGridBorders)
         {
             if (grid == null) return false;
 
@@ -78,7 +83,8 @@ namespace Vgs.Game
                 }
 
                 storage.SetValue(VgsConstants.ViewStorageKey,
-                                 GridViewFormat.Format(camera, zoom, showHidden));
+                                 GridViewFormat.Format(camera, zoom, showHidden,
+                                                       showSubgrids, showGridBorders));
                 return true;
             }
             catch (Exception e)
