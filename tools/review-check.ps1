@@ -255,16 +255,20 @@ if (Should-Run 'R005') {
 # that nobody can find when the wording changes.
 # ---------------------------------------------------------------------------------------
 if (Should-Run 'R006') {
+    # The text table has its own file since Step 6.3: `Core\VgsText.cs`. `Core\VgsConstants.cs`
+    # is skipped too, because VgsText lived there before the split and a stray literal left
+    # behind in it is still a literal in the table's file rather than a string in the wrong place.
+    $textTables = @('Core\VgsText.cs', 'Core\VgsConstants.cs')
     foreach ($f in $files) {
         $rel = Get-Relative $f.FullName
-        if ($rel -eq 'Core\VgsConstants.cs') { continue }   # VgsText lives here
+        if ($textTables -contains $rel) { continue }
         $lines = @(Get-Content $f.FullName)
         for ($i = 0; $i -lt $lines.Count; $i++) {
             $l = $lines[$i]
             if ($l -match '^\s*//') { continue }
             if ($l -match '"[^"]*[\u0400-\u04FF][^"]*"') {
                 Add-Finding 'R006' 'WARNING' $rel ($i + 1) `
-                    'Cyrillic string literal outside VgsText. Move it to Core\VgsConstants.cs.'
+                    'Cyrillic string literal outside VgsText. Move it to Core\VgsText.cs.'
             }
         }
     }

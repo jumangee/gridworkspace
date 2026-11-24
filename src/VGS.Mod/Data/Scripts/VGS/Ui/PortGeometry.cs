@@ -129,8 +129,13 @@ namespace Vgs.Ui
         {
             if (node == null) return VgsConstants.NodeHeight;
 
+            // The third line is reserved for the whole life of a controller, not only while its
+            // description is non-empty: a card that grew and shrank as the player picked a
+            // different event in the terminal would move its own port stack under the pointer.
+            // Having controller state *is* being a controller (ADR-0030), so this is the same
+            // test the watch button uses, and the two cannot disagree.
             return VgsConstants.NodeHeight
-                   + (node.HasStatusLine ? VgsConstants.NodeStatusLineHeight : 0f);
+                   + (node.Controller != null ? VgsConstants.NodeStatusLineHeight : 0f);
         }
 
         /// <summary>
@@ -920,14 +925,15 @@ namespace Vgs.Ui
         /// <summary>The watch target whose "x" is under a graph-space point, or null.</summary>
         public static WatchTarget HitWatchRemoveButton(Node node, Vector2 graphPoint, float aspectX)
         {
-            if (node == null || !node.IsEventController) return null;
+            if (node == null || node.Controller == null) return null;
             if (aspectX <= 0f) aspectX = 1f;
 
             float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
 
-            for (int i = 0; i < node.Watched.Count; i++)
+            List<WatchTarget> watched = node.Controller.Watched;
+            for (int i = 0; i < watched.Count; i++)
             {
-                WatchTarget watch = node.Watched[i];
+                WatchTarget watch = watched[i];
                 if (watch.Slot < 0) continue;
 
                 Vector2 center;
@@ -963,12 +969,13 @@ namespace Vgs.Ui
         /// <summary>Number of watch bars of this node that are actually drawn.</summary>
         public static int DrawnWatchCount(Node node)
         {
-            if (node == null) return 0;
+            if (node == null || node.Controller == null) return 0;
 
+            List<WatchTarget> watched = node.Controller.Watched;
             int count = 0;
-            for (int i = 0; i < node.Watched.Count; i++)
+            for (int i = 0; i < watched.Count; i++)
             {
-                if (node.Watched[i].Slot >= 0) count++;
+                if (watched[i].Slot >= 0) count++;
             }
             return count;
         }
@@ -1316,10 +1323,13 @@ namespace Vgs.Ui
         /// </summary>
         private static bool HitAnyWatchBar(Node node, Vector2 graphPoint)
         {
-            for (int i = 0; i < node.Watched.Count; i++)
+            if (node.Controller == null) return false;
+
+            List<WatchTarget> watched = node.Controller.Watched;
+            for (int i = 0; i < watched.Count; i++)
             {
                 Vector2 topLeft, size;
-                if (!TryWatchBarRect(node, node.Watched[i], out topLeft, out size)) continue;
+                if (!TryWatchBarRect(node, watched[i], out topLeft, out size)) continue;
                 if (Contains(topLeft, size, graphPoint)) return true;
             }
             return false;

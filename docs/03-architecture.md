@@ -37,6 +37,7 @@
 | [0026](adr/0026-clocks-in-the-mod.md) | Часы: `VgsSession.Frame` замирает на паузе, поэтому экран считает свои кадры в `OnUpdate`, статические помощники — попытки; `VgsLog.Throttled` на попытках; `UpdateOnPause` отклонён. **Пауза отменена ADR-0029**, правило осталось |
 | [0028](adr/0028-block-damage-band.md) | Повреждение блока — красная полоса справа на карточке, ширина = 1 − целостность, прозрачность 50%, под рамкой/подписями/портами/кнопками; порога по величине нет, у группы полосы нет |
 | [0029](adr/0029-editor-does-not-pause.md) | Редактор **не ставит игру на паузу**: пауза останавливала симуляцию, поэтому повреждение нельзя было увидеть растущим; часы экрана — свои кадры, `UpdateOnPause` не включается |
+| [0030](adr/0030-block-category-descriptor.md) | Категория блока — enum + описатель (`ResolveCategory`, `Descriptor`: события + ключи метрик); специфика event controller уходит с `Node` в `ControllerState`, `IsEventController` производный |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -76,6 +77,7 @@
         │                  (единственное место, где трогаются живые сущности)
         │
         ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockState,
+        │                  BlockCategory + CategoryDescriptor, ControllerState,
         │                  BlockPortCatalog, ToolbarPlanner, NodeStateFormat, GridViewFormat,
         │                  BlockSearch, TextEditor
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
@@ -185,6 +187,8 @@ classDiagram
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
         -TryReadActions(IMyTerminalBlock, List~string~) bool
+        -ReadTerminalSystem(IMyCubeGrid) IMyGridTerminalSystem
+        -SafeGridId(IMyTerminalBlock) long
         -ReadGroups(IMyCubeGrid) List~IMyBlockGroup~
         -SyncGroups(GridGraph, List~IMyBlockGroup~)
         -SyncOneGroup(GridGraph, IMyBlockGroup, string, List~long~, List~GroupMemberActions~, List~IMyTerminalBlock~, List~string~, List~string~, ref int) GroupOutcome
@@ -677,16 +681,14 @@ classDiagram
         +bool Placed
         +bool IsGroup
         +Vector3I GridPosition
+        +long GridEntityId
         +bool HasTerminal
         +ToolbarLayout Toolbar
         +bool CanDriveBlocks
+        +BlockCategory Category
+        +ControllerState Controller
         +bool IsEventController
         +BlockState State
-        +string StatusText
-        +long WatchEventId
-        +List~WatchTarget~ Watched
-        +bool HasStatusLine
-        +WatchTarget FindWatch(long)
         +List~long~ Members
         +List~Port~ Actions
         +List~Port~ Events
@@ -695,6 +697,31 @@ classDiagram
         +PrimaryEventFor(PortGroup) Port
         +FindAction(key) Port
         +FindEvent(key) Port
+    }
+
+    class ControllerState {
+        +string StatusText
+        +List~WatchTarget~ Watched
+        +long WatchEventId
+        +bool IsFull
+        +WatchTarget FindWatch(long)
+    }
+
+    class BlockCategory {
+        <<enum>>
+        Unknown
+        EventController
+        Cockpit
+        Timer
+        Sensor
+        Light
+    }
+
+    class CategoryDescriptor {
+        +string[] Events
+        +string[] MetricKeys
+        +int MetricCount
+        +bool HasEvents
     }
 
     class Port {
@@ -741,7 +768,8 @@ classDiagram
         +string GenericEventKey
         +string TrueKeySuffix
         +string FalseKeySuffix
-        +ResolveFamily(subtypeId) string
+        +ResolveCategory(subtypeId) BlockCategory
+        +Descriptor(BlockCategory) CategoryDescriptor
         +FillActions(Node, IList~string~)
         +FillEvents(Node)
         +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~)
@@ -936,6 +964,10 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `VgsConstants.cs` | все числа и id в одном месте; `ModGuid` для хранилища |
 | `VgsText.cs` | все пользовательские строки |
 
+`VgsConstants` и `VgsText` жили в одном файле, пока таблица строк не переросла класс констант.
+Файл с именем `VgsConstants.cs` — неправильное место, чтобы искать в нём текст предупреждения;
+правило R006 указывает теперь на `VgsText.cs`.
+
 Почему фасад, а не передача компонента по конструкторам: у мода нет DI-контейнера, а
 подсистемам нужно 3–4 факта о сессии. Протаскивание компонента через каждый конструктор
 заставило бы каждый тест строить сессию.
@@ -948,9 +980,17 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 
 | Файл | Ответственность |
 |---|---|
-| `Node.cs` | `Port`, `PortKind`, `PortDirection`, `PortGroup`, `NodeKind`, `GroupMemberActions`, `ToolbarLayout`, `ToolbarCell`, `Node`, `Edge` |
+| `Node.cs` | `Node` — карточка блока или группы: идентичность (включая грид, ADR-0032), порты, тулбар, позиция, снимок состояния, категория |
+| `Port.cs` | `Port` и три перечисления порта: `PortKind`, `PortDirection`, `PortGroup` |
+| `ToolbarLayout.cs` | `ToolbarLayout` (что игра дала блоку: группы, ячейки, страницы, «да/нет») и `ToolbarCell` (координата ячейки) |
+| `NodeKind.cs` | `NodeKind` — блок это или группа |
+| `GroupMemberActions.cs` | `GroupMemberActions` — действие группы и то, включено ли оно на каждом участнике |
+| `WatchTarget.cs` | `WatchTarget` — одна запись списка отслеживания контроллера |
+| `Edge.cs` | `Edge` — связь между двумя портами |
 | `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам, запись снимка состояния (`ApplyIntegrity`) |
-| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории, Шаг 3). Не сохраняется |
+| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории). Не сохраняется |
+| `BlockCategory.cs` | `BlockCategory` (enum, порядок членов = порядок проверок классификатора) и `CategoryDescriptor` (что знает категория: события + ключи метрик) |
+| `ControllerState.cs` | специфика event controller: описание режима, список отслеживания, идентификатор события. `Node.Controller` ссылается сюда только у контроллера — эта ссылка и есть признак |
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
@@ -994,6 +1034,38 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 переписывается не при создании. Поэтому `LayoutPorts()` вызывается **после любого изменения
 связей** (`GridGraphBuilder.Refresh`, `TryCompleteBind`), а не из UI: слот зависит от рёбер,
 а рёбрами владеет только граф.
+
+### Специфика категории: `ControllerState` ([ADR-0030](adr/0030-block-category-descriptor.md))
+
+`Node` — общий узел для всех блоков и групп, и он нёс на себе специфику event controller:
+описание режима, список отслеживания, идентификатор события. Восемьдесят категорий платили за
+одну. Теперь специфика живёт в `ControllerState`, а `Node` держит ссылку:
+
+```csharp
+public readonly ControllerState Controller;   // null у всех, кроме event controller
+public bool IsEventController { get { return Controller != null; } }
+```
+
+**Ссылка и есть флаг.** Второго поля «это контроллер» нет, поэтому два источника истины об
+одном факте не разойдутся. Проверка в кадровом пути стоит столько же, сколько чтение `bool`.
+
+Правило для следующей специфики (заряд, заполненность, меню узла): **новый тип рядом с
+`ControllerState`, ссылка с `Node` по тому же образцу**. Общий узел не растёт, а читатель,
+которому специфика нужна, проверяет null там, где читает.
+
+Что осталось на `Node` и почему:
+
+| Поле | Почему общее |
+|---|---|
+| `Category` | выводится из подтипа один раз в конструкторе; подтип блока не меняется |
+| `State` (`BlockState`) | повреждение есть у каждого блока (Шаг 2) |
+| `CanDriveBlocks`, `Toolbar` | факты из игры (ADR-0011), читаются каждый кадр |
+| `IsEventController` | производное от `Controller`, не хранится |
+
+`GridGraph` продолжает владеть операциями над списком (`TryAddWatch`, `RemoveWatch`,
+`SyncWatched`, `MergeWatchIds`, `PruneAdoptedWatchIds`, `CollectWatchedIds`): они меняют
+инварианты графа — кап стека, раскладку слотов, — но работают через `node.Controller` и
+отказывают, если его нет.
 
 ### `Vgs.Game` — мост к игре
 
@@ -1155,7 +1227,14 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 
 | Файл | Ответственность |
 |---|---|
-| `VgsEditorScreen.cs` | экран: камера, ввод (указатель и клавиатура), четыре режима указателя, меню действий, шапка со статистикой, нижняя панель (режимы и поиск), кэш строк |
+| `VgsEditorScreen.cs` | **частичный класс**: поля, палитра, конструктор, жизненный цикл (`OnOpened`/`OnClosed`/`OpenFor`), раскладка окна (прямоугольники полос), `OnUpdate` и проходы обновления |
+| `VgsEditorScreen.View.cs` | **частичный класс**: запись вида на грид — когда и куда; сами значения и правило «изменилось ли» живут в `ViewState` |
+| `VgsEditorScreen.Search.cs` | **частичный класс**: что запрос *значит* для картинки — затемнение карточек, видимость линий, переход по Enter; сам ввод поля — `SearchField` |
+| `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test |
+| `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003) |
+| `SearchField.cs` | поле поиска как самостоятельный тип: запрос, каретка, выделение, прокрутка и кэш позиций; шрифт подаётся делегатом, поэтому арифметика проверяется офлайн |
+| `ViewState.cs` | состояние вида: камера, зум, режим «показывать скрытые» и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
+| `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
 | `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind` |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; разбиение отрезка на штрихи для пунктира |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
@@ -1581,12 +1660,20 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
 
 `BlockPortCatalog` решает это так:
 
-1. `ResolveFamily(subtype)` — по подстроке определяет семейство (`cockpit`, `sensor`, …).
-   Порядок проверок от специфичного к общему: `eventcontroller` раньше `cockpit`.
-2. `FillEvents(node)` смотрит на `Node.Toolbar`. Если тулбара нет — **портов нет вообще**:
+1. `ResolveCategory(subtype)` — по подстроке определяет **категорию** (`BlockCategory.Cockpit`,
+   `BlockCategory.Sensor`, …), см. [ADR-0030](adr/0030-block-category-descriptor.md). Порядок
+   проверок от специфичного к общему и **является правилом**: `EventController` раньше `Cockpit`,
+   `ButtonPanel` и `SolarPanel` раньше `Light` (`panel`), `AirVent` раньше `Oxygen`, `Hydrogen`
+   раньше `Thruster`. Порядок проверяется офлайн на реальных подтипах, включая все эти ловушки.
+2. `Descriptor(category)` — описатель категории: `Events` (что запускает тулбар) и `MetricKeys`
+   (какие частные показатели состояния читать; сегодня пусто у всех — это задел Этапа 5.2).
+   Одна таблица на категорию вместо двух, которые разъехались бы.
+3. `FillEvents(node)` смотрит на `Node.Toolbar`. Если тулбара нет — **портов нет вообще**:
    связи некуда лечь, и показывать её было бы обещанием, которое мод не выполнит.
-3. Если тулбар есть — для известного семейства берутся его события, иначе общее `Triggered`.
-4. Если у тулбара две группы (`YesNo`) — каждое событие превращается в два порта,
+4. Если тулбар есть — для категории с событиями берутся её события, иначе общее `Triggered`.
+   Деградация обязательна: категория без записи — не ошибка, а блок, о котором таблица ничего
+   не знает (в том числе блок другого мода).
+5. Если у тулбара две группы (`YesNo`) — каждое событие превращается в два порта,
    `… #true` и `… #false`. Ключ порта содержит группу, потому что связь хранится по ключу и
    должна помнить, в какой из двух списков она легла.
 

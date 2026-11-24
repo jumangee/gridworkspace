@@ -47,8 +47,17 @@ if (-not (Test-Path $checks)) { throw "Offline checks not found: $checks" }
 # installed but does not start it.
 $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
+    # One file per concept since Step 6.4: the model types that used to share Node.cs.
+    (Join-Path $sourceRoot 'Model\Port.cs'),
+    (Join-Path $sourceRoot 'Model\ToolbarLayout.cs'),
+    (Join-Path $sourceRoot 'Model\NodeKind.cs'),
+    (Join-Path $sourceRoot 'Model\GroupMemberActions.cs'),
+    (Join-Path $sourceRoot 'Model\WatchTarget.cs'),
+    (Join-Path $sourceRoot 'Model\Edge.cs'),
     (Join-Path $sourceRoot 'Model\Node.cs'),
     (Join-Path $sourceRoot 'Model\BlockState.cs'),
+    (Join-Path $sourceRoot 'Model\BlockCategory.cs'),
+    (Join-Path $sourceRoot 'Model\ControllerState.cs'),
     (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),
     (Join-Path $sourceRoot 'Model\GridViewFormat.cs'),
     (Join-Path $sourceRoot 'Model\BlockSearch.cs'),
@@ -59,6 +68,12 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),
     (Join-Path $sourceRoot 'Ui\PortGeometry.cs'),
     (Join-Path $sourceRoot 'Ui\EdgeRouting.cs'),
+    # The search field and the view state (Step 4): both were extracted from the screen so that
+    # the arithmetic that breaks silently — where the caret lands, how far the text scrolls,
+    # whether a write is due — is checked without the game. The field's one game dependency (font
+    # measurement) is an injected delegate, and the view state touches no grid at all.
+    (Join-Path $sourceRoot 'Ui\SearchField.cs'),
+    (Join-Path $sourceRoot 'Ui\ViewState.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.
     (Join-Path $sourceRoot 'Ui\IconPlacement.cs'),

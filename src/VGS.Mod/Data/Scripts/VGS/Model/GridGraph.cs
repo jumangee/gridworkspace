@@ -632,7 +632,8 @@ namespace Vgs.Model
         /// </summary>
         public bool HasWatch(Node controller, long targetEntityId)
         {
-            return controller != null && controller.FindWatch(targetEntityId) != null;
+            if (controller == null || controller.Controller == null) return false;
+            return controller.Controller.FindWatch(targetEntityId) != null;
         }
 
         /// <summary>
@@ -660,13 +661,14 @@ namespace Vgs.Model
         /// </summary>
         public bool TryAddWatch(Node controller, long targetEntityId, string displayName)
         {
-            if (controller == null || !controller.IsEventController) return false;
+            // No controller state means the node is not a controller — that is the flag (ADR-0030).
+            if (controller == null || controller.Controller == null) return false;
             if (controller.IsGroup) return false;
             if (targetEntityId == 0 || targetEntityId == controller.EntityId) return false;
-            if (controller.FindWatch(targetEntityId) != null) return false;
-            if (controller.Watched.Count >= MaxPortsPerSide) return false;
+            if (controller.Controller.FindWatch(targetEntityId) != null) return false;
+            if (controller.Controller.IsFull) return false;
 
-            controller.Watched.Add(new WatchTarget(targetEntityId,
+            controller.Controller.Watched.Add(new WatchTarget(targetEntityId,
                 string.IsNullOrEmpty(displayName) ? targetEntityId.ToString() : displayName));
             return true;
         }
@@ -678,12 +680,13 @@ namespace Vgs.Model
         /// </summary>
         public bool RemoveWatch(Node controller, long targetEntityId)
         {
-            if (controller == null) return false;
+            if (controller == null || controller.Controller == null) return false;
 
-            for (int i = 0; i < controller.Watched.Count; i++)
+            List<WatchTarget> watched = controller.Controller.Watched;
+            for (int i = 0; i < watched.Count; i++)
             {
-                if (controller.Watched[i].EntityId != targetEntityId) continue;
-                controller.Watched.RemoveAt(i);
+                if (watched[i].EntityId != targetEntityId) continue;
+                watched.RemoveAt(i);
                 return true;
             }
             return false;
@@ -708,14 +711,17 @@ namespace Vgs.Model
         public static void SyncWatched(Node controller, List<long> ids, Func<long, string> nameOf)
         {
             if (controller == null || ids == null) return;
+            if (controller.Controller == null) return;
+
+            List<WatchTarget> watched = controller.Controller.Watched;
 
             // Reuse what is still there. Built as a lookup because the list is short and the
             // comparison is by id: two WatchTarget objects for one block is the defect this
             // method exists to prevent.
-            var existing = new Dictionary<long, WatchTarget>(controller.Watched.Count);
-            for (int i = 0; i < controller.Watched.Count; i++)
+            var existing = new Dictionary<long, WatchTarget>(watched.Count);
+            for (int i = 0; i < watched.Count; i++)
             {
-                existing[controller.Watched[i].EntityId] = controller.Watched[i];
+                existing[watched[i].EntityId] = watched[i];
             }
 
             var rebuilt = new List<WatchTarget>(ids.Count);
@@ -739,8 +745,8 @@ namespace Vgs.Model
                 rebuilt.Add(new WatchTarget(id, name));
             }
 
-            controller.Watched.Clear();
-            controller.Watched.AddRange(rebuilt);
+            watched.Clear();
+            watched.AddRange(rebuilt);
         }
 
         /// <summary>
@@ -805,9 +811,10 @@ namespace Vgs.Model
         {
             if (into == null) return;
             into.Clear();
-            if (controller == null) return;
+            if (controller == null || controller.Controller == null) return;
 
-            for (int i = 0; i < controller.Watched.Count; i++) into.Add(controller.Watched[i].EntityId);
+            List<WatchTarget> watched = controller.Controller.Watched;
+            for (int i = 0; i < watched.Count; i++) into.Add(watched[i].EntityId);
         }
 
         public bool RemoveEdge(Edge edge)
@@ -924,7 +931,10 @@ namespace Vgs.Model
 
         private static void ClearWatchSlots(Node node)
         {
-            for (int i = 0; i < node.Watched.Count; i++) node.Watched[i].Slot = -1;
+            if (node == null || node.Controller == null) return;
+
+            List<WatchTarget> watched = node.Controller.Watched;
+            for (int i = 0; i < watched.Count; i++) watched[i].Slot = -1;
         }
 
         /// <summary>
@@ -938,8 +948,11 @@ namespace Vgs.Model
         /// </summary>
         private static void TakeWatchSlots(Node node)
         {
-            int count = node.Watched.Count < MaxPortsPerSide ? node.Watched.Count : MaxPortsPerSide;
-            for (int i = 0; i < count; i++) node.Watched[i].Slot = i;
+            if (node == null || node.Controller == null) return;
+
+            List<WatchTarget> watched = node.Controller.Watched;
+            int count = watched.Count < MaxPortsPerSide ? watched.Count : MaxPortsPerSide;
+            for (int i = 0; i < count; i++) watched[i].Slot = i;
         }
 
         /// <summary>Gives the port the lowest free slot, if any is left.</summary>
@@ -1032,12 +1045,22 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Reading order on the ship: X, then Y, then Z, then entity id. The id is the final
-        /// tie-break so that two blocks in the same cell (which the grid allows for some
-        /// multi-block setups) still get a stable order instead of swapping places per run.
+        /// Reading order on the construct: grid first, then X, Y, Z, then entity id (ADR-0032).
+        ///
+        /// <b>The grid comes first, and that is not a tie-break.</b> The graph covers a whole
+        /// construct, so blocks of different subgrids arrive interleaved in the terminal system's
+        /// order. Sorting by position alone would scatter one subgrid's cards across the canvas,
+        /// and the frame drawn around them would be a zigzag covering half the picture — a frame
+        /// that says nothing. Keeping one grid's cards contiguous is what makes the frame read as
+        /// "these belong together".
+        ///
+        /// The id is the final tie-break so that two blocks in the same cell (which the grid
+        /// allows for some multi-block setups) still get a stable order instead of swapping places
+        /// per run.
         /// </summary>
         private static int ComparePlacement(Node a, Node b)
         {
+            if (a.GridEntityId != b.GridEntityId) return a.GridEntityId < b.GridEntityId ? -1 : 1;
             if (a.GridPosition.X != b.GridPosition.X) return a.GridPosition.X < b.GridPosition.X ? -1 : 1;
             if (a.GridPosition.Y != b.GridPosition.Y) return a.GridPosition.Y < b.GridPosition.Y ? -1 : 1;
             if (a.GridPosition.Z != b.GridPosition.Z) return a.GridPosition.Z < b.GridPosition.Z ? -1 : 1;

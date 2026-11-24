@@ -100,25 +100,67 @@ namespace Vgs.Game
             var live = new HashSet<long>();
             List<IMyBlockGroup> groups = null;
 
+            // True when the block limit cut the enumeration short. It has to outlive the try
+            // block: the removal pass below must know that "not in `live`" means "not read".
+            bool truncated = false;
+
             try
             {
-                var slimBlocks = new List<IMySlimBlock>();
-                grid.GetBlocks(slimBlocks);
+                // The domain is the construct's terminal system, not this grid (ADR-0032).
+                //
+                // This is the same call the groups below already come from, and that is the whole
+                // point: `GetTerminalSystemForGrid` returns the system of the *logical group* —
+                // the grid plus its subgrids — verified by IL in
+                // `docs/01-research/api-grid-construct.md` §1. Enumerating blocks from `grid` alone
+                // while reading groups from the construct is what made the two halves of this
+                // graph disagree: a group could name a member that had no card, and a toolbar item
+                // pointing at a subgrid block was silently dropped because its target had no node.
+                //
+                // A null system is "could not read", not "there are no blocks": the refresh keeps
+                // the picture it has rather than erasing the schema for one bad frame.
+                IMyGridTerminalSystem system = ReadTerminalSystem(grid);
+                if (system == null) return;
+
+                var blocks = new List<IMyTerminalBlock>();
+                system.GetBlocks(blocks);
+
+                // The limit now bounds the construct, not one grid (ADR-0032), so a ship with a
+                // dozen subgrids can reach it where it used to be unreachable. Two things follow,
+                // and the second one is a fix rather than a feature:
+                //
+                //  * the player is told, once per refresh at most, that the picture is partial —
+                //    a schema that silently shows half a ship reads as a bug in the schema;
+                //  * the blocks past the limit are treated as "not read", not "gone", so the
+                //    removal pass below does not delete their cards and edges. Dropping them was
+                //    the old behaviour, and on a construct-sized domain it would erase a large
+                //    part of a laid-out schema the first time a big ship was opened.
+                bool truncatedScan = blocks.Count > VgsConstants.MaxGridBlocksScanned;
+                truncated = truncatedScan;
+                if (truncatedScan)
+                {
+                    // Throttled by attempts rather than by frames: this runs once per structural
+                    // refresh, so the interval is "every Nth refresh" — about a minute of a very
+                    // large construct, which is enough to notice and not enough to drown the log.
+                    VgsLog.Throttled("graph-block-limit",
+                                     "construct has " + blocks.Count + " terminal block(s), only "
+                                     + VgsConstants.MaxGridBlocksScanned + " are shown",
+                                     30);
+                }
 
                 int scanned = 0;
-                for (int i = 0; i < slimBlocks.Count && scanned < VgsConstants.MaxGridBlocksScanned; i++)
+                for (int i = 0; i < blocks.Count && scanned < VgsConstants.MaxGridBlocksScanned; i++)
                 {
-                    IMySlimBlock slim = slimBlocks[i];
-                    if (slim == null) continue;
+                    IMyTerminalBlock terminal = blocks[i];
+                    if (terminal == null) continue;
                     scanned++;
 
                     // A block that is still a construction site has no functional terminal
-                    // yet; showing it would offer actions that silently do nothing.
-                    IMyCubeBlock fat = slim.FatBlock;
+                    // yet; showing it would offer actions that silently do nothing. The terminal
+                    // system does not list construction sites at all, so this is belt and braces:
+                    // the check costs one branch and covers a block that was completed or removed
+                    // between the enumeration and this read.
+                    IMyCubeBlock fat = terminal as IMyCubeBlock;
                     if (fat == null) continue;
-
-                    IMyTerminalBlock terminal = fat as IMyTerminalBlock;
-                    if (terminal == null) continue;
 
                     // A block the player turned off in the terminal is not part of the schema
                     // (ADR-0013), unless the "show invisible" mode is on (ADR-0023). It is
@@ -150,13 +192,23 @@ namespace Vgs.Game
             }
 
             // Drop nodes whose blocks are gone. Collect first: RemoveNode mutates the list.
-            var dead = new List<long>();
-            IList<Node> nodes = graph.Nodes;
-            for (int i = 0; i < nodes.Count; i++)
+            //
+            // <b>Not when the enumeration was cut short.</b> "Not in `live`" then means "not
+            // read", and the two are not the same thing: dropping on a partial read would delete
+            // the cards and the edges of every block past the limit, and the reconcile pass
+            // cannot rebuild them — the edges would come back only for cells it happens to scan.
+            // The schema would lose a large part of a laid-out picture on the first refresh of a
+            // big construct (ADR-0032). Survivors stay exactly where they are.
+            if (!truncated)
             {
-                if (!live.Contains(nodes[i].EntityId)) dead.Add(nodes[i].EntityId);
+                var dead = new List<long>();
+                IList<Node> nodes = graph.Nodes;
+                for (int i = 0; i < nodes.Count; i++)
+                {
+                    if (!live.Contains(nodes[i].EntityId)) dead.Add(nodes[i].EntityId);
+                }
+                for (int i = 0; i < dead.Count; i++) graph.RemoveNode(dead[i]);
             }
-            for (int i = 0; i < dead.Count; i++) graph.RemoveNode(dead[i]);
 
             graph.LayoutUnplaced();
 
@@ -263,7 +315,8 @@ namespace Vgs.Game
                 SafeName(block),
                 SafePosition(block),
                 toolbar,
-                EventControllerProbe.IsController(block));
+                EventControllerProbe.IsController(block),
+                SafeGridId(block));
 
             var actions = new List<string>();
             node.HasTerminal = TryReadActions(block, actions);
@@ -288,6 +341,12 @@ namespace Vgs.Game
         private static void UpdateNode(Node node, IMyTerminalBlock block)
         {
             node.DisplayName = SafeName(block);
+
+            // The grid is refreshed, not assumed: a split hands part of a ship to a new grid with
+            // a new entity id, and the card must follow it or the grid frame will claim it belongs
+            // to the wrong ship part (ADR-0032).
+            long gridId = SafeGridId(block);
+            if (gridId != 0) node.GridEntityId = gridId;
 
             // The type line is refreshed with the name: the player can rename a block at any
             // time, and the localized type can change with the game's language. The editor's
@@ -333,9 +392,13 @@ namespace Vgs.Game
         /// </summary>
         private static void RefreshControllerState(Node node, IMyTerminalBlock block)
         {
-            if (node == null || !node.IsEventController) return;
+            // The controller state *is* the flag (ADR-0030): a node without one is not a
+            // controller, and there is nothing here for it.
+            if (node == null || node.Controller == null) return;
 
-            node.StatusText = EventControllerProbe.Describe(block);
+            ControllerState controller = node.Controller;
+
+            controller.StatusText = EventControllerProbe.Describe(block);
 
             long eventId = EventControllerProbe.SelectedEventId(block);
 
@@ -362,23 +425,23 @@ namespace Vgs.Game
             GridGraph.MergeWatchIds(gameIds, overlay, ids);
 
             _nameScratch.Clear();
-            for (int i = 0; i < node.Watched.Count; i++)
+            for (int i = 0; i < controller.Watched.Count; i++)
             {
-                _nameScratch[node.Watched[i].EntityId] = node.Watched[i].DisplayName;
+                _nameScratch[controller.Watched[i].EntityId] = controller.Watched[i].DisplayName;
             }
 
             GridGraph.SyncWatched(node, ids, id => SafeNameOf(id, LookupName(_nameScratch, id)));
             // The player picked another event in the terminal: the game built a new event
             // component, and the editor's own additions are subscribed to the old one. Replaying
             // them is what keeps those ports honest after a switch (ADR-0018).
-            if (eventId != node.WatchEventId && overlay.Count > 0 && EventControllerProbe.IsServer())
+            if (eventId != controller.WatchEventId && overlay.Count > 0 && EventControllerProbe.IsServer())
             {
                 VgsLog.Info("event changed on controller " + node.EntityId
                             + "; replaying " + overlay.Count + " editor-added watch(es)");
                 EventControllerProbe.ReapplyWatchList(block);
             }
 
-            node.WatchEventId = eventId;
+            controller.WatchEventId = eventId;
         }
 
         /// <summary>
@@ -429,23 +492,44 @@ namespace Vgs.Game
         // ------------------------------------------------------------------ groups
 
         /// <summary>
-        /// Reads the block groups of the grid's terminal system, or null when they cannot be
+        /// The terminal system of the grid's <em>logical group</em> — the construct, i.e. the grid
+        /// plus its subgrids — or null when it cannot be read.
+        ///
+        /// <b>This is the graph's domain, and it is one call for both blocks and groups</b>
+        /// (ADR-0032). Verified in <c>docs/01-research/api-grid-construct.md</c> §1: the game
+        /// resolves <c>GetTerminalSystemForGrid</c> through the logical group's group data, not
+        /// through the single grid. Reading blocks from one place and groups from another is what
+        /// made a group able to name a member that had no card on the canvas.
+        ///
+        /// Null means "could not read", never "there are none": the caller keeps what it has.
+        /// </summary>
+        private static IMyGridTerminalSystem ReadTerminalSystem(IMyCubeGrid grid)
+        {
+            try
+            {
+                if (MyAPIGateway.TerminalActionsHelper == null) return null;
+                return MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("read-terminal-system", "could not read the terminal system", e, 600);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Reads the block groups of the construct's terminal system, or null when they cannot be
         /// read.
         ///
-        /// The system is the one of the grid's <em>logical group</em> — the construct, i.e. the
-        /// grid plus its subgrids — not of this grid alone (verified in
-        /// <c>docs/01-research/api-block-groups.md</c> §1). That is deliberate and matches the
-        /// game: a group may contain blocks from a subgrid, and the game applies a group action
-        /// to all of them, so the editor must show the group and offer the actions it really
-        /// has.
+        /// That is deliberate and matches the game: a group may contain blocks from a subgrid, and
+        /// the game applies a group action to all of them, so the editor must show the group and
+        /// offer the actions it really has.
         /// </summary>
         private static List<IMyBlockGroup> ReadGroups(IMyCubeGrid grid)
         {
             try
             {
-                if (MyAPIGateway.TerminalActionsHelper == null) return null;
-
-                IMyGridTerminalSystem system = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+                IMyGridTerminalSystem system = ReadTerminalSystem(grid);
                 if (system == null) return null;
 
                 var groups = new List<IMyBlockGroup>();
@@ -476,20 +560,6 @@ namespace Vgs.Game
         /// A group that has vanished from the terminal system is dropped, together with its
         /// incoming edges. Nothing is written to any toolbar for that: the item stays where it
         /// is, and the connection comes back if the group is restored under the same name.
-        /// </summary>
-        /// <summary>
-        /// Rebuilds the group nodes of the graph from the groups read off the grid.
-        ///
-        /// Two lists per group, and they are different on purpose:
-        ///
-        ///  * <b>drawn members</b> — members that have a node in the graph. The group exists
-        ///    only while there is at least one, which is exactly how "Show in VGS" aggregates
-        ///    for a group: all members hidden means the group is hidden, one member shown means
-        ///    the group is shown (ADR-0015). The frame is drawn around these cards.
-        ///  * <b>all members</b> — the whole group, hidden members and subgrid members
-        ///    included. The action list is computed from these, because the game applies the
-        ///    action to all of them; computing it from the drawn ones would offer fewer actions
-        ///    than the connection really performs.
         ///
         /// <b>"Could not read" is never "does not exist".</b> A group is dropped only when it
         /// was actually read and has no drawn member. Three cases keep the node as it is: the
@@ -961,6 +1031,28 @@ namespace Vgs.Game
             {
                 VgsLog.Throttled("position", "could not read block position", e, 300);
                 return Vector3I.Zero;
+            }
+        }
+
+        /// <summary>
+        /// Entity id of the grid the block stands on, or 0 when it cannot be read (ADR-0032).
+        ///
+        /// 0 is not an error and not a reason to drop the block: a card without a grid is simply
+        /// drawn without a grid frame. The alternative — treating an unreadable grid as "the
+        /// block is gone" — would erase the card and its edges for one bad frame, which is the
+        /// failure mode the group sync already refuses to have.
+        /// </summary>
+        private static long SafeGridId(IMyTerminalBlock block)
+        {
+            try
+            {
+                IMyCubeGrid cubeGrid = block.CubeGrid;
+                return cubeGrid == null ? 0 : cubeGrid.EntityId;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("grid-id", "could not read the block's grid", e, 600);
+                return 0;
             }
         }
     }

@@ -29,6 +29,12 @@ namespace Vgs.Model
     /// one and therefore exposes no event ports at all — even if it does announce state
     /// changes to C# subscribers. The curated list names <i>what fires the toolbar</i>, not
     /// everything the block can do.
+    ///
+    /// <b>The table is indexed by category, not by a family string</b> (ADR-0030): a subtype is
+    /// classified once, by <see cref="ResolveCategory"/>, and the category's
+    /// <see cref="CategoryDescriptor"/> answers what fires its toolbar. The same descriptor is
+    /// where a category's own state readings will be declared (Stage 5.2), so per-category
+    /// knowledge stays in one row instead of spreading into a second table.
     /// </summary>
     public static class BlockPortCatalog
     {
@@ -42,78 +48,113 @@ namespace Vgs.Model
         public const string FalseKeySuffix = "#false";
 
         /// <summary>
-        /// Curated per-family events — the ones that make the block's own toolbar fire.
-        /// Key is a family prefix matched against the block subtype with
-        /// <see cref="ResolveFamily"/>, so "LargeBlockCockpitIndustrial" and
-        /// "SmallBlockCockpit" both resolve to "cockpit".
+        /// What the editor knows about each category: the events that fire its toolbar, and the
+        /// keys of its own state readings (ADR-0030).
         ///
-        /// Only toolbar-triggering events belong here. A battery announcing a charge change
-        /// to C# code cannot put anything on its own toolbar, so it is not a source in this
-        /// editor and has no entry.
+        /// A row is the whole knowledge of one category — there is no second table. Categories
+        /// without a row fall back to <see cref="UnknownDescriptor"/>, which is the same thing as
+        /// "no curated events": the block gets the generic event and no metrics.
+        ///
+        /// Only toolbar-triggering events belong here. A battery announcing a charge change to C#
+        /// code cannot put anything on its own toolbar, so it is not a source in this editor.
         /// </summary>
-        private static readonly Dictionary<string, string[]> FamilyEvents =
-            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        private static readonly Dictionary<BlockCategory, CategoryDescriptor> Descriptors =
+            new Dictionary<BlockCategory, CategoryDescriptor>
             {
-                { "cockpit", new[] { "TargetLocked", "TargetLost" } },
-                { "timer", new[] { "Triggered" } },
-                { "sensor", new[] { "Detected" } },
-                { "eventcontroller", new[] { "EventTriggered" } },
-                { "buttonpanel", new[] { "ButtonPressed" } },
-                { "airvent", new[] { "Depressurized", "Pressurized" } },
-                { "warhead", new[] { "Detonated" } },
-                { "door", new[] { "OpenChanged" } },
-                { "landinggear", new[] { "LockedChanged" } },
-                { "connector", new[] { "LockedChanged" } },
-                { "safezone", new[] { "Entered", "Left" } }
+                { BlockCategory.Cockpit, new CategoryDescriptor(new[] { "TargetLocked", "TargetLost" }, null) },
+                { BlockCategory.Timer, new CategoryDescriptor(new[] { "Triggered" }, null) },
+                { BlockCategory.Sensor, new CategoryDescriptor(new[] { "Detected" }, null) },
+                { BlockCategory.EventController, new CategoryDescriptor(new[] { "EventTriggered" }, null) },
+                { BlockCategory.ButtonPanel, new CategoryDescriptor(new[] { "ButtonPressed" }, null) },
+                { BlockCategory.AirVent, new CategoryDescriptor(new[] { "Depressurized", "Pressurized" }, null) },
+                { BlockCategory.Warhead, new CategoryDescriptor(new[] { "Detonated" }, null) },
+                { BlockCategory.Door, new CategoryDescriptor(new[] { "OpenChanged" }, null) },
+                { BlockCategory.LandingGear, new CategoryDescriptor(new[] { "LockedChanged" }, null) },
+                { BlockCategory.Connector, new CategoryDescriptor(new[] { "LockedChanged" }, null) },
+                { BlockCategory.SafeZone, new CategoryDescriptor(new[] { "Entered", "Left" }, null) }
             };
 
         /// <summary>
-        /// Maps a block subtype to a family key. Ordered from most specific to least, because
-        /// several subtype names contain more than one family word (e.g.
-        /// "LargeBlockCockpitIndustrial" contains "cockpit").
+        /// The descriptor of a category with no curated knowledge: no events of its own, no
+        /// metrics. Shared, because "nothing known" is the same answer for every such category
+        /// and a per-category instance would be a copy of the same emptiness.
         /// </summary>
-        public static string ResolveFamily(string subtypeId)
+        private static readonly CategoryDescriptor UnknownDescriptor =
+            new CategoryDescriptor(null, null);
+
+        /// <summary>
+        /// Descriptor of a category — never null, so a caller does not have to ask whether the
+        /// editor knows this block before it can ask what the block does.
+        /// </summary>
+        public static CategoryDescriptor Descriptor(BlockCategory category)
         {
-            if (string.IsNullOrEmpty(subtypeId)) return string.Empty;
+            CategoryDescriptor descriptor;
+            return Descriptors.TryGetValue(category, out descriptor) ? descriptor : UnknownDescriptor;
+        }
+
+        /// <summary>
+        /// Maps a block subtype to its category. Ordered from the most specific token to the least,
+        /// because several subtype names contain more than one family word and the order is the
+        /// rule that decides: "LargeBlockEventController" contains no "cockpit", but
+        /// "LargeBlockCockpitIndustrial" would match a sloppy "controller" test;
+        /// "LargeBlockButtonPanel" and "LargeBlockSolarPanel" both contain "panel", which is the
+        /// last test of all; "LargeBlockHydrogenThruster" contains both "hydrogen" and "thrust"
+        /// and is a hydrogen block, not a generic thruster.
+        ///
+        /// <b>This is a heuristic on the subtype, and it is allowed to be wrong.</b> It decides
+        /// only which curated events to offer; it never decides whether a block can drive others
+        /// (that is the game's <c>IMyToolbarProvider</c>, ADR-0011) or whether it is an event
+        /// controller (that is the game's <c>IMyEventControllerBlock</c>, ADR-0017). A block this
+        /// method misclassifies still connects correctly — it just gets a different curated event
+        /// name, or the generic one.
+        ///
+        /// The order below is asserted by <c>tests/OfflineChecks.cs</c> on real subtype names,
+        /// including every trap listed above; do not "tidy" it.
+        /// </summary>
+        public static BlockCategory ResolveCategory(string subtypeId)
+        {
+            if (string.IsNullOrEmpty(subtypeId)) return BlockCategory.Unknown;
 
             string s = subtypeId.ToLowerInvariant();
 
-            // Order matters: check the longer/more specific tokens first.
-            if (s.Contains("eventcontroller")) return "eventcontroller";
-            if (s.Contains("programmable")) return "programmable";
-            if (s.Contains("buttonpanel")) return "buttonpanel";
-            if (s.Contains("landinggear")) return "landinggear";
-            if (s.Contains("cargocontainer") || s.Contains("cargosmall")) return "cargocontainer";
-            if (s.Contains("solarpanel")) return "solarpanel";
-            if (s.Contains("jumpdrive")) return "jumpdrive";
-            if (s.Contains("safezone")) return "safezone";
-            if (s.Contains("oxygen") || s.Contains("airvent")) return s.Contains("airvent") ? "airvent" : "oxygen";
-            if (s.Contains("hydrogen")) return "hydrogen";
-            if (s.Contains("cockpit") || s.Contains("seat")) return "cockpit";
-            if (s.Contains("timer")) return "timer";
-            if (s.Contains("sensor")) return "sensor";
-            if (s.Contains("battery")) return "battery";
-            if (s.Contains("thrust")) return "thruster";
-            if (s.Contains("gyro")) return "gyro";
-            if (s.Contains("connector")) return "connector";
-            if (s.Contains("warhead")) return "warhead";
-            if (s.Contains("door")) return "door";
-            if (s.Contains("piston")) return "piston";
-            if (s.Contains("rotor")) return "rotor";
-            if (s.Contains("hinge")) return "hinge";
-            if (s.Contains("reactor")) return "reactor";
-            if (s.Contains("turret") || s.Contains("gatling") || s.Contains("missile")) return "turret";
-            if (s.Contains("drill")) return "drill";
-            if (s.Contains("welder")) return "welder";
-            if (s.Contains("grinder")) return "grinder";
-            if (s.Contains("assembler")) return "assembler";
-            if (s.Contains("refinery")) return "refinery";
-            if (s.Contains("projector")) return "projector";
-            if (s.Contains("antenna")) return "antenna";
-            if (s.Contains("beacon")) return "beacon";
-            if (s.Contains("light") || s.Contains("lcd") || s.Contains("panel")) return "light";
+            if (s.Contains("eventcontroller")) return BlockCategory.EventController;
+            if (s.Contains("programmable")) return BlockCategory.Programmable;
+            if (s.Contains("buttonpanel")) return BlockCategory.ButtonPanel;
+            if (s.Contains("landinggear")) return BlockCategory.LandingGear;
+            if (s.Contains("cargocontainer") || s.Contains("cargosmall")) return BlockCategory.CargoContainer;
+            if (s.Contains("solarpanel")) return BlockCategory.SolarPanel;
+            if (s.Contains("jumpdrive")) return BlockCategory.JumpDrive;
+            if (s.Contains("safezone")) return BlockCategory.SafeZone;
+            if (s.Contains("oxygen") || s.Contains("airvent"))
+            {
+                return s.Contains("airvent") ? BlockCategory.AirVent : BlockCategory.Oxygen;
+            }
+            if (s.Contains("hydrogen")) return BlockCategory.Hydrogen;
+            if (s.Contains("cockpit") || s.Contains("seat")) return BlockCategory.Cockpit;
+            if (s.Contains("timer")) return BlockCategory.Timer;
+            if (s.Contains("sensor")) return BlockCategory.Sensor;
+            if (s.Contains("battery")) return BlockCategory.Battery;
+            if (s.Contains("thrust")) return BlockCategory.Thruster;
+            if (s.Contains("gyro")) return BlockCategory.Gyro;
+            if (s.Contains("connector")) return BlockCategory.Connector;
+            if (s.Contains("warhead")) return BlockCategory.Warhead;
+            if (s.Contains("door")) return BlockCategory.Door;
+            if (s.Contains("piston")) return BlockCategory.Piston;
+            if (s.Contains("rotor")) return BlockCategory.Rotor;
+            if (s.Contains("hinge")) return BlockCategory.Hinge;
+            if (s.Contains("reactor")) return BlockCategory.Reactor;
+            if (s.Contains("turret") || s.Contains("gatling") || s.Contains("missile")) return BlockCategory.Turret;
+            if (s.Contains("drill")) return BlockCategory.Drill;
+            if (s.Contains("welder")) return BlockCategory.Welder;
+            if (s.Contains("grinder")) return BlockCategory.Grinder;
+            if (s.Contains("assembler")) return BlockCategory.Assembler;
+            if (s.Contains("refinery")) return BlockCategory.Refinery;
+            if (s.Contains("projector")) return BlockCategory.Projector;
+            if (s.Contains("antenna")) return BlockCategory.Antenna;
+            if (s.Contains("beacon")) return BlockCategory.Beacon;
+            if (s.Contains("light") || s.Contains("lcd") || s.Contains("panel")) return BlockCategory.Light;
 
-            return string.Empty;
+            return BlockCategory.Unknown;
         }
 
         /// <summary>
@@ -129,28 +170,42 @@ namespace Vgs.Model
         /// </summary>
         public static void FillEvents(Node node)
         {
+            if (node == null) return;
+
             node.Events.Clear();
             node.CanDriveBlocks = false;
 
-            if (node == null || node.Toolbar == null || !node.Toolbar.CanDrive) return;
+            if (node.Toolbar == null || !node.Toolbar.CanDrive) return;
 
             node.CanDriveBlocks = true;
 
-            var baseKeys = new List<string>(4);
-            string family = ResolveFamily(node.SubtypeId);
-            string[] specific;
-            if (family.Length > 0 && FamilyEvents.TryGetValue(family, out specific))
-            {
-                for (int i = 0; i < specific.Length; i++) baseKeys.Add(specific[i]);
-            }
-            if (baseKeys.Count == 0) baseKeys.Add(GenericEventKey);
+            // The category's own events, or the generic one when it has none. A category with no
+            // curated entry is not an error: a modded timer-like block still gets a usable port
+            // (ADR-0002), which is what keeps the table from becoming a whitelist.
+            CategoryDescriptor descriptor = Descriptor(node.Category);
+            string[] specific = descriptor.Events;
 
-            int total = node.Toolbar.YesNo ? baseKeys.Count * 2 : baseKeys.Count;
+            int baseCount = specific.Length > 0 ? specific.Length : 1;
+            int total = node.Toolbar.YesNo ? baseCount * 2 : baseCount;
             int index = 0;
 
-            for (int i = 0; i < baseKeys.Count; i++)
+            if (specific.Length == 0)
             {
-                string key = baseKeys[i];
+                if (node.Toolbar.YesNo)
+                {
+                    AddEvent(node, GenericEventKey, PortGroup.Yes, index++, total);
+                    AddEvent(node, GenericEventKey, PortGroup.No, index++, total);
+                }
+                else
+                {
+                    AddEvent(node, GenericEventKey, PortGroup.Single, index++, total);
+                }
+                return;
+            }
+
+            for (int i = 0; i < specific.Length; i++)
+            {
+                string key = specific[i];
                 if (node.Toolbar.YesNo)
                 {
                     AddEvent(node, key, PortGroup.Yes, index++, total);

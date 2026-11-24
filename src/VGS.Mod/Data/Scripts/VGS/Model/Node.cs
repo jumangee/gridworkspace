@@ -5,378 +5,6 @@ using VRageMath;
 namespace Vgs.Model
 {
     /// <summary>
-    /// What a port represents. The distinction matters for the evaluator (stage 3): an
-    /// action is something you *invoke* on a block, an event is something that *happened*,
-    /// and a value is something you read and compare.
-    /// </summary>
-    public enum PortKind
-    {
-        /// <summary>Terminal action, e.g. OnOff, TriggerNow. Consumed by a block.</summary>
-        Action = 0,
-
-        /// <summary>Something the block emits: state change, threshold crossing, occupancy.</summary>
-        Event = 1,
-
-        /// <summary>Readable scalar, e.g. integrity percentage, stored power.</summary>
-        Value = 2
-    }
-
-    /// <summary>
-    /// What a node stands for: one grid block, or one named block group of the grid.
-    ///
-    /// The two are drawn differently (a block is a card, a group is a light frame around the
-    /// cards of its members) and they are not symmetric in what they can do: a group never
-    /// starts a connection, because a group has no toolbar and nothing to fire it
-    /// (ADR-0015). Everything else — an incoming port, an edge that ends on it, the action
-    /// menu — works the same way, which is why a group is a <see cref="Node"/> at all.
-    /// </summary>
-    public enum NodeKind
-    {
-        /// <summary>A real grid block. Identified by <see cref="Node.EntityId"/>.</summary>
-        Block = 0,
-
-        /// <summary>
-        /// A named block group of the grid's terminal system. Identified by
-        /// <see cref="Node.GroupName"/>: a group is not an entity, so it has no entity id.
-        /// </summary>
-        Group = 1
-    }
-
-    /// <summary>
-    /// Direction of data flow for a port.
-    ///
-    /// This is the side of the node the port lives on: an <see cref="Input"/> is drawn as a
-    /// bar under the card with its dot on the left, an <see cref="Output"/> as a bar with its
-    /// dot on the right. Data always flows output → input, so a line always starts at a dot
-    /// on the right of a source bar and ends at a dot on the left of a target bar.
-    /// </summary>
-    public enum PortDirection
-    {
-        Input = 0,
-        Output = 1
-    }
-
-    /// <summary>
-    /// Which fire group of the source block's toolbar an outgoing port writes into.
-    ///
-    /// Space Engineers toolbars are not all "everything fires at once". Two shapes exist,
-    /// and the game decides which one a block has (see <see cref="ToolbarLayout.YesNo"/>):
-    ///
-    ///  * a <b>single-group</b> toolbar (a timer: nine slots × ten pages) — every filled cell
-    ///    is activated together when the block fires;
-    ///  * a <b>yes/no</b> toolbar (a sensor, an event controller, a cockpit's "on lock"
-    ///    toolbar: two slots × ten pages) — slot 0 of every page fires on "yes", slot 1 on
-    ///    "no". The two groups are independent lists of actions.
-    ///
-    /// A yes/no block therefore exposes *two* ports per event: "Detected (yes)" and
-    /// "Detected (no)". <see cref="Single"/> is the only group of a single-group toolbar and
-    /// is never used on a yes/no one.
-    /// </summary>
-    public enum PortGroup
-    {
-        /// <summary>The block's toolbar has one fire group; every cell fires together.</summary>
-        Single = 0,
-
-        /// <summary>Slot 0 of every page: the "yes" / "true" / "detected" list.</summary>
-        Yes = 1,
-
-        /// <summary>Slot 1 of every page: the "no" / "false" / "not detected" list.</summary>
-        No = 2
-    }
-
-    /// <summary>
-    /// The shape of the toolbar a block drives other blocks with, read from the live block
-    /// through the game's own interfaces (<c>VRage.Game.ModAPI.IMyToolbarProvider</c> →
-    /// <c>IMyToolbar</c>). The engine types that do the same job
-    /// (<c>Sandbox.Game.Screens.Helpers.IMyToolbarOwner</c> / <c>MyToolbar</c>) are prohibited
-    /// to a mod script, so this layer only ever sees the ModAPI mirror.
-    ///
-    /// Nothing here is a table of block types: a timer reports nine slots and ten pages, a
-    /// sensor reports two slots and ten pages, and the editor draws whatever it is told. A
-    /// block that reports no usable toolbar simply cannot be a source, which is exactly the
-    /// answer to "can this block drive other blocks".
-    ///
-    /// <b>Yes/no toolbars.</b> Some blocks keep two independent lists of actions — what happens
-    /// on "yes" and what happens on "no" — and the editor has to see them as two groups or it
-    /// writes into the wrong list. The game's own test for that is three conditions:
-    /// the definition declares the background (<c>MyCubeBlockDefinition.YesNoToolbarBackground</c>,
-    /// which <c>MyToolbar.Init</c> copies into <c>MyToolbar.YesNoBackground</c>), the toolbar
-    /// allows it (<c>CanShowYesNoBackgrounds</c>, true for every <c>ButtonPanel</c> toolbar),
-    /// and there are exactly two slots per page. The same test is what the vanilla toolbar
-    /// screen makes before it draws the true/false icons.
-    ///
-    /// <see cref="YesNo"/> is therefore not derived from the subtype name, and not from a table:
-    /// the same cockpit owns a manual toolbar (nine slots, no yes/no) and an "on lock" toolbar
-    /// (two slots, yes/no), and both are described by this same type.
-    /// </summary>
-    public sealed class ToolbarLayout
-    {
-        /// <summary>Index of the toolbar this layout describes, as <c>IMyToolbarProvider</c> numbers it.</summary>
-        public readonly int ToolbarIndex;
-
-        /// <summary>Cells per page. Two for a yes/no toolbar, more for a single-group one.</summary>
-        public readonly int SlotCount;
-
-        /// <summary>Pages (the game calls them "toolbars" in the terminal UI).</summary>
-        public readonly int PageCount;
-
-        /// <summary>True when slot 0 fires on "yes" and slot 1 on "no", independently.</summary>
-        public readonly bool YesNo;
-
-        /// <summary>A block with no toolbar at all: no cells, no source ports, no "+".</summary>
-        public static readonly ToolbarLayout None = new ToolbarLayout(-1, 0, 0, false);
-
-        public ToolbarLayout(int toolbarIndex, int slotCount, int pageCount, bool yesNo)
-        {
-            ToolbarIndex = toolbarIndex;
-            SlotCount = slotCount < 0 ? 0 : slotCount;
-            PageCount = pageCount < 0 ? 0 : pageCount;
-            YesNo = yesNo;
-        }
-
-        /// <summary>Total cells in this toolbar, i.e. <c>MyToolbar.ItemCount</c>.</summary>
-        public int CellCount { get { return SlotCount * PageCount; } }
-
-        /// <summary>True when the block can drive other blocks through this toolbar.</summary>
-        public bool CanDrive { get { return SlotCount > 0 && PageCount > 0; } }
-
-        /// <summary>
-        /// Slot a port group writes into: 0 for <see cref="PortGroup.Yes"/>, 1 for
-        /// <see cref="PortGroup.No"/>, and -1 for <see cref="PortGroup.Single"/>, meaning
-        /// "any free slot of a free page".
-        /// </summary>
-        public int SlotFor(PortGroup group)
-        {
-            if (group == PortGroup.Yes) return 0;
-            if (group == PortGroup.No) return 1;
-            return -1;
-        }
-
-        /// <summary>Linear cell index of a (page, slot) pair, in the game's own order.</summary>
-        public int CellIndex(int page, int slot)
-        {
-            return page * SlotCount + slot;
-        }
-
-        /// <summary>Page a linear cell index belongs to.</summary>
-        public int PageOf(int cellIndex)
-        {
-            return SlotCount <= 0 ? 0 : cellIndex / SlotCount;
-        }
-
-        /// <summary>Slot a linear cell index occupies within its page.</summary>
-        public int SlotOf(int cellIndex)
-        {
-            return SlotCount <= 0 ? 0 : cellIndex % SlotCount;
-        }
-
-        public override string ToString()
-        {
-            return "toolbar " + ToolbarIndex + ": " + SlotCount + "x" + PageCount
-                   + (YesNo ? " (yes/no)" : string.Empty);
-        }
-    }
-
-    /// <summary>
-    /// One cell of a block's toolbar: a page and an index inside it.
-    ///
-    /// A connection is stored with the cell it occupies, because the toolbar *is* the
-    /// connection: the editor does not keep a private wiring that the block does not have.
-    /// Two connections that differ only by their cell are different connections — the game
-    /// refuses the same action twice on one page and accepts it on another page.
-    /// </summary>
-    public struct ToolbarCell
-    {
-        public readonly int ToolbarIndex;
-        public readonly int Index;
-
-        /// <summary>The "no cell" value, used by edges that were never written.</summary>
-        public static readonly ToolbarCell None = new ToolbarCell(-1, -1);
-
-        public ToolbarCell(int toolbarIndex, int index)
-        {
-            ToolbarIndex = toolbarIndex;
-            Index = index;
-        }
-
-        public bool IsValid { get { return ToolbarIndex >= 0 && Index >= 0; } }
-
-        public bool SameAs(ToolbarCell other)
-        {
-            return ToolbarIndex == other.ToolbarIndex && Index == other.Index;
-        }
-
-        public override string ToString()
-        {
-            return "cell " + ToolbarIndex + "/" + Index;
-        }
-    }
-
-    /// <summary>
-    /// One connectable point on a node.
-    ///
-    /// <see cref="Key"/> is the stable identity used in save data and in the graph; it must
-    /// never be renumbered, only added to. <see cref="DisplayName"/> is what the user sees.
-    ///
-    /// <see cref="Anchor"/> and <see cref="Slot"/> are two different things on purpose:
-    ///
-    ///  * <see cref="Anchor"/> is a *derived* position on the card edge, kept only so the
-    ///    catalog can spread a long port list down the side of the card. It is never used to
-    ///    place a connection dot — dots live on the port bars, not on the card.
-    ///  * <see cref="Slot"/> is the port's *drawing slot*: which stacked bar under the card it
-    ///    occupies. It is assigned by <see cref="GridGraph.LayoutPorts"/>, not by the catalog,
-    ///    because it depends on what the user has actually connected. Two nodes can therefore
-    ///    place the same port in different slots, and a port that was not drawn yesterday may
-    ///    be drawn today.
-    ///
-    /// Everything except <see cref="Slot"/> is fixed for the lifetime of the block; the slot
-    /// is rewritten only by the layout pass, and only as a whole (see the pass for why a
-    /// half-updated slot map would draw two ports on top of each other).
-    /// </summary>
-    public sealed class Port
-    {
-        public readonly string Key;
-        public readonly string DisplayName;
-        public readonly PortKind Kind;
-        public readonly PortDirection Direction;
-
-        /// <summary>
-        /// Which fire group of the source's toolbar this port belongs to. Always
-        /// <see cref="PortGroup.Single"/> for an input port: actions have no groups.
-        /// </summary>
-        public readonly PortGroup Group;
-
-        /// <summary>Normalized vertical position on the node edge (0 = top, 1 = bottom).</summary>
-        public readonly float Anchor;
-
-        /// <summary>
-        /// Drawing slot: index of the stacked port bar this port occupies under its card,
-        /// counted from the card outwards. Negative means "not drawn" (no connection, so the
-        /// bar would be noise). Assigned by <see cref="GridGraph.LayoutPorts"/>.
-        /// </summary>
-        public int Slot; // review:allow R009 assigned only by GridGraph.LayoutPorts, for the whole node at once
-
-        public Port(string key, string displayName, PortKind kind, PortDirection direction, float anchor)
-            : this(key, displayName, kind, direction, anchor, PortGroup.Single)
-        {
-        }
-
-        public Port(string key, string displayName, PortKind kind, PortDirection direction,
-                    float anchor, PortGroup group)
-        {
-            Key = key;
-            DisplayName = displayName;
-            Kind = kind;
-            Direction = direction;
-            Anchor = anchor;
-            Group = group;
-            Slot = -1;
-        }
-
-        public override string ToString()
-        {
-            return Direction + ":" + Key;
-        }
-    }
-
-    /// <summary>
-    /// What one member block of a group contributes to the group's action list: its runtime
-    /// type, whether it is a functional block, the action ids its type exposes, and which of
-    /// them are enabled on this very block.
-    ///
-    /// These four fields are exactly what the game's own rule reads for a group toolbar item
-    /// (ADR-0015, verified in `docs/01-research/api-block-groups.md` §3): the action set of a
-    /// group is derived from the members' action ids, and it collapses to nothing when the
-    /// members have different types and one of them is not a functional block.
-    ///
-    /// <see cref="ActionIds"/> and <see cref="EnabledActionIds"/> are two lists rather than one
-    /// because the game treats them differently in the two branches: with a single member type
-    /// an action survives when it is enabled on <em>any</em> member, and with mixed types only
-    /// when it is enabled on <em>every</em> member. Collapsing them would lose that distinction,
-    /// and the editor would offer an action the game will not fire.
-    ///
-    /// <see cref="TypeKey"/> is a string rather than a <see cref="System.Type"/> so that this
-    /// type stays in <c>Vgs.Model</c> and the rule can be asserted without the game. The game
-    /// layer passes the runtime type's name; the model only compares them for equality.
-    /// </summary>
-    public sealed class GroupMemberActions
-    {
-        /// <summary>Identity of the member's runtime block type. Compared for equality only.</summary>
-        public readonly string TypeKey;
-
-        /// <summary>
-        /// True when the member is a functional block. A mixed group with one non-functional
-        /// member has no actions at all, which is the game's rule, not a simplification.
-        /// </summary>
-        public readonly bool IsFunctional;
-
-        /// <summary>Action ids the member's type exposes, in the game's order.</summary>
-        public readonly IList<string> ActionIds;
-
-        /// <summary>
-        /// Action ids of <see cref="ActionIds"/> that report <c>IsEnabled</c> for this very
-        /// member. Empty when the block reports nothing enabled.
-        /// </summary>
-        public readonly IList<string> EnabledActionIds;
-
-        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds)
-            : this(typeKey, isFunctional, actionIds, actionIds)
-        {
-        }
-
-        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
-                                  IList<string> enabledActionIds)
-        {
-            TypeKey = typeKey ?? string.Empty;
-            IsFunctional = isFunctional;
-            ActionIds = actionIds ?? new List<string>(0);
-            EnabledActionIds = enabledActionIds ?? new List<string>(0);
-        }
-    }
-
-    /// <summary>
-    /// One block an event controller watches: a member of the controller's "selected blocks"
-    /// list (ADR-0017).
-    ///
-    /// A watch target is <b>not</b> an <see cref="Edge"/>. An edge is a connection that lives in
-    /// the source block's toolbar and occupies a cell there (ADR-0011); watching has no cell and
-    /// no action — the controller does not *call* the block, it *observes* it. Putting the two
-    /// in one type would mean an edge without a cell, which is exactly the invariant the graph
-    /// is built on.
-    ///
-    /// <see cref="DisplayName"/> is the watched block's name as of the last refresh. It is
-    /// copied rather than resolved so the port can be labelled without the draw path ever
-    /// touching a live block — and so the bar keeps its name even when the target is hidden
-    /// from the schema with "Show in VGS".
-    /// </summary>
-    public sealed class WatchTarget
-    {
-        /// <summary>Entity id of the watched block.</summary>
-        public readonly long EntityId;
-
-        /// <summary>Player-visible name of the watched block. Refreshed with the graph.</summary>
-        public string DisplayName; // review:allow R009 written only by the refresh pass
-
-        /// <summary>
-        /// Drawing slot: which stacked watch bar under the card this target occupies. Assigned
-        /// by <see cref="GridGraph.LayoutPorts"/> — the UI never computes it.
-        /// </summary>
-        public int Slot; // review:allow R009 assigned only by GridGraph.LayoutPorts
-
-        public WatchTarget(long entityId, string displayName)
-        {
-            EntityId = entityId;
-            DisplayName = displayName;
-            Slot = -1;
-        }
-
-        public override string ToString()
-        {
-            return EntityId + " " + DisplayName;
-        }
-    }
-
-    /// <summary>
     /// A block shown on the canvas — or a named block group of the grid, which is drawn as a
     /// light frame around the cards of its members (ADR-0015).
     ///
@@ -440,6 +68,30 @@ namespace Vgs.Model
 
         /// <summary>Grid coordinates of the block, used to seed a readable initial layout.</summary>
         public readonly Vector3I GridPosition;
+
+        /// <summary>
+        /// Entity id of the grid the block stands on, or 0 for a group and for a block whose
+        /// grid could not be read (ADR-0032).
+        ///
+        /// <b>Why the node carries it at all.</b> The graph covers a whole construct — the grid
+        /// the editor was opened on plus its subgrids — so "which ship part is this" is no longer
+        /// the same question as "which graph is this in". Without this field the picture cannot
+        /// say that two cards belong to one subgrid, and the grid frames of
+        /// <c>PortGeometry</c> have nothing to group by.
+        ///
+        /// <b>Why it is not readonly.</b> A block usually keeps its grid for life, but a grid
+        /// split hands part of a ship to a new grid with a new entity id, and the block then
+        /// reports the new one. A readonly field would keep the old id and the card would be
+        /// framed with the wrong ship part until the editor was reopened. Refreshed by
+        /// <c>GridGraphBuilder.UpdateNode</c>, which is where every other world-derived value on
+        /// a surviving node is refreshed.
+        ///
+        /// <b>Why 0 is not an error.</b> A group has no grid of its own — its members may sit on
+        /// several — and a block whose <c>CubeGrid</c> read threw keeps its previous value rather
+        /// than being dropped: "could not read" is never "does not exist" (the same rule the
+        /// group sync follows). A card with 0 is simply drawn without a grid frame.
+        /// </summary>
+        public long GridEntityId; // review:allow R009 written by GridGraphBuilder.UpdateNode on refresh
 
         /// <summary>Player-visible block name (CustomName), or the group's name. Refreshed when the name changes.</summary>
         public string DisplayName; // review:allow R009 written only by the refresh pass
@@ -595,6 +247,37 @@ namespace Vgs.Model
         public readonly BlockState State;
 
         /// <summary>
+        /// What kind of block this is, as far as the editor's curated table knows (ADR-0030).
+        ///
+        /// Derived once, in the constructor, from <see cref="SubtypeId"/>: a block's subtype never
+        /// changes during its life, so neither does its category. A group gets
+        /// <see cref="BlockCategory.Unknown"/>, because a group is not a block and has no subtype.
+        ///
+        /// Read by <c>BlockPortCatalog.FillEvents</c> (which events the toolbar fires) and by the
+        /// state pass (how many metric slots the node's <see cref="State"/> needs). It is
+        /// deliberately **not** what decides whether a block can drive others or whether it is an
+        /// event controller — those are facts from the game (ADR-0011, ADR-0017), and deriving
+        /// them from a subtype would break every block from another mod.
+        /// </summary>
+        public readonly BlockCategory Category;
+
+        /// <summary>
+        /// Everything specific to an event controller — the mode description, the watch list and
+        /// the identity of the event those watches belong to — or <b>null for every other block</b>
+        /// (ADR-0030).
+        ///
+        /// <b>This reference is the flag.</b> <see cref="IsEventController"/> is a property over
+        /// it, so there is one truth and not two: a node either has controller state or is not a
+        /// controller, and the two cannot disagree. The check costs the same as reading a bool.
+        ///
+        /// The specific used to live on the node itself, which made every conveyor tube pay for an
+        /// empty watch list and made the geometry ask every card whether it carried a status line
+        /// to be told "no". A new kind of specificity gets its own type next to this one, and the
+        /// common node does not grow.
+        /// </summary>
+        public readonly ControllerState Controller;
+
+        /// <summary>
         /// True when this node's block is an event controller — the one block that owns a list
         /// of blocks it *observes* (ADR-0017).
         ///
@@ -605,59 +288,9 @@ namespace Vgs.Model
         /// It gates the watch button and the watch mode, nothing else: a controller is still an
         /// ordinary source of connections and keeps its bind buttons (ADR-0020).
         /// </summary>
-        public readonly bool IsEventController;
-
-        /// <summary>
-        /// One line describing what the controller checks, or null for every other block:
-        /// event name, comparison direction and threshold — whatever the selected event uses.
-        ///
-        /// Written by <c>Vgs.Game.EventControllerProbe</c> from the live block and drawn as a
-        /// third line of the card. It is a snapshot: the game's threshold and event can change
-        /// between two refreshes, and the card follows on the next one.
-        /// </summary>
-        public string StatusText; // review:allow R009 written only by the refresh pass
-
-        /// <summary>
-        /// Blocks this controller watches: its "selected blocks" list, in the order the player
-        /// added them (ADR-0017).
-        ///
-        /// Rebuilt from the controller's own storage by the refresh pass, and edited by the
-        /// watch gesture through <see cref="GridGraph.TryAddWatch"/> /
-        /// <see cref="GridGraph.RemoveWatch"/>. A watch target is drawn as a yellow bar under
-        /// the card; the list *is* the connection, so a member is always drawn.
-        /// </summary>
-        public readonly List<WatchTarget> Watched = new List<WatchTarget>();
-
-        /// <summary>
-        /// Identity of the event the controller had when its watch list was last read, or 0.
-        ///
-        /// The game builds a *new* event component when the player picks another event, and a
-        /// watch added through the component does not survive that switch. Comparing this value
-        /// across refreshes is how the editor notices that it has to replay its own additions
-        /// into the new component (ADR-0018).
-        /// </summary>
-        public long WatchEventId; // review:allow R009 written only by the refresh pass
-
-        /// <summary>
-        /// True when the card carries a third line — the mode description of a controller.
-        ///
-        /// Reserved for every event controller rather than only while the text is non-empty: a
-        /// card that grows and shrinks as the player picks a different event in the terminal
-        /// would move its own port stack under the pointer.
-        /// </summary>
-        public bool HasStatusLine
+        public bool IsEventController
         {
-            get { return IsEventController || !string.IsNullOrEmpty(StatusText); }
-        }
-
-        /// <summary>The watch target for this block, or null when the controller does not watch it.</summary>
-        public WatchTarget FindWatch(long entityId)
-        {
-            for (int i = 0; i < Watched.Count; i++)
-            {
-                if (Watched[i].EntityId == entityId) return Watched[i];
-            }
-            return null;
+            get { return Controller != null; }
         }
 
         /// <summary>Input ports: terminal actions this block can be told to perform.</summary>
@@ -679,6 +312,16 @@ namespace Vgs.Model
 
         public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
                     ToolbarLayout toolbar, bool isEventController)
+            : this(entityId, subtypeId, displayName, gridPosition, toolbar, isEventController, 0)
+        {
+        }
+
+        /// <summary>
+        /// The full form, with the grid the block stands on (ADR-0032). The overloads above pass
+        /// 0, which is what a group and an unreadable grid both mean: "no grid frame".
+        /// </summary>
+        public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
+                    ToolbarLayout toolbar, bool isEventController, long gridEntityId)
         {
             EntityId = entityId;
             Kind = NodeKind.Block;
@@ -687,9 +330,20 @@ namespace Vgs.Model
             DisplayName = displayName;
             TypeDisplayName = null;
             GridPosition = gridPosition;
+            GridEntityId = gridEntityId;
             Toolbar = toolbar ?? ToolbarLayout.None;
-            IsEventController = isEventController;
-            State = new BlockState();
+
+            // Classified once: a block's subtype never changes, so neither does its category.
+            Category = BlockPortCatalog.ResolveCategory(subtypeId);
+
+            // The controller state is created only for a controller, and the reference *is* the
+            // flag: there is no second field that could disagree with it (ADR-0030).
+            Controller = isEventController ? new ControllerState() : null;
+
+            // Sized by the category's descriptor, so a category that publishes readings gets a
+            // state with room for them without any new wiring (ADR-0030). Today every descriptor
+            // publishes none, and the shared empty array is what everyone gets.
+            State = new BlockState(BlockPortCatalog.Descriptor(Category).MetricCount);
 
             // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
             // placed, and the automatic layout would then never place it. A new node starts
@@ -710,6 +364,11 @@ namespace Vgs.Model
             DisplayName = displayName;
             TypeDisplayName = null;
             GridPosition = Vector3I.Zero;
+
+            // A group is not on a grid: its members may sit on several subgrids at once
+            // (ADR-0015), so there is no single grid to name. 0 means "no grid frame" (ADR-0032).
+            GridEntityId = 0;
+
             Toolbar = ToolbarLayout.None;
 
             // A group has nothing that fires, so it cannot drive anything: no "+" button, no
@@ -717,7 +376,11 @@ namespace Vgs.Model
             // every caller against the opposite assumption. It is also never an event
             // controller: the watch list belongs to one block, and a group is not a block.
             CanDriveBlocks = false;
-            IsEventController = false;
+
+            // A group is not a block: it has no subtype to classify, and no controller state. The
+            // null reference is what makes IsEventController false here, without a second flag.
+            Category = BlockCategory.Unknown;
+            Controller = null;
 
             // A group has no block and therefore no state of its own; it carries the default one
             // only so that every node answers the same question the same way.
@@ -786,111 +449,4 @@ namespace Vgs.Model
         }
     }
 
-    /// <summary>
-    /// A directed connection between an event port of one node and an action port of another.
-    ///
-    /// The target is either a block (<see cref="TargetEntityId"/>) or a named block group
-    /// (<see cref="TargetGroupName"/>) — never both. A group is a legitimate target because
-    /// the game has a toolbar item for it (`MyToolbarItemKind.GroupAction`) that applies one
-    /// action to every functional member (ADR-0015). The source is always a block: a group
-    /// has no toolbar, so nothing can fire from it.
-    ///
-    /// Connections are stored by port *key*, never by port index: adding a port to a block
-    /// type must not silently rewire every existing graph.
-    ///
-    /// A connection also carries the <see cref="Cell"/> of the source block's toolbar it
-    /// occupies. That is not bookkeeping — it is the connection. The editor writes the item
-    /// into the block's real toolbar (ADR-0011), and the cell is what distinguishes two
-    /// connections of the same event to the same action: the game refuses the same action
-    /// twice on one toolbar page and accepts it on another page.
-    ///
-    /// Many edges may end on the *same* target port. That is the point of the "BlockOn"
-    /// action: several blocks can all be told to switch the same reactor on, and the UI shows
-    /// it as one input bar with several lines arriving at its dot. The inverse is not true —
-    /// one event port of a given group is one source.
-    ///
-    /// Immutable: a different connection is a different edge, so the graph can hold it in a
-    /// list and compare by identity without worrying about a field changing underneath.
-    /// </summary>
-    public sealed class Edge
-    {
-        public readonly long SourceEntityId;
-        public readonly string SourcePortKey;
-
-        /// <summary>Entity id of the target block, or zero when the target is a group.</summary>
-        public readonly long TargetEntityId;
-
-        /// <summary>Name of the target group, or null when the target is a block.</summary>
-        public readonly string TargetGroupName;
-
-        public readonly string TargetPortKey;
-
-        /// <summary>Cell of the source block's toolbar that holds this connection's item.</summary>
-        public readonly ToolbarCell Cell;
-
-        /// <summary>True when this connection ends on a group instead of a single block.</summary>
-        public bool TargetsGroup
-        {
-            get { return TargetGroupName != null; }
-        }
-
-        public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey)
-            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, ToolbarCell.None)
-        {
-        }
-
-        public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
-                    ToolbarCell cell)
-            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell, null)
-        {
-        }
-
-        private Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
-                     ToolbarCell cell, string targetGroupName)
-        {
-            SourceEntityId = sourceEntityId;
-            SourcePortKey = sourcePortKey;
-            TargetEntityId = targetEntityId;
-            TargetGroupName = targetGroupName;
-            TargetPortKey = targetPortKey;
-            Cell = cell;
-        }
-
-        /// <summary>
-        /// A connection whose target is the named block group. The group is identified by name
-        /// because that is how the game's own toolbar item identifies it: a group has no entity
-        /// and no id.
-        /// </summary>
-        public static Edge ToGroup(long sourceEntityId, string sourcePortKey, string groupName,
-                                   string targetPortKey, ToolbarCell cell)
-        {
-            return new Edge(sourceEntityId, sourcePortKey, 0, targetPortKey, cell, groupName);
-        }
-
-        public bool SameAs(Edge other)
-        {
-            return other != null
-                && SourceEntityId == other.SourceEntityId
-                && TargetEntityId == other.TargetEntityId
-                && string.Equals(TargetGroupName, other.TargetGroupName, StringComparison.Ordinal)
-                && string.Equals(SourcePortKey, other.SourcePortKey, StringComparison.Ordinal)
-                && string.Equals(TargetPortKey, other.TargetPortKey, StringComparison.Ordinal)
-                && Cell.SameAs(other.Cell);
-        }
-
-        /// <summary>True when both edges describe the same item in the same toolbar cell.</summary>
-        public bool SameCellAs(Edge other)
-        {
-            return other != null
-                && SourceEntityId == other.SourceEntityId
-                && Cell.SameAs(other.Cell);
-        }
-
-        public override string ToString()
-        {
-            string target = TargetsGroup ? "group:" + TargetGroupName : TargetEntityId.ToString();
-            return SourceEntityId + "." + SourcePortKey + " -> " + target + "." + TargetPortKey
-                   + " @ " + Cell;
-        }
-    }
 }

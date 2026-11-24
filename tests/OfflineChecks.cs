@@ -160,6 +160,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== automatic layout is deterministic (ADR-0012) ===");
         LayoutIsDeterministic();
 
+        Console.WriteLine("=== construct layout keeps grids together (ADR-0032) ===");
+        ConstructLayoutKeepsGridsTogether();
+
         Console.WriteLine("=== block group action rule (ADR-0015) ===");
         GroupActionRule();
 
@@ -202,8 +205,20 @@ internal static class OfflineChecks
         Console.WriteLine("=== block state snapshot (Step 2) ===");
         BlockStateSnapshot();
 
+        Console.WriteLine("=== block category and descriptor (ADR-0030) ===");
+        BlockCategories();
+
+        Console.WriteLine("=== controller state is the flag (ADR-0030) ===");
+        ControllerSpecificity();
+
         Console.WriteLine("=== text field editing (ADR-0024) ===");
         TextFieldEditing();
+
+        Console.WriteLine("=== search field layout (Step 4.2) ===");
+        SearchFieldLayout();
+
+        Console.WriteLine("=== view state writes (Step 4.3, ADR-0022) ===");
+        ViewStateWrites();
 
         Console.WriteLine();
         Console.WriteLine(_failures == 0
@@ -1907,10 +1922,77 @@ internal static class OfflineChecks
         Check(a2.Position == survivor, "removing a node does not move the remaining cards");
     }
 
+    /// <summary>
+    /// The construct's reading order: grid first, then position (ADR-0032).
+    ///
+    /// The graph covers a whole construct, so blocks of different subgrids arrive interleaved in
+    /// the terminal system's order. Sorting by position alone would scatter one subgrid's cards
+    /// across the canvas, and the frame drawn around them would be a zigzag covering half the
+    /// picture. This is the rule that makes a grid frame readable at all, and it is invisible in
+    /// the game until someone builds a ship with a subgrid.
+    /// </summary>
+    private static void ConstructLayoutKeepsGridsTogether()
+    {
+        const long main = 100L;
+        const long sub = 200L;
+
+        // Deliberately interleaved: the two grids alternate, and the subgrid's coordinates are
+        // *before* the main grid's, which is the case a position-first sort gets wrong.
+        var graph = new GridGraph(main);
+        graph.AddNode(OnGrid(1, main, new Vector3I(5, 0, 0)));
+        graph.AddNode(OnGrid(2, sub, new Vector3I(1, 0, 0)));
+        graph.AddNode(OnGrid(3, main, new Vector3I(6, 0, 0)));
+        graph.AddNode(OnGrid(4, sub, new Vector3I(2, 0, 0)));
+
+        graph.LayoutUnplaced();
+
+        Node first = graph.GetNode(1);
+        Node second = graph.GetNode(3);
+        Node third = graph.GetNode(2);
+        Node fourth = graph.GetNode(4);
+
+        // The layout fills six columns per row, so four cards land on one row and the row
+        // number says nothing here. What matters is the *order*: a grid's cards must occupy
+        // adjacent cells, because that is what makes a frame around them enclose only them.
+        //
+        // Without the grid as the first key the order would be 1 (x=5, main), 2 (x=1, sub),
+        // 3 (x=6, main), 4 (x=2, sub) — sorted by position: 2, 4, 1, 3. The two grids would
+        // alternate, and a frame around either would span the whole canvas.
+        Check(first.Position.X < second.Position.X,
+              "within a grid, cards follow position order");
+        Check(third.Position.X < fourth.Position.X,
+              "within the second grid, cards follow position order");
+        Check(second.Position.X < third.Position.X,
+              "one grid's cards are contiguous: the second grid starts after the first ends");
+
+        // A group has no grid of its own, and a block whose grid could not be read has 0. Both
+        // are legal: the card is drawn, just without a grid frame (ADR-0032 §5).
+        var unread = new Node(9, "LargeBlockConveyor", "unread", new Vector3I(0, 0, 0),
+                              ToolbarLayout.None, false, 0);
+        Check(unread.GridEntityId == 0, "an unreadable grid is 0, not an error");
+        Check(new Node("grp", "Group").GridEntityId == 0, "a group has no grid of its own");
+
+        // Grid 0 sorts before every real grid, so an unreadable block never lands in the middle
+        // of a subgrid's block of cards.
+        var mixed = new GridGraph(main);
+        mixed.AddNode(OnGrid(11, main, new Vector3I(1, 0, 0)));
+        mixed.AddNode(unread);
+        mixed.LayoutUnplaced();
+        Check(unread.Position.X < mixed.GetNode(11).Position.X,
+              "a card with no grid sorts before the grids, not inside one");
+    }
+
     private static Node WithGridPosition(Node node, Vector3I position)
     {
         // Node.GridPosition is readonly and set in the constructor, so rebuild the node.
         return new Node(node.EntityId, node.SubtypeId, node.DisplayName, position, node.Toolbar);
+    }
+
+    /// <summary>A card on a named grid, for the construct-layout checks (ADR-0032).</summary>
+    private static Node OnGrid(long id, long gridId, Vector3I position)
+    {
+        return new Node(id, "LargeBlockConveyor", "block" + id, position, ToolbarLayout.None,
+                        false, gridId);
     }
 
     // ------------------------------------------------------------------ block groups (ADR-0015)
@@ -2494,7 +2576,7 @@ internal static class OfflineChecks
 
         // The slot is assigned by the layout pass, from the list, with no edge involved.
         graph.LayoutPorts();
-        WatchTarget target = controller.FindWatch(2);
+        WatchTarget target = controller.Controller.FindWatch(2);
         Check(target != null, "the watch target is in the list");
         Check(target.Slot == 0, "the first watch target takes the first watch slot");
         Check(PortGeometry.DrawnWatchCount(controller) == 1, "one watch bar is drawn");
@@ -2555,10 +2637,10 @@ internal static class OfflineChecks
         graph.AddNode(second);
         Check(graph.TryAddWatch(controller, 3, second.DisplayName), "a second block can be watched");
         graph.LayoutPorts();
-        Check(controller.FindWatch(3).Slot == 1, "the second watch target takes the second slot");
+        Check(controller.Controller.FindWatch(3).Slot == 1, "the second watch target takes the second slot");
 
         Vector2 secondTopLeft, secondSize;
-        Check(PortGeometry.TryWatchBarRect(controller, controller.FindWatch(3), out secondTopLeft, out secondSize),
+        Check(PortGeometry.TryWatchBarRect(controller, controller.Controller.FindWatch(3), out secondTopLeft, out secondSize),
               "the second watch bar has a rectangle");
         CheckClose(secondTopLeft.Y, barTopLeft.Y + barSize.Y, "the watch bars stack flush");
 
@@ -2567,7 +2649,7 @@ internal static class OfflineChecks
         Check(!graph.HasWatch(controller, 2), "the controller no longer watches it");
         Check(!graph.RemoveWatch(controller, 2), "removing a block that is not watched does nothing");
         graph.LayoutPorts();
-        Check(controller.FindWatch(3).Slot == 0, "the remaining watch target moves up to the first slot");
+        Check(controller.Controller.FindWatch(3).Slot == 0, "the remaining watch target moves up to the first slot");
         Check(PortGeometry.DrawnWatchCount(controller) == 1, "one watch bar is still drawn");
 
         // Removing the last one clears the slot too: no bar survives an empty list.
@@ -2809,35 +2891,35 @@ internal static class OfflineChecks
 
         var ids = new List<long> { 10, 20 };
         GridGraph.SyncWatched(controller, ids, id => "block" + id);
-        Check(controller.Watched.Count == 2, "two ids make two watch targets");
-        Check(controller.Watched[0].EntityId == 10 && controller.Watched[1].EntityId == 20,
+        Check(controller.Controller.Watched.Count == 2, "two ids make two watch targets");
+        Check(controller.Controller.Watched[0].EntityId == 10 && controller.Controller.Watched[1].EntityId == 20,
               "the targets follow the ids' order");
-        Check(controller.Watched[0].DisplayName == "block10", "the name comes from the resolver");
+        Check(controller.Controller.Watched[0].DisplayName == "block10", "the name comes from the resolver");
 
         // The surviving target object is reused, so a hover held by reference stays valid.
-        WatchTarget kept = controller.Watched[0];
+        WatchTarget kept = controller.Controller.Watched[0];
         var ids2 = new List<long> { 10, 30 };
         GridGraph.SyncWatched(controller, ids2, id => "renamed" + id);
-        Check(controller.Watched.Count == 2, "a changed list is rebuilt to the new ids");
-        Check(ReferenceEquals(controller.Watched[0], kept),
+        Check(controller.Controller.Watched.Count == 2, "a changed list is rebuilt to the new ids");
+        Check(ReferenceEquals(controller.Controller.Watched[0], kept),
               "a surviving watch target keeps its object");
-        Check(controller.Watched[0].DisplayName == "renamed10", "a surviving target gets its new name");
-        Check(controller.Watched[1].EntityId == 30, "the new id appears");
+        Check(controller.Controller.Watched[0].DisplayName == "renamed10", "a surviving target gets its new name");
+        Check(controller.Controller.Watched[1].EntityId == 30, "the new id appears");
 
         // An id that disappears loses its target — that is how a removal in the terminal reaches
         // the schema.
         var ids3 = new List<long> { 30 };
         GridGraph.SyncWatched(controller, ids3, id => "block" + id);
-        Check(controller.Watched.Count == 1 && controller.Watched[0].EntityId == 30,
+        Check(controller.Controller.Watched.Count == 1 && controller.Controller.Watched[0].EntityId == 30,
               "an id the game no longer reports loses its port");
 
         // An empty list empties the stack, and a null resolver does not throw.
         GridGraph.SyncWatched(controller, new List<long>(), id => "x");
-        Check(controller.Watched.Count == 0, "an empty id list draws no ports");
+        Check(controller.Controller.Watched.Count == 0, "an empty id list draws no ports");
 
         GridGraph.SyncWatched(controller, new List<long> { 40 }, null);
-        Check(controller.Watched.Count == 1, "a missing resolver still adds the target");
-        Check(controller.Watched[0].DisplayName == "40",
+        Check(controller.Controller.Watched.Count == 1, "a missing resolver still adds the target");
+        Check(controller.Controller.Watched[0].DisplayName == "40",
               "without a name the bar falls back to the id, not to an empty label");
     }
 
@@ -3262,6 +3344,198 @@ internal static class OfflineChecks
               "runs of spaces produce no empty terms");
         Check(BlockSearch.Matches(terms, "Timer 1", "Timer Block"),
               "a query with extra spaces still matches");
+    }
+
+    // ------------------------------------------------------------------ categories (ADR-0030)
+    //
+    // Classification is a heuristic on the subtype, and its whole risk is *order*: several real
+    // subtype names contain more than one family word, and a reordering that looks like tidying
+    // silently reclassifies blocks. Nothing here is visible in a compile, and the symptom in the
+    // game would be "the cockpit lost its TargetLocked port" — which reads as a port bug, not as
+    // a classification bug. So the traps are asserted by name.
+    private static void BlockCategories()
+    {
+        // ---- the traps: the more specific token must win ----
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockEventController") == BlockCategory.EventController,
+              "an event controller is not classified as a cockpit");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockButtonPanel") == BlockCategory.ButtonPanel,
+              "a button panel is not classified as a light");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockSolarPanel") == BlockCategory.SolarPanel,
+              "a solar panel is not classified as a light");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockAirVent") == BlockCategory.AirVent,
+              "an air vent is not classified as an oxygen block");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockHydrogenThruster") == BlockCategory.Hydrogen,
+              "a hydrogen thruster is not classified as a plain thruster");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockLCDPanel") == BlockCategory.Light,
+              "an LCD panel is a light");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockCockpitIndustrial") == BlockCategory.Cockpit,
+              "an industrial cockpit is a cockpit");
+        Check(BlockPortCatalog.ResolveCategory("SmallBlockCockpit") == BlockCategory.Cockpit,
+              "a small cockpit is a cockpit");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockSmallCargoContainer") == BlockCategory.CargoContainer,
+              "a cargo container is a cargo container");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockLandingGear") == BlockCategory.LandingGear,
+              "landing gear is not classified as a light");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockProgrammable") == BlockCategory.Programmable,
+              "a programmable block is a programmable block");
+
+        // ---- the ordinary ones: one check per member that has a curated event ----
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockTimerBlock") == BlockCategory.Timer, "timer");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockSensor") == BlockCategory.Sensor, "sensor");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockWarhead") == BlockCategory.Warhead, "warhead");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockDoor") == BlockCategory.Door, "door");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockConnector") == BlockCategory.Connector, "connector");
+        Check(BlockPortCatalog.ResolveCategory("SafeZoneBlock") == BlockCategory.SafeZone, "safe zone");
+
+        // ---- degradation: an unknown subtype is a legal value, not an error ----
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockConveyor") == BlockCategory.Unknown,
+              "a block the table does not know is Unknown");
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockCamera") == BlockCategory.Unknown,
+              "a camera is Unknown — the table has no category for it");
+        Check(BlockPortCatalog.ResolveCategory("") == BlockCategory.Unknown,
+              "an empty subtype is Unknown");
+        Check(BlockPortCatalog.ResolveCategory(null) == BlockCategory.Unknown,
+              "a null subtype is Unknown");
+
+        // ---- every enum member has a descriptor, and a descriptor is never null ----
+        foreach (BlockCategory category in Enum.GetValues(typeof(BlockCategory)))
+        {
+            Check(BlockPortCatalog.Descriptor(category) != null,
+                  "descriptor for " + category + " is not null");
+        }
+
+        // The unknown descriptor is shared and empty: no events of its own, no metrics.
+        Check(!BlockPortCatalog.Descriptor(BlockCategory.Unknown).HasEvents,
+              "the unknown category has no curated events of its own");
+        Check(BlockPortCatalog.Descriptor(BlockCategory.Unknown).MetricCount == 0,
+              "the unknown category publishes no metrics");
+
+        // ---- the curated events did not change with the refactor ----
+        Check(EventsOf(BlockCategory.Cockpit, "TargetLocked"),
+              "a cockpit fires TargetLocked");
+        Check(EventsOf(BlockCategory.Cockpit, "TargetLost"), "a cockpit fires TargetLost");
+        Check(EventsOf(BlockCategory.Timer, "Triggered"), "a timer fires Triggered");
+        Check(EventsOf(BlockCategory.Sensor, "Detected"), "a sensor fires Detected");
+        Check(EventsOf(BlockCategory.EventController, "EventTriggered"),
+              "an event controller fires EventTriggered");
+        Check(EventsOf(BlockCategory.ButtonPanel, "ButtonPressed"),
+              "a button panel fires ButtonPressed");
+        Check(EventsOf(BlockCategory.AirVent, "Depressurized"), "an air vent fires Depressurized");
+        Check(EventsOf(BlockCategory.AirVent, "Pressurized"), "an air vent fires Pressurized");
+        Check(EventsOf(BlockCategory.Warhead, "Detonated"), "a warhead fires Detonated");
+        Check(EventsOf(BlockCategory.Door, "OpenChanged"), "a door fires OpenChanged");
+        Check(EventsOf(BlockCategory.LandingGear, "LockedChanged"),
+              "landing gear fires LockedChanged");
+        Check(EventsOf(BlockCategory.Connector, "LockedChanged"), "a connector fires LockedChanged");
+        Check(EventsOf(BlockCategory.SafeZone, "Entered"), "a safe zone fires Entered");
+        Check(EventsOf(BlockCategory.SafeZone, "Left"), "a safe zone fires Left");
+
+        // A category with no curated event gets exactly one generic port, on both toolbar shapes.
+        Check(PortsOf(MakeNode(900, "LargeBlockConveyor", TimerToolbar(), "OnOff")).Count == 1,
+              "an unknown category with a single-group toolbar gets one generic port");
+        Check(PortsOf(MakeNode(901, "LargeBlockConveyor", SensorToolbar(), "OnOff")).Count == 2,
+              "an unknown category with a yes/no toolbar gets the generic port in both groups");
+
+        // ---- the node is classified once, and its state is sized by the descriptor ----
+        Node cockpit = MakeNode(910, "LargeBlockCockpitIndustrial", TimerToolbar(), "OnOff");
+        Check(cockpit.Category == BlockCategory.Cockpit, "a node carries its category");
+        Check(cockpit.State.MetricCount == BlockPortCatalog.Descriptor(cockpit.Category).MetricCount,
+              "a node's state is sized by its category's descriptor");
+
+        // A group has no subtype, so it is Unknown and carries no metrics either.
+        var group = new Node("group K", "group K");
+        Check(group.Category == BlockCategory.Unknown, "a group has no category");
+        Check(group.State.MetricCount == 0, "a group's state has no metrics");
+    }
+
+    /// <summary>True when the category's descriptor lists this event.</summary>
+    private static bool EventsOf(BlockCategory category, string key)
+    {
+        string[] events = BlockPortCatalog.Descriptor(category).Events;
+        for (int i = 0; i < events.Length; i++)
+        {
+            if (string.Equals(events[i], key, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The event ports a node ends up with.</summary>
+    private static IList<Port> PortsOf(Node node)
+    {
+        return node.Events;
+    }
+
+    // ------------------------------------------------------------------ controller state (ADR-0030)
+    //
+    // The point of moving the controller's fields off Node was that *having controller state is
+    // being a controller*. That makes one invariant worth asserting: the reference and the flag
+    // can never disagree, because there is only one of them. Everything else here is the old
+    // watch behaviour re-asserted through its new home, so the move cannot have changed it.
+    private static void ControllerSpecificity()
+    {
+        // ---- the reference is the flag ----
+        Node plain = MakeTarget(700, "LargeBlockConveyor", "OnOff");
+        Check(plain.Controller == null, "an ordinary block carries no controller state");
+        Check(!plain.IsEventController, "and it is not an event controller");
+
+        Node controller = new Node(701, "EventControllerLarge", "controller", Vector3I.Zero,
+                                   SensorToolbar(), true);
+        Check(controller.Controller != null, "a controller carries controller state");
+        Check(controller.IsEventController, "and the flag agrees — they are one fact");
+        Check(controller.Controller.Watched.Count == 0, "a fresh controller watches nothing");
+
+        var group = new Node("group C", "group C");
+        Check(group.Controller == null, "a group is never a controller");
+        Check(!group.IsEventController, "and its flag agrees");
+
+        // ---- the watch methods refuse a node that is not a controller ----
+        var graph = new GridGraph(31);
+        graph.AddNode(plain);
+        graph.AddNode(controller);
+        Check(!graph.TryAddWatch(plain, 700, "self"), "a plain block cannot watch anything");
+        Check(!graph.HasWatch(plain, 700), "and it reports watching nothing");
+        Check(!graph.RemoveWatch(plain, 700), "removing from a plain block does nothing");
+
+        var ids = new List<long>();
+        GridGraph.CollectWatchedIds(plain, ids);
+        Check(ids.Count == 0, "a plain block collects no watched ids");
+
+        // SyncWatched on a non-controller is a no-op rather than a crash: the refresh pass calls
+        // it for whatever node it is updating, and an exception there would reach the game loop.
+        GridGraph.SyncWatched(plain, new List<long> { 1, 2 }, id => "x");
+        Check(plain.Controller == null, "SyncWatched does not create controller state");
+
+        // ---- the behaviour through the new home ----
+        Check(graph.TryAddWatch(controller, 700, plain.DisplayName), "a controller can watch a block");
+        Check(controller.Controller.Watched.Count == 1, "the entry is in the controller's own list");
+        Check(graph.HasWatch(controller, 700), "the graph agrees it is watched");
+        Check(controller.Controller.FindWatch(700) != null, "the entry is findable by id");
+        Check(!graph.TryAddWatch(controller, 700, "again"), "the same block is not watched twice");
+
+        GridGraph.CollectWatchedIds(controller, ids);
+        Check(ids.Count == 1 && ids[0] == 700, "the watched id is collected from the new home");
+
+        // The cap still lives on the controller state, and it is the same cap as any other stack.
+        Check(controller.Controller.IsFull == false, "one entry does not fill the stack");
+        for (int i = 0; i < GridGraph.MaxPortsPerSide - 1; i++)
+        {
+            graph.TryAddWatch(controller, 800 + i, "b" + i);
+        }
+        Check(controller.Controller.IsFull, "the stack reports full at the cap");
+        Check(!graph.TryAddWatch(controller, 999, "overflow"), "and refuses one more");
+
+        // ---- the third line of the card follows the same reference ----
+        CheckClose(PortGeometry.CardHeight(controller),
+                   VgsConstants.NodeHeight + VgsConstants.NodeStatusLineHeight,
+                   "a controller's card is a line taller");
+        CheckClose(PortGeometry.CardHeight(plain), VgsConstants.NodeHeight,
+                   "an ordinary card is not");
+        Check(controller.Controller.StatusText == null,
+              "a fresh controller has no description until the refresh pass writes one");
+        controller.Controller.StatusText = "Condition is True";
+        CheckClose(PortGeometry.CardHeight(controller),
+                   VgsConstants.NodeHeight + VgsConstants.NodeStatusLineHeight,
+                   "the extra line does not appear and disappear with the text");
     }
 
     // ------------------------------------------------------------------ block state (Step 2)
@@ -3704,5 +3978,195 @@ internal static class OfflineChecks
         Check(set.Text == string.Empty && set.Caret == 0, "Clear empties the field");
         set.SetText(null);
         Check(set.Text == string.Empty, "SetText(null) is an empty field, not a crash");
+    }
+
+    /// <summary>
+    /// A measurer that gives every character the same width, so the arithmetic below can be
+    /// stated in characters rather than in pixels of a font the gate does not have.
+    /// </summary>
+    private static SearchField FieldWithFixedCharWidth(float perChar)
+    {
+        return new SearchField(text => text.Length * perChar);
+    }
+
+    /// <summary>
+    /// The search field's layout (Step 4.2): where the caret sits, how far the text scrolls, and
+    /// which slice of the query is painted.
+    ///
+    /// This is the arithmetic that breaks silently — a caret that stops one character short, a
+    /// scroll that lets the caret leave the box, a slice that starts one character late — and it
+    /// is invisible in the game until someone types a long query. Extracting the field from the
+    /// screen is what makes it checkable at all: its one game dependency (font measurement) is an
+    /// injected delegate.
+    /// </summary>
+    private static void SearchFieldLayout()
+    {
+        const int frame = 100;
+
+        // ---- an empty field ----
+        var empty = FieldWithFixedCharWidth(10f);
+        Check(!empty.HasText, "an empty field has no text");
+        Check(!empty.HasSelection, "an empty field has no selection");
+        empty.EnsureLayout(100f);
+        CheckClose(empty.CaretX, 0f, "an empty field puts the caret at the origin");
+        CheckClose(empty.ScrollX, 0f, "an empty field does not scroll");
+
+        // ---- short text that fits: no scroll ----
+        var fits = FieldWithFixedCharWidth(10f);
+        fits.Insert("abc", frame);
+        Check(fits.HasText, "typed characters make the field non-empty");
+        fits.EnsureLayout(100f);
+        CheckClose(fits.CaretX, 30f, "the caret sits after three 10-unit characters");
+        CheckClose(fits.ScrollX, 0f, "text that fits is not scrolled");
+        Check(fits.DisplayText == "abc", "a field that fits paints the whole query");
+        CheckClose(fits.FirstVisibleX, 0f, "the first visible character is the first one");
+
+        // ---- the caret is kept inside the box ----
+        //
+        // Six characters at 10 units in a 50-unit box: the caret belongs at 60, which is outside,
+        // so the text scrolls by exactly the overflow (10) and the caret lands on the right edge.
+        var scroll = FieldWithFixedCharWidth(10f);
+        scroll.Insert("abcdef", frame);
+        scroll.EnsureLayout(50f);
+        CheckClose(scroll.CaretX, 60f, "the caret's position is measured from the text origin");
+        CheckClose(scroll.ScrollX, 10f, "the text scrolls by exactly the caret's overflow");
+        CheckClose(scroll.CaretX - scroll.ScrollX, 50f,
+                   "the scrolled caret sits exactly on the right edge of the box");
+
+        // The painted slice starts at the first character whose left edge is still visible, and
+        // the slice's origin is that character's own x — the two must agree, or the text jumps.
+        Check(scroll.DisplayText == "bcdef", "the painted slice drops the characters scrolled off");
+        CheckClose(scroll.FirstVisibleX, 10f, "the painted slice's origin is the first visible char");
+
+        // ---- scrolling back ----
+        //
+        // Moving the caret home must undo the scroll: a field that stayed scrolled with the caret
+        // at index 0 would paint the query's tail while the caret sat on its first character.
+        scroll.MoveTo(0, false, frame);
+        scroll.EnsureLayout(50f);
+        CheckClose(scroll.CaretX, 0f, "home puts the caret at the origin");
+        CheckClose(scroll.ScrollX, 0f, "moving home scrolls the text back");
+        Check(scroll.DisplayText == "abcdef", "an unscrolled field paints the whole query again");
+
+        // ---- the layout is cached, and invalidated by every edit ----
+        //
+        // The cache is what keeps the font metrics out of the draw path (R010), so a stale cache
+        // would paint the caret at the previous position; a cache that is never reused would
+        // measure the font sixty times a second for a field nobody is typing into.
+        var cached = FieldWithFixedCharWidth(10f);
+        cached.Insert("abc", frame);
+        cached.EnsureLayout(100f);
+        float firstMeasure = cached.CaretX;
+        cached.EnsureLayout(100f);
+        CheckClose(cached.CaretX, firstMeasure, "an unchanged layout is reused, not recomputed");
+
+        cached.Insert('d', frame);
+        cached.EnsureLayout(100f);
+        CheckClose(cached.CaretX, 40f, "an edit invalidates the cached layout");
+
+        // A width change must also invalidate it: the "x" appearing shrinks the text area, and a
+        // caret placed for the wider box would sit past the right edge.
+        var rewiden = FieldWithFixedCharWidth(10f);
+        rewiden.Insert("abcdef", frame);
+        rewiden.EnsureLayout(100f);
+        CheckClose(rewiden.ScrollX, 0f, "a wide box needs no scroll for six characters");
+        rewiden.EnsureLayout(50f);
+        CheckClose(rewiden.ScrollX, 10f, "narrowing the box scrolls the text");
+
+        // ---- the "changed" flag ----
+        //
+        // The screen rebuilds its filter from this flag, so it must be set by every edit and
+        // cleared exactly once — a flag that stayed set would re-split the query every frame, and
+        // one that was never set would leave the picture filtering by the previous query.
+        var changed = FieldWithFixedCharWidth(10f);
+        Check(!changed.TakeChanged(), "a fresh field is not marked changed");
+        changed.Insert('a', frame);
+        Check(changed.TakeChanged(), "typing marks the field changed");
+        Check(!changed.TakeChanged(), "the mark is consumed by the first read");
+
+        changed.MoveTo(0, false, frame);
+        Check(!changed.TakeChanged(), "moving the caret is not a text change");
+
+        Check(!changed.Insert('\u0001', frame), "a control character is dropped");
+        Check(!changed.TakeChanged(), "a dropped character is not a change");
+
+        changed.Clear(frame);
+        Check(changed.TakeChanged(), "clearing marks the field changed");
+        Check(!changed.HasText, "clearing empties the query");
+
+        // ---- the caret's blink ----
+        //
+        // The phase restarts on every edit: a caret that kept blinking through a keystroke would
+        // be invisible exactly when the player looks for it.
+        var blink = FieldWithFixedCharWidth(10f);
+        blink.Insert('a', 100);
+        Check(blink.CaretVisible(100), "the caret is lit right after an edit");
+        Check(blink.CaretVisible(100 + VgsConstants.CaretBlinkFrames - 1),
+              "the caret is still lit at the end of the first half-cycle");
+        Check(!blink.CaretVisible(100 + VgsConstants.CaretBlinkFrames),
+              "the caret is dark on the second half-cycle");
+        Check(blink.CaretVisible(100 + VgsConstants.CaretBlinkFrames * 2),
+              "the caret comes back on the next cycle");
+
+        blink.MoveTo(0, false, 500);
+        Check(blink.CaretVisible(500), "moving the caret restarts the blink");
+    }
+
+    /// <summary>
+    /// The view state (Step 4.3): what counts as "the view changed", and when a write is due.
+    ///
+    /// The subtle rule is that the throttle advances on the <em>attempt</em>, not on the success
+    /// (ADR-0022): a grid that refuses the write must not make the screen retry on every frame.
+    /// That is the failure this section exists to catch, because it is invisible in the game
+    /// until a grid is being torn down while the editor is open.
+    /// </summary>
+    private static void ViewStateWrites()
+    {
+        var view = new ViewState(new Vector2(0.1f, 0.2f), 1.5f, false);
+
+        // A view that was just read from the grid is already what the grid holds, so it is
+        // recorded as saved: writing it back would be a no-op that costs a format and a
+        // dictionary write. The screen used to leave the saved values "unwritten" and wrote the
+        // same camera back two seconds after opening.
+        Check(!view.HasChanged, "a freshly loaded view matches what the grid already holds");
+        Check(!view.TakeChanged(0), "a freshly loaded view is not due for a write");
+
+        // ---- each of the three values counts as a change ----
+        view.Camera = new Vector2(0.3f, 0.2f);
+        Check(view.HasChanged, "moving the camera is a change");
+        view.RememberSaved(0);
+
+        view.Zoom = 2f;
+        Check(view.HasChanged, "changing the zoom is a change");
+        view.RememberSaved(0);
+
+        view.ShowHidden = true;
+        Check(view.HasChanged, "changing the hidden mode is a change");
+        view.RememberSaved(0);
+        Check(!view.HasChanged, "recording again clears the change");
+
+        // ---- the throttle ----
+        view.Camera = new Vector2(0.4f, 0.2f);
+        Check(!view.TakeChanged(VgsConstants.ViewSaveIntervalFrames - 1),
+              "a change is not due before the throttle interval has passed");
+        Check(view.TakeChanged(VgsConstants.ViewSaveIntervalFrames),
+              "a change is due once the throttle interval has passed");
+
+        // ---- the throttle advances on the attempt, not on the success ----
+        //
+        // This is the whole point. `TakeChanged` returned true above, which means the caller is
+        // about to write; if that write fails, the saved values are untouched and `HasChanged`
+        // stays true. The next attempt must therefore wait for the interval rather than fire on
+        // the very next frame — otherwise a refusing grid costs a string format and a dictionary
+        // write every frame for as long as the refusal lasts.
+        Check(view.HasChanged, "a failed write leaves the view looking changed");
+        Check(!view.TakeChanged(VgsConstants.ViewSaveIntervalFrames + 1),
+              "a failed write does not cause a retry on the next frame");
+        Check(view.TakeChanged(VgsConstants.ViewSaveIntervalFrames * 2),
+              "a failed write is retried at the normal cadence");
+
+        // A successful write after all that still records the view, and the change clears.
+        view.RememberSaved(VgsConstants.ViewSaveIntervalFrames * 2);
+        Check(!view.HasChanged, "a successful write makes the view the new baseline");
     }
 }
