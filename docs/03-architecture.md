@@ -337,7 +337,6 @@ classDiagram
     class WatchResult {
         <<enum, nested in EventControllerProbe>>
         Ok
-        IsSelf
         Duplicate
         NoEvent
         EventIgnoresBlocks
@@ -542,6 +541,8 @@ classDiagram
         -DrawPortRemoveButton(Vector2, Color, bool, Vector2, Vector2) void
         -PortLabelHeight float
         -DrawEdges(Vector2, Vector2) void
+        -DrawSelfRoute(Vector2, Vector2, Vector2, Vector2, Color, Vector2, Vector2) void
+        -DrawRouteBuffer(Color, Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
         -DrawModesButton() void
@@ -607,6 +608,7 @@ classDiagram
         +HitWatchRemoveButton(Node, Vector2, float) WatchTarget
         +TryCardCentre(Node, out Vector2) bool
         +DrawnWatchCount(Node) int
+        +ShouldDrawWatchLine(Node, WatchTarget) bool
         +WatchStackHeight(Node) float
         +TryPortBarRect(Node, Port, out Vector2, out Vector2) bool
         +TryPortDot(Node, Port, float aspectX, out Vector2) bool
@@ -626,6 +628,7 @@ classDiagram
     class EdgeRouting {
         <<static>>
         +Build(Vector2 from, Vector2 to, float gutter, List~Vector4~)
+        +BuildSelfLoop(Vector2 from, Vector2 to, Vector2 cardTopLeft, Vector2 cardSize, float gutter, List~Vector4~)
         +BuildDashes(Vector4 segment, float dashLength, float gapLength, List~Vector4~)
     }
 
@@ -1089,8 +1092,14 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 - **входящий порт общий**: несколько связей могут приходить в один вход, потому что
   «включить» — одно действие, и просить его могут разные блоки (fan-in разрешён, см.
   [ADR-0010](adr/0010-port-presentation-and-binding.md));
-- петля на себя, связь на несуществующий порт, ячейка вне тулбара и занятая ячейка
-  отклоняются (`TryConnect` возвращает `false` и ничего не меняет);
+- связь на несуществующий порт, ячейка вне тулбара и занятая ячейка отклоняются
+  (`TryConnect` возвращает `false` и ничего не меняет);
+- **петля на себя разрешена** ([ADR-0036](adr/0036-self-connection.md)): источник и цель
+  могут быть одним блоком — и в тулбаре, и в списке отслеживания контроллера. Запрета нет,
+  потому что его нет у игры (`MyEventControllerBlock.ValidateBlock` проверяет только «тот же
+  логический конструкт»); рисунок — единственное место с особым случаем: связь обходит
+  карточку петлёй (`EdgeRouting.BuildSelfLoop`), а самопросмотр контроллера рисуется одной
+  жёлтой полосой без пунктира;
 - **«дубликат» — это дубликат ячейки, а не связи**: то же действие на том же блоке на другой
   странице — законная отдельная связь, игра её принимает и исполняет. Линия при этом одна:
   `GridGraph.Lines` (пересчитывается в `LayoutPorts`) отдаёт по одному ребру на пару
@@ -1313,8 +1322,8 @@ public bool IsEventController { get { return Controller != null; } }
 | `ViewState.cs` | состояние вида: камера, зум, три режима показа (скрытые блоки, субгриды, границы гридов) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
 | `GridFrames.cs` | рамка грида и её вкладка с именем: какие карточки охватывает, где углы в пикселях окна, как из них выводятся четыре края. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0032](adr/0032-construct-graph.md)) |
-| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind` |
-| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; разбиение отрезка на штрихи для пунктира |
+| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли пунктир отслеживания (`ShouldDrawWatchLine` — самопросмотр его не рисует, ADR-0036) |
+| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); разбиение отрезка на штрихи для пунктира |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
 | `VgsIconAtlas.g.cs` | **сгенерированная** таблица: перечисление `VgsIcon`, имена материалов, размер текстуры, `TextureScale`. Правится только `tools/build-icon-atlas.ps1` |

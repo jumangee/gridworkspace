@@ -45,39 +45,36 @@ namespace Vgs.Game
             /// <summary>The list was changed.</summary>
             Ok = 0,
 
-            /// <summary>The controller cannot watch itself.</summary>
-            IsSelf = 1,
-
             /// <summary>The block is already in the list.</summary>
-            Duplicate = 2,
+            Duplicate = 1,
 
             /// <summary>The controller has no event selected, so there is nothing to check.</summary>
-            NoEvent = 3,
+            NoEvent = 2,
 
             /// <summary>The selected event does not look at blocks at all.</summary>
-            EventIgnoresBlocks = 4,
+            EventIgnoresBlocks = 3,
 
             /// <summary>The block is on another construct; the controller only sees its own.</summary>
-            DifferentConstruct = 5,
+            DifferentConstruct = 4,
 
             /// <summary>The event itself rejects this kind of block (the game's own test).</summary>
-            NotAccepted = 6,
+            NotAccepted = 5,
 
             /// <summary>This machine is not the server, so the subscription would not happen.</summary>
-            ClientNotServer = 7,
+            ClientNotServer = 6,
 
             /// <summary>The block (or the controller) is gone.</summary>
-            BlockGone = 8,
+            BlockGone = 7,
 
             /// <summary>The game refused the change; nothing was written.</summary>
-            Rejected = 9,
+            Rejected = 8,
 
             /// <summary>
             /// The block is in the controller's *own* selection — the list the vanilla terminal
             /// edits. A mod can add to the event component but cannot remove from that list, so
             /// the only honest answer is to send the player to the terminal (ADR-0018).
             /// </summary>
-            GameOwned = 10
+            GameOwned = 9
         }
 
         /// <summary>
@@ -284,6 +281,16 @@ namespace Vgs.Game
         /// <c>ValidateBlock</c> calls); and the event's own
         /// <c>IsBlockValidForList</c> decides the rest — that is where "not every block fits
         /// every event" really lives.
+        ///
+        /// <b>There is no self test here, on purpose</b> (ADR-0036). The engine's own
+        /// <c>ValidateBlock</c> does not exclude the controller — verified by
+        /// <c>tools/dump-se-il.ps1 -Assembly SpaceEngineers.Game.dll -Type
+        /// 'SpaceEngineers.Game.Entities.Blocks.MyEventControllerBlock' -Method ValidateBlock</c>,
+        /// whose whole body is "not null" plus <c>IsInSameLogicalGroupAs</c> — and the event
+        /// component's <c>AddBlocks</c> subscribes a block without asking who owns the
+        /// controller. A mod that refused a self-watch would forbid a configuration the game
+        /// accepts; if the selected event itself rejects the block, the answer is
+        /// <see cref="WatchResult.NotAccepted"/> and names the event.
         /// </summary>
         public static bool TryValidate(IMyTerminalBlock controller, IMyTerminalBlock target,
                                        out WatchResult reason)
@@ -291,7 +298,6 @@ namespace Vgs.Game
             reason = WatchResult.Ok;
 
             if (controller == null || target == null) { reason = WatchResult.BlockGone; return false; }
-            if (ReferenceEquals(controller, target)) { reason = WatchResult.IsSelf; return false; }
 
             try
             {

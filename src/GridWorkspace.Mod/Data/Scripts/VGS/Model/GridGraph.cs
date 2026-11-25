@@ -19,7 +19,6 @@ namespace Vgs.Model
     /// graph logic given that the in-game feedback loop costs a full game launch.
     ///
     /// Invariants enforced here, not by callers:
-    ///  * an edge never starts and ends on the same block;
     ///  * an edge only references ports that exist on both endpoints;
     ///  * an edge occupies a cell of the source's toolbar, and no two edges share a cell;
     ///  * a cell may only be used by a port whose fire group matches its slot;
@@ -43,6 +42,14 @@ namespace Vgs.Model
     /// Nor is "an edge to a group is not a self-loop". A block that belongs to the group it
     /// fires is a legal and useful wiring: the game applies the action to every functional
     /// member, the source included, so a timer inside a group can restart the whole group.
+    ///
+    /// <b>A block may also drive itself</b> (ADR-0036). The connection is an ordinary toolbar
+    /// item whose target is the source block, which the game executes like any other item — a
+    /// timer can restart itself, a door can close itself — so the graph must accept the edge
+    /// rather than invent a rule the game does not have. The same holds for the watch list: a
+    /// controller may observe itself, because the engine's own <c>ValidateBlock</c> only asks
+    /// for the same logical construct. Drawing is the only part that needs a special case: a
+    /// self-connection is routed around its card instead of between two cards.
     /// </summary>
     public sealed class GridGraph
     {
@@ -404,19 +411,21 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Connects an event port of one node to an action port of another, recording the
-        /// toolbar cell the item was written into. Returns false and changes nothing when the
-        /// edge would be invalid: a self-loop, a port that does not exist, a cell outside the
-        /// source's toolbar, a cell already taken, or a cell whose slot belongs to the other
-        /// fire group.
+        /// Connects an event port of one node to an action port of a node, recording the toolbar
+        /// cell the item was written into. Returns false and changes nothing when the edge would
+        /// be invalid: a port that does not exist, a cell outside the source's toolbar, a cell
+        /// already taken, or a cell whose slot belongs to the other fire group.
+        ///
+        /// <b>The two endpoints may be the same block</b> (ADR-0036). The item names the source
+        /// as its target, the game fires it like any other, and refusing it here would make the
+        /// editor disagree with a toolbar the player can build by hand. The ports still have to
+        /// exist and be of opposite directions, which the two lookups below enforce.
         ///
         /// Several edges may share a target port on purpose; see the type comment.
         /// </summary>
         public bool TryConnect(long sourceEntityId, string sourcePortKey, long targetEntityId,
                                string targetPortKey, ToolbarCell cell)
         {
-            if (sourceEntityId == targetEntityId) return false;
-
             Node source = GetNode(sourceEntityId);
             Node target = GetNode(targetEntityId);
             if (source == null || target == null) return false;
@@ -665,8 +674,16 @@ namespace Vgs.Model
 
         /// <summary>
         /// Adds a block to a controller's watch list and returns false when it cannot be added:
-        /// the node is not an event controller, the target is the controller itself, the target
-        /// is already watched, or the watch stack is full.
+        /// the node is not an event controller, the target is already watched, or the watch
+        /// stack is full.
+        ///
+        /// <b>The controller may watch itself</b> (ADR-0036). The engine's own
+        /// <c>MyEventControllerBlock.ValidateBlock</c> asks only for the same logical construct
+        /// and the event component subscribes a block the same way whether or not it is the
+        /// controller, so a self-watch is a legal vanilla configuration. The graph therefore
+        /// does not add a rule of its own; the picture is a bar carrying the controller's own
+        /// name, and the draw pass omits the dashed line, which would run from the bar into its
+        /// own card.
         ///
         /// <b>The stack is capped at <see cref="MaxPortsPerSide"/> here, not at draw time.</b> A
         /// watch bar that exists in the list but gets no drawing slot has no "x" on screen, and
@@ -691,7 +708,7 @@ namespace Vgs.Model
             // No controller state means the node is not a controller — that is the flag (ADR-0030).
             if (controller == null || controller.Controller == null) return false;
             if (controller.IsGroup) return false;
-            if (targetEntityId == 0 || targetEntityId == controller.EntityId) return false;
+            if (targetEntityId == 0) return false;
             if (controller.Controller.FindWatch(targetEntityId) != null) return false;
             if (controller.Controller.IsFull) return false;
 

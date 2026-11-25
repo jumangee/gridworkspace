@@ -132,6 +132,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== graph invariants ===");
         Invariants();
 
+        Console.WriteLine("=== a block driving itself (ADR-0036) ===");
+        SelfConnection();
+
         Console.WriteLine("=== card and port geometry ===");
         Geometry();
 
@@ -551,8 +554,6 @@ internal static class OfflineChecks
         graph.AddNode(a);
         graph.AddNode(b);
 
-        Check(!graph.TryConnect(1, "Triggered", 1, "TriggerNow", new ToolbarCell(0, 0)),
-              "self-loop is rejected");
         Check(!graph.TryConnect(1, "Triggered", 2, "Nope", new ToolbarCell(0, 0)),
               "unknown action port is rejected");
         Check(!graph.TryConnect(1, "Nope", 2, "OnOff", new ToolbarCell(0, 0)),
@@ -594,6 +595,51 @@ internal static class OfflineChecks
         // A duplicate is now only a duplicate of the *cell*.
         Check(!graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 9)),
               "the same cell is still refused");
+    }
+
+    /// <summary>
+    /// A block may drive itself (ADR-0036). The edge is an ordinary toolbar item whose target is
+    /// its own source, which the game executes like any other — so the graph must accept it, put
+    /// its two ends on the same card in two independent stacks, and keep the cell rules.
+    /// </summary>
+    private static void SelfConnection()
+    {
+        var graph = new GridGraph(7);
+        Node timer = MakeNode(1, "LargeBlockTimerBlock", "Start", "TriggerNow");
+        timer.Position = new Vector2(0.30f, 0.20f);
+        graph.AddNode(timer);
+
+        Check(graph.TryConnect(1, "Triggered", 1, "TriggerNow", new ToolbarCell(0, 0)),
+              "a block may drive itself");
+        Check(graph.EdgeCount == 1, "the self-connection is in the graph");
+        Check(graph.HasEdge(1, "Triggered", 1, "TriggerNow"), "HasEdge finds a self-connection");
+        Check(graph.CountEdgesToInput(1, "TriggerNow") == 1,
+              "a self-connection counts as one source of its own input");
+
+        // Both ends are bars on the same card, taken from two independent stacks: the event on
+        // the outgoing side, the action on the incoming one. One shared slot would draw the two
+        // bars on top of each other.
+        graph.LayoutPorts();
+        Check(timer.FindEvent("Triggered").Slot == 0,
+              "the self-connection's output gets the first output slot");
+        Check(timer.FindAction("TriggerNow").Slot == 0,
+              "the self-connection's input gets the first input slot");
+        Check(DrawnOutputs(timer) == 1 && DrawnInputs(timer) == 1,
+              "a self-connection draws one bar on each side of its card");
+        Check(graph.Lines.Count == 1, "a self-connection is one line");
+
+        // The ordinary cell rules still apply: the loop occupies a cell like any other edge, and
+        // two edges cannot share it. A second action of the same block is a separate cell.
+        Check(!graph.TryConnect(1, "Triggered", 1, "Start", new ToolbarCell(0, 0)),
+              "a second self-connection into the same cell is refused");
+        Check(graph.TryConnect(1, "Triggered", 1, "Start", new ToolbarCell(0, 1)),
+              "a self-connection to another action of the block is a separate connection");
+        graph.LayoutPorts();
+        Check(DrawnInputs(timer) == 2, "the second self-connection stacks another input bar");
+
+        // Nothing keeps a self-edge alive on its own: removing the node takes the loop with it.
+        Check(graph.RemoveNode(1), "the self-driving node is removed");
+        Check(graph.EdgeCount == 0, "removing the node removes its self-connections");
     }
 
     private static void Geometry()
@@ -1609,6 +1655,80 @@ internal static class OfflineChecks
         CheckAllAxisAligned(route, "level route");
         Check(route.Count >= 1, "level route is not empty");
         CheckClose(route[route.Count - 1].Z, 0.5f, "level route reaches the target");
+
+        // A block driving itself: the loop goes around the card instead of through it. The
+        // ordinary S would put its middle run at the seam between the two port bars — which are
+        // drawn over the lines — and the connection would read as two disconnected stubs
+        // (ADR-0036).
+        var loopCardTopLeft = new Vector2(0.30f, 0.20f);
+        var loopCardSize = new Vector2(VgsConstants.NodeWidth, VgsConstants.NodeHeight);
+        EdgeRouting.BuildSelfLoop(new Vector2(0.45412f, 0.245f), new Vector2(0.30588f, 0.263f),
+                                  loopCardTopLeft, loopCardSize, 0.014f, route);
+        Check(route.Count == 5, "self-loop has five segments (got " + route.Count + ")");
+        CheckAllAxisAligned(route, "self-loop");
+        CheckClose(route[0].X, 0.45412f, "the self-loop starts at the output dot");
+        CheckClose(route[route.Count - 1].Z, 0.30588f, "the self-loop ends at the input dot (x)");
+        CheckClose(route[route.Count - 1].W, 0.263f, "the self-loop ends at the input dot (y)");
+        Check(route[route.Count - 1].Z > route[route.Count - 1].X,
+              "the self-loop arrives at the input dot moving right");
+
+        // The lanes are measured from the card's edges, not from the dots, so the loop cannot
+        // fall inside the card no matter how far its dots sit from those edges. The router works
+        // in one space, and both the gutter and the dot inset are lengths in that space: the
+        // ordinary route is correct because the gutter (0.014) happens to be larger than the
+        // inset (≈0.0059), but that is a coincidence of two unrelated constants — a bigger port
+        // control or a narrower window would eat it. Anchoring to the card removes the coupling,
+        // which is what the assertions below pin: a gutter smaller than the dot inset still
+        // leaves both lanes outside the card (ADR-0036).
+        Check(route[1].X > loopCardTopLeft.X + loopCardSize.X,
+              "the right lane of the loop is outside the card");
+        Check(route[3].X < loopCardTopLeft.X, "the left lane of the loop is outside the card");
+        Check(route[2].Y < loopCardTopLeft.Y, "the crossing lane of the loop is above the card");
+
+        const float narrowGutter = 0.001f;   // smaller than the dot's own inset from the bar
+        EdgeRouting.BuildSelfLoop(new Vector2(0.45412f, 0.245f), new Vector2(0.30588f, 0.263f),
+                                  loopCardTopLeft, loopCardSize, narrowGutter, route);
+        Check(route.Count == 5, "the loop keeps five segments with a narrow gutter");
+        CheckClose(route[1].X, loopCardTopLeft.X + loopCardSize.X + narrowGutter,
+                   "the right lane is anchored to the card, not to the dot");
+        CheckClose(route[3].X, loopCardTopLeft.X - narrowGutter,
+                   "the left lane is anchored to the card, not to the dot");
+        CheckClose(route[2].Y, loopCardTopLeft.Y - narrowGutter,
+                   "the crossing lane is anchored to the card's top edge");
+        Check(route[0].Z > 0.45412f, "the loop still leaves the output dot rightwards");
+        Check(route[route.Count - 1].Z > route[route.Count - 1].X,
+              "the loop still arrives at the input dot moving right");
+
+        // The same on a real card: both lanes are outside the card's left and right edges and
+        // the crossing lane is above its top edge, so no segment is drawn over a port bar.
+        var selfGraph = new GridGraph(9);
+        Node selfTimer = MakeNode(1, "LargeBlockTimerBlock", "TriggerNow");
+        selfTimer.Position = new Vector2(0.30f, 0.20f);
+        selfGraph.AddNode(selfTimer);
+        selfGraph.TryConnect(1, "Triggered", 1, "TriggerNow", new ToolbarCell(0, 0));
+        selfGraph.LayoutPorts();
+
+        Vector2 outDot, inDot, cardTopLeft, cardSize;
+        Check(PortGeometry.TryPortDot(selfTimer, selfTimer.FindEvent("Triggered"), 0.5625f, out outDot),
+              "the self-connection's output dot exists");
+        Check(PortGeometry.TryPortDot(selfTimer, selfTimer.FindAction("TriggerNow"), 0.5625f, out inDot),
+              "the self-connection's input dot exists");
+        PortGeometry.CardRect(selfTimer, out cardTopLeft, out cardSize);
+
+        // The gutter the editor actually passes, in the router's own units.
+        const float realGutter = VgsConstants.LineGutter;
+        EdgeRouting.BuildSelfLoop(outDot, inDot, cardTopLeft, cardSize, realGutter, route);
+        Check(route.Count == 5, "the loop from the real dots has five segments");
+        Check(route[1].X >= cardTopLeft.X + cardSize.X + realGutter - 1e-6f,
+              "the real loop's right lane is outside the card");
+        Check(route[3].X <= cardTopLeft.X - realGutter + 1e-6f,
+              "the real loop's left lane is outside the card");
+        Check(route[2].Y <= cardTopLeft.Y - realGutter + 1e-6f,
+              "the real loop's crossing lane is above the card");
+        Check(route[0].Z >= outDot.X, "the real loop leaves the output dot rightwards");
+        Check(route[route.Count - 1].Z >= inDot.X - 1e-6f
+              && route[route.Count - 1].Z > route[route.Count - 1].X,
+              "the real loop arrives at the input dot moving right");
 
         // The route buffer is reused, not appended to.
         int before = route.Count;
@@ -2872,7 +2992,6 @@ internal static class OfflineChecks
         Check(graph.TryAddWatch(controller, 2, watched.DisplayName), "a block can be watched");
         Check(graph.HasWatch(controller, 2), "the controller now watches that block");
         Check(!graph.TryAddWatch(controller, 2, watched.DisplayName), "the same block cannot be watched twice");
-        Check(!graph.TryAddWatch(controller, 1, "self"), "a controller cannot watch itself");
         Check(!graph.TryAddWatch(watched, 2, "self"), "a block that is not a controller cannot watch anything");
         Check(!graph.TryAddWatch(controller, 0, "zero"), "entity id zero is not a block");
 
@@ -2899,6 +3018,8 @@ internal static class OfflineChecks
         // The dot is on the right (the line leaves for the watched block), the "x" on the left.
         Vector2 dot, remove;
         Check(PortGeometry.TryWatchDot(controller, target, aspect, out dot), "the watch bar has a dot");
+        Check(PortGeometry.ShouldDrawWatchLine(controller, target),
+              "a watch of another block draws its dashed line");
         Check(PortGeometry.TryWatchRemoveButton(controller, target, aspect, out remove),
               "the watch bar has a remove button");
         Check(dot.X > remove.X, "the dot is to the right of the remove button");
@@ -2959,6 +3080,33 @@ internal static class OfflineChecks
         graph.LayoutPorts();
         Check(PortGeometry.DrawnWatchCount(controller) == 0, "an empty watch list draws no bars");
         CheckClose(PortGeometry.WatchStackHeight(controller), 0f, "an empty watch list has no stack");
+
+        // A controller may watch itself (ADR-0036): the engine's ValidateBlock only asks for the
+        // same construct, and the event component subscribes it like any other block. The bar is
+        // the whole picture — the draw pass omits the dashed line, which would run from the bar
+        // into the controller's own card.
+        Check(graph.TryAddWatch(controller, controller.EntityId, controller.DisplayName),
+              "a controller may watch itself");
+        Check(graph.HasWatch(controller, controller.EntityId), "the controller now watches itself");
+        Check(!graph.TryAddWatch(controller, controller.EntityId, "again"),
+              "a self watch is not added twice");
+        graph.LayoutPorts();
+        WatchTarget self = controller.Controller.FindWatch(controller.EntityId);
+        Check(self != null, "the self watch is in the list");
+        Check(self.Slot == 0, "the self watch takes the first slot of an empty stack");
+        Check(PortGeometry.DrawnWatchCount(controller) == 1, "the self watch draws a bar");
+        Check(self.DisplayName == controller.DisplayName,
+              "the self watch's bar carries the controller's own name");
+        Check(!PortGeometry.ShouldDrawWatchLine(controller, self),
+              "a self watch draws no dashed line — the bar is the picture");
+        Check(!PortGeometry.ShouldDrawWatchLine(controller, null),
+              "a missing watch target has no line");
+        Vector2 selfBarTopLeft, selfBarSize;
+        Check(PortGeometry.TryWatchBarRect(controller, self, out selfBarTopLeft, out selfBarSize),
+              "the self watch has a bar rectangle");
+        Check(graph.RemoveWatch(controller, controller.EntityId), "the self watch can be removed");
+        graph.LayoutPorts();
+        Check(PortGeometry.DrawnWatchCount(controller) == 0, "removing the self watch clears its bar");
 
         // The stack is capped, and the cap is enforced on attach rather than on draw: a bar with
         // no drawing slot would have no "x", and the player could never detach that block.

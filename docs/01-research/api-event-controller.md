@@ -247,6 +247,67 @@ Multigrid Projector (publicizer открывает `m_selectedBlockIds`/`m_selec
 0049: brfalse.s 12            ; на клиенте подписка пропускается
 ```
 
+## 2a. Собственного запрета «не себя» у игры нет
+
+```powershell
+& .\tools\dump-se-il.ps1 -Assembly 'SpaceEngineers.Game.dll' `
+    -Type 'SpaceEngineers.Game.Entities.Blocks.MyEventControllerBlock' -Method 'ValidateBlock'
+```
+
+Всё тело `ValidateBlock` — это «не null» плюс «тот же логический конструкт»:
+
+```il
+0000: ldarg.1
+0001: brtrue.s     2
+0003: ldc.i4.0
+0004: ret
+0005: ldarg.0
+0006: call         Sandbox.Game.Entities.MyCubeBlock::get_CubeGrid
+000B: ldarg.1
+000C: callvirt     VRage.Game.ModAPI.IMyCubeBlock::get_CubeGrid
+0011: callvirt     Sandbox.Game.Entities.MyCubeGrid::IsInSameLogicalGroupAs
+0016: brtrue.s     2
+0018: ldc.i4.0
+0019: ret
+001A: ldc.i4.1
+001B: ret
+```
+
+`AddBlocks` (`MyEventControllerBlock`) проводит блок через этот `ValidateBlock`, вешает
+`OnClosing` и кладёт id в `m_selectedBlocks`, а подписку делает компонент события
+(`MyEventControllerGenericEvent.AddBlocks`: он берёт компонент наблюдаемого блока, проверяет
+«уже в словаре?», кладёт его туда и подписывается только при `Sync.IsServer`) — ни один из
+шагов не сравнивает наблюдаемый блок с контроллером. Значит контроллер может отслеживать
+сам себя; редактор это разрешает ([ADR-0036](../adr/0036-self-connection.md)).
+
+Проверка «тот же конструкт» на блоке — это сравнение гридов, и для одного блока она истинна:
+
+```powershell
+& .\tools\dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' `
+    -Type 'Sandbox.Game.Entities.Cube.MyTerminalBlock' `
+    -Method 'Sandbox.ModAPI.IMyTerminalBlock.IsInSameLogicalGroupAs'
+& .\tools\dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' `
+    -Type 'Sandbox.Game.Entities.MyCubeGrid' -Method 'IsInSameLogicalGroupAs'
+```
+
+```il
+; MyTerminalBlock
+0000: ldarg.0
+0001: call         Sandbox.Game.Entities.MyCubeBlock::get_CubeGrid
+0006: ldarg.1
+0007: callvirt     VRage.Game.ModAPI.IMyCubeBlock::get_CubeGrid
+000C: callvirt     Sandbox.Game.Entities.MyCubeGrid::IsInSameLogicalGroupAs
+0011: ret
+
+; MyCubeGrid — первая же инструкция: тот же грид → true
+0000: ldarg.0
+0001: ldarg.1
+0002: beq.s        40        ; → 0x2C: ldc.i4.1; ret
+```
+
+То есть `controller.IsInSameLogicalGroupAs(controller)` возвращает `true`, и самопросмотр
+проходит проверку конструкта.
+
 ## 3. Что из этого следует для мода
 
 | Вопрос | Ответ | Почему |
@@ -256,6 +317,7 @@ Multigrid Projector (publicizer открывает `m_selectedBlockIds`/`m_selec
 | Можно ли **прочитать** список? | **Да** — через `GetObjectBuilderCubeBlock().SelectedBlocks` (§1a) | Живые приватные поля блока, а не снимок сейва |
 | Сохранится ли добавленное модом? | **Нет, само по себе** | `GetObjectBuilderCubeBlock` собирает `SelectedBlocks` из приватных `m_selectedBlocks`/`m_selectedBlockIds`, куда мод писать не может |
 | Совпадает ли `IsBlockValidForList` с «тип блока зависит от события»? | Да, это и есть правило игры | `MyEventBlockOnOff`: `block is IMyFunctionalBlock`; `MyEventBlockIntegrity`: `true` (любой блок) |
+| Может ли контроллер наблюдать **сам себя**? | **Да** — своего запрета у игры нет | `ValidateBlock` (§2a) проверяет только «не null» и `IsInSameLogicalGroupAs`; `AddBlocks` и `MyEventControllerGenericEvent.AddBlocks` владельца не спрашивают |
 
 Вывод: игровой список — **источник истины для чтения**, а то, что мод добавляет сам, живёт
 только в компоненте и в хранилище мода. Отсюда схема из [ADR-0018](../adr/0018-game-is-the-source-of-truth.md):

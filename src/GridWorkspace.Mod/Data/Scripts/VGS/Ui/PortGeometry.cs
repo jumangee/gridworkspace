@@ -1178,6 +1178,25 @@ namespace Vgs.Ui
             return true;
         }
 
+        /// <summary>
+        /// True when a watch target's dashed line is drawn at all (ADR-0017, ADR-0036).
+        ///
+        /// <b>A controller watching itself has a bar but no line.</b> The line would start at the
+        /// controller's own watch bar and end in its own card, and cards are drawn after lines —
+        /// so the whole route except a stub beside the card would be hidden behind that card. The
+        /// bar is the picture of this connection: it carries the controller's own name, which no
+        /// other bar on that card can.
+        ///
+        /// It lives here rather than in the draw loop because it is a rule about *what is
+        /// drawn*, and the draw pass may not be the only place that knows it: the offline gate
+        /// asserts it, and the hit test walks the same bars.
+        /// </summary>
+        public static bool ShouldDrawWatchLine(Node controller, WatchTarget watch)
+        {
+            if (controller == null || watch == null) return false;
+            return watch.EntityId != controller.EntityId;
+        }
+
         /// <summary>Number of watch bars of this node that are actually drawn.</summary>
         public static int DrawnWatchCount(Node node)
         {

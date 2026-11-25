@@ -707,12 +707,10 @@ namespace Vgs.Ui
                 return;
             }
 
-            if (ReferenceEquals(target, _bindSource))
-            {
-                VgsLog.Debug("bind rejected: source and target are the same block");
-                return;
-            }
-
+            // A click on the source itself is a legal target: a block may drive itself, and the
+            // game fires such an item exactly like any other (ADR-0036). No special case is
+            // needed here — the action menu below is the source's own action list, and the
+            // write path does not care that source and target are one block.
             OpenActionMenu(target, mouse);
         }
 
@@ -832,12 +830,9 @@ namespace Vgs.Ui
                 return;
             }
 
-            if (ReferenceEquals(target, controller))
-            {
-                RefuseWatch(VgsText.WarnWatchSelf);
-                return;
-            }
-
+            // A controller may watch itself (ADR-0036): the engine's ValidateBlock asks only for
+            // the same construct, and the event component subscribes the controller like any
+            // other block. The bar then carries the controller's own name.
             if (_graph.HasWatch(controller, target.EntityId))
             {
                 RefuseWatch(string.Format(VgsText.WarnWatchDuplicateFormat, target.DisplayName));
@@ -969,8 +964,6 @@ namespace Vgs.Ui
         {
             switch (result)
             {
-                case EventControllerProbe.WatchResult.IsSelf:
-                    return VgsText.WarnWatchSelf;
                 case EventControllerProbe.WatchResult.Duplicate:
                     return string.Format(VgsText.WarnWatchDuplicateFormat, target.DisplayName);
                 case EventControllerProbe.WatchResult.NoEvent:

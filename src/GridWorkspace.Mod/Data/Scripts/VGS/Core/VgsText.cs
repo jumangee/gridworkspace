@@ -242,7 +242,6 @@ namespace Vgs.Core
         public static string WatchStatusPlainFormat { get { return S("WATCH_STATUS_PLAIN_FORMAT"); } }
         public static string WatchStatusNoEvent { get { return S("WATCH_STATUS_NO_EVENT"); } }
         public static string WatchStatusAndSuffix { get { return S("WATCH_STATUS_AND_SUFFIX"); } }
-        public static string WarnWatchSelf { get { return S("WARN_WATCH_SELF"); } }
         public static string WarnWatchDuplicateFormat { get { return S("WARN_WATCH_DUPLICATE_FORMAT"); } }
         public static string WarnWatchNoEvent { get { return S("WARN_WATCH_NO_EVENT"); } }
         public static string WarnWatchEventIgnoresBlocks { get { return S("WARN_WATCH_EVENT_IGNORES_BLOCKS"); } }

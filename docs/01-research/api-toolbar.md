@@ -283,3 +283,25 @@ bool ok = change.Apply();
    ничего не делать.
 5. **Вайтлист — часть контракта.** Тип, которого нет в `check-whitelist.ps1`, не существует,
    даже если он есть в сборке.
+6. **Цель элемента может быть его же источником.** `MyToolbarItemTerminalBlock.Activate`
+   применяет текущее действие к `m_block`, не сравнивая его с владельцем тулбара, а `Update`
+   сверяет с владельцем **грид** (`HasSameGroup`), а не сам блок; `MyEventControllerBlock.
+   TriggerAction` берёт блок из `BlockEntityId`, проверяет тот же логический грид и права
+   (`GetUserRelationToOwner` / `ShareMode`), но цель с владельцем не сравнивает.
+   Проверено по IL:
+
+   ```powershell
+   & .\tools\dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' `
+       -Type 'Sandbox.Game.Screens.Helpers.MyToolbarItemTerminalBlock' -Method 'Activate'
+   & .\tools\dump-se-il.ps1 -Assembly 'Sandbox.Game.dll' `
+       -Type 'Sandbox.Game.Screens.Helpers.MyToolbarItemTerminalBlock' -Method 'Update'
+   & .\tools\dump-se-il.ps1 -Assembly 'SpaceEngineers.Game.dll' `
+       -Type 'SpaceEngineers.Game.Entities.Blocks.MyEventControllerBlock' -Method 'TriggerAction'
+   ```
+
+   Две команды для одного типа, потому что `-Method` — фильтр по одному имени (`-like`):
+   `'Activate,Update'` он не понимает и падает с «No methods matching».
+
+   Сам тип `MyToolbarItemTerminalBlock` моду запрещён (namespace
+   `Sandbox.Game.Screens.Helpers`), дампился только как факт о поведении. Отсюда «блок может
+   управлять сам собой» ([ADR-0036](../adr/0036-self-connection.md)).

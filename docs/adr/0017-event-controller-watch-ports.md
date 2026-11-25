@@ -181,6 +181,11 @@
 
 ### 5. Отказ: линия краснеет на секунду, связь не создаётся
 
+> **Строка «это не сам контроллер» отменена — см. [ADR-0036](0036-self-connection.md).**
+> Контроллер может отслеживать сам себя: `ValidateBlock` игры проверяет только «тот же
+> логический конструкт», а `AddBlocks` подписывает блок без вопроса о владельце. Отказа
+> `IsSelf` больше нет, строки `WARN_WATCH_SELF` — тоже. Таблица ниже сохранена как история.
+
 Проверка идёт **до** любых изменений и отвечает на вопрос игры, а не на свой:
 
 | Условие | Откуда берётся | Отказ |
@@ -189,7 +194,7 @@
 | событие вообще смотрит на блоки | `IMyEventComponentWithGui.IsBlocksListUsed` | `EventIgnoresBlocks` |
 | блок в том же логическом гриде | `IMyTerminalBlock.IsInSameLogicalGroupAs` (то же, что `MyCubeGrid.IsInSameLogicalGroupAs` в `ValidateBlock` игры) | `DifferentConstruct` |
 | блок подходит событию | `IMyEventComponentWithGui.IsBlockValidForList` | `NotAccepted` |
-| это не сам контроллер и не дубликат | граф | `IsSelf` / дубликат |
+| ~~это не сам контроллер~~ и не дубликат | граф | ~~`IsSelf`~~ / дубликат |
 | писать можно на этой машине | `MyAPIGateway.Multiplayer.IsServer` | `ClientNotServer` |
 
 Отказ **не создаёт связи** — ни в графе, ни в блоке: «линия, которая была и исчезла» не

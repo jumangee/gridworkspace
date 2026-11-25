@@ -24,6 +24,10 @@ namespace Vgs.Ui
     /// passes screen-space dots plus a screen-space gutter. The gutter has to be scaled by the
     /// caller's zoom, not fixed here: at zoom 3 a graph-space gutter would put the departure
     /// point inside the port bar, and at zoom 0.35 it would fling it away from the card.
+    ///
+    /// A connection whose two ends are on the same card — a block driving itself (ADR-0036) —
+    /// is the one case the two shapes above cannot express; it gets its own route,
+    /// <see cref="BuildSelfLoop"/>, which goes around the card instead of through it.
     /// </summary>
     public static class EdgeRouting
     {
@@ -87,6 +91,81 @@ namespace Vgs.Ui
             AddVertical(into, departureX, from.Y, midY);
             AddHorizontal(into, departureX, approachX, midY);
             AddVertical(into, approachX, midY, to.Y);
+            AddHorizontal(into, approachX, to.X, to.Y);
+        }
+
+        /// <summary>
+        /// Builds the route for a connection whose two ends are on <b>one</b> card: a block that
+        /// drives itself (ADR-0036).
+        ///
+        /// <b>Why the ordinary route does not do.</b> The S built by <see cref="Build"/> puts its
+        /// long horizontal run in the lane between the two dots, and on one card that lane is the
+        /// seam between two port bars — which are drawn after the lines, and opaque. The
+        /// connection would show as a stub on the right and an L on the left with a hole where
+        /// the bars are: two pieces that do not read as one wire.
+        ///
+        /// <b>The shape.</b> The loop leaves the output dot to the right, climbs past the card's
+        /// top edge, crosses above the card, comes down past its left edge and enters the input
+        /// dot from the left — the same "arrive moving right" rule every other connection obeys:
+        ///
+        /// <code>
+        ///        ┌──────────────┐
+        ///   ┌────┘              └────┐
+        ///   │                        │     ← above the card, which is drawn over the lanes
+        ///   │   ┌────────────────┐   │
+        ///   │   │     block      │   │
+        ///   │   └────────────────┘   │
+        ///   │   | (o) Triggered      │
+        ///   │   +--------------------+
+        ///   └──►(o) Trigger Now  (x)  │
+        ///       +--------------------+
+        /// </code>
+        ///
+        /// <b>The lanes are measured from the card, not from the dots.</b> The dots sit inside
+        /// their bars, a fixed inset from the card's edges, while the gutter is a separate
+        /// constant — and on one card a dot-relative lane only stays outside the card for as
+        /// long as the gutter happens to be the larger of the two. That is a coincidence of two
+        /// unrelated constants, and the inset grows with the client aspect and with the port
+        /// control's size, so the coincidence is not something to rely on. Anchored to the card,
+        /// the lanes stay outside it whatever the port controls look like — which is why the
+        /// rectangle is a parameter rather than the single top coordinate: the sides carry the
+        /// guarantee.
+        ///
+        /// The buffer is cleared first, like <see cref="Build"/>, and zero-length segments are
+        /// dropped: a caller reuses one list for every line of every frame.
+        /// </summary>
+        public static void BuildSelfLoop(Vector2 from, Vector2 to, Vector2 cardTopLeft,
+                                         Vector2 cardSize, float gutter, List<Vector4> into)
+        {
+            if (into == null) return;
+            into.Clear();
+
+            if (gutter < 0f) gutter = 0f;
+
+            float cardLeft = cardTopLeft.X;
+            float cardRight = cardTopLeft.X + cardSize.X;
+            if (cardSize.X <= 0f || cardSize.Y <= 0f)
+            {
+                // No card to go around: fall back to the dots, which is what the ordinary route
+                // would have done anyway.
+                cardLeft = from.X < to.X ? from.X : to.X;
+                cardRight = from.X < to.X ? to.X : from.X;
+            }
+
+            float departureX = from.X + gutter;
+            float rightLane = cardRight + gutter;
+            if (rightLane > departureX) departureX = rightLane;
+
+            float approachX = to.X - gutter;
+            float leftLane = cardLeft - gutter;
+            if (leftLane < approachX) approachX = leftLane;
+
+            float laneY = cardTopLeft.Y - gutter;
+
+            AddHorizontal(into, from.X, departureX, from.Y);
+            AddVertical(into, departureX, from.Y, laneY);
+            AddHorizontal(into, departureX, approachX, laneY);
+            AddVertical(into, approachX, laneY, to.Y);
             AddHorizontal(into, approachX, to.X, to.Y);
         }
 

@@ -168,8 +168,25 @@ namespace Vgs.Ui
                 // A line belongs to both of its ends: it is a ghost only when *both* are excluded
                 // by the search, so a matching block keeps its wiring visible — otherwise the
                 // player could not tell what the block they found is connected to (ADR-0023).
-                DrawRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                          Fade(ColLine, MaxAlpha(source, target)), topLeft, size);
+                Color colour = Fade(ColLine, MaxAlpha(source, target));
+                Vector2 start = GraphToScreen(from, topLeft);
+                Vector2 end = GraphToScreen(to, topLeft);
+
+                // A connection whose ends are one card — a block driving itself (ADR-0036) —
+                // cannot use the ordinary route: its middle run would fall on the seam between
+                // the port bars, which are drawn over the lines, and the wire would read as two
+                // disconnected stubs. It loops around the card instead.
+                if (ReferenceEquals(source, target))
+                {
+                    Vector2 cardTopLeft, cardSize;
+                    PortGeometry.CardRect(source, out cardTopLeft, out cardSize);
+                    DrawSelfRoute(start, end, GraphToScreen(cardTopLeft, topLeft),
+                                  cardSize * _view.Zoom, colour, topLeft, size);
+                }
+                else
+                {
+                    DrawRoute(start, end, colour, topLeft, size);
+                }
                 drawn++;
             }
         }
@@ -240,6 +257,10 @@ namespace Vgs.Ui
 
                     Vector2 from;
                     if (!PortGeometry.TryWatchDot(controller, watch, aspect, out from)) continue;
+
+                    // A controller watching itself has a bar but no line (ADR-0036): the rule is
+                    // PortGeometry.ShouldDrawWatchLine's, so the offline gate can assert it.
+                    if (!PortGeometry.ShouldDrawWatchLine(controller, watch)) continue;
 
                     Node target = _graph.GetNode(watch.EntityId);
                     Vector2 to;
@@ -316,7 +337,32 @@ namespace Vgs.Ui
             // constant scaled by zoom, which keeps the clearance between a dot and its vertical
             // run the same fraction of a card at every zoom level (ADR-0010).
             EdgeRouting.Build(from, to, VgsConstants.LineGutter * _view.Zoom, _route);
+            DrawRouteBuffer(color, clipTopLeft, clipSize);
+        }
 
+        /// <summary>
+        /// Draws a connection that starts and ends on the same card: the loop of ADR-0036.
+        ///
+        /// The card's rectangle is passed in screen space because that is what the loop goes
+        /// around — its lanes are measured from the card's edges, not from the dots, so they stay
+        /// outside the card at every zoom (<see cref="EdgeRouting.BuildSelfLoop"/>). The route
+        /// itself stays a pure function, so it is asserted offline like every other route.
+        /// </summary>
+        private void DrawSelfRoute(Vector2 from, Vector2 to, Vector2 cardTopLeftScreen,
+                                   Vector2 cardSizeScreen, Color color,
+                                   Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            EdgeRouting.BuildSelfLoop(from, to, cardTopLeftScreen, cardSizeScreen,
+                                      VgsConstants.LineGutter * _view.Zoom, _route);
+            DrawRouteBuffer(color, clipTopLeft, clipSize);
+        }
+
+        /// <summary>
+        /// Draws the segments the last route build produced. One loop for both shapes, so the
+        /// thickness, the clipping and the colour cannot drift between them.
+        /// </summary>
+        private void DrawRouteBuffer(Color color, Vector2 clipTopLeft, Vector2 clipSize)
+        {
             for (int i = 0; i < _route.Count; i++)
             {
                 Vector4 segment = _route[i];
