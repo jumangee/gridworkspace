@@ -39,6 +39,17 @@ namespace Vgs.Model
         public readonly IList<string> ActionIds;
 
         /// <summary>
+        /// Display names parallel to <see cref="ActionIds"/>, as the game localizes them
+        /// (ADR-0037). Empty when the caller has none; the catalog then captions the port from
+        /// the id.
+        ///
+        /// Carried on the member rather than looked up later because a name belongs to an action
+        /// of one block type: a group's ports take the caption of the member whose list the id
+        /// came from, and by then the game object is gone.
+        /// </summary>
+        public readonly IList<string> ActionNames;
+
+        /// <summary>
         /// Action ids of <see cref="ActionIds"/> that report <c>IsEnabled</c> for this very
         /// member. Empty when the block reports nothing enabled.
         /// </summary>
@@ -51,11 +62,18 @@ namespace Vgs.Model
 
         public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
                                   IList<string> enabledActionIds)
+            : this(typeKey, isFunctional, actionIds, enabledActionIds, null)
+        {
+        }
+
+        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
+                                  IList<string> enabledActionIds, IList<string> actionNames)
         {
             TypeKey = typeKey ?? string.Empty;
             IsFunctional = isFunctional;
             ActionIds = actionIds ?? new List<string>(0);
             EnabledActionIds = enabledActionIds ?? new List<string>(0);
+            ActionNames = actionNames ?? new List<string>(0);
         }
     }
 

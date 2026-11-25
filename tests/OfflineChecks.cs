@@ -174,6 +174,12 @@ internal static class OfflineChecks
         Console.WriteLine("=== block group action rule (ADR-0015) ===");
         GroupActionRule();
 
+        Console.WriteLine("=== action captions (ADR-0037) ===");
+        ActionCaptions();
+
+        Console.WriteLine("=== action ids name their controls (ADR-0039) ===");
+        ActionControlMapping();
+
         Console.WriteLine("=== block group nodes (ADR-0015) ===");
         GroupNodes();
 
@@ -2537,6 +2543,127 @@ internal static class OfflineChecks
         BlockPortCatalog.ComputeGroupActionIds(
             new List<GroupMemberActions> { null, EnabledMember("MyDoor", true, "Open") }, ids);
         Check(ids.Count == 1 && ids[0] == "Open", "a null member is skipped, not fatal");
+    }
+
+    /// <summary>A member whose actions carry the game's captions, for the caption checks.</summary>
+    private static GroupMemberActions NamedMember(string typeKey, params string[] actions)
+    {
+        var ids = new List<string>(actions);
+        var names = new List<string>(ids.Count);
+        for (int i = 0; i < ids.Count; i++) names.Add("caption:" + ids[i]);
+        return new GroupMemberActions(typeKey, true, ids, new List<string>(ids), names);
+    }
+
+    /// <summary>
+    /// An action port is captioned with the game's own localized action name, and its key stays
+    /// the id (ADR-0037).
+    ///
+    /// The id is a save-data key — "OnOff_On", "IncreaseTextPaddingSlider" — and the editor used
+    /// to show a Humanized version of it ("On Off_ On"). The game has a label for every action
+    /// already, and the vanilla toolbar shows it, so the caption is read from
+    /// <c>ITerminalAction.Name</c> in <c>Vgs.Game</c> and passed in parallel with the id. The
+    /// assertions below pin the three things that can silently regress: the caption is the name,
+    /// the key is the id, and a missing or short name list degrades to the humanized id instead of
+    /// dropping the port.
+    /// </summary>
+    private static void ActionCaptions()
+    {
+        var node = new Node(1, "TimerBlockLarge", "timer", Vector3I.Zero, ToolbarLayout.None);
+
+        BlockPortCatalog.FillActions(
+            node,
+            new List<string> { "OnOff", "OnOff_On", "Silent" },
+            new List<string> { "Toggle block On/Off", "Toggle block On", "Silent On/Off" });
+
+        Check(node.Actions.Count == 3, "three actions make three ports");
+        Check(node.Actions[0].DisplayName == "Toggle block On/Off",
+              "the caption is the game's action name, not the id");
+        Check(node.Actions[2].DisplayName == "Silent On/Off", "every action keeps its own caption");
+        Check(node.Actions[0].Key == "OnOff", "the key stays the id whatever the caption says");
+
+        BlockPortCatalog.FillActions(node, new List<string> { "OnOff", "TriggerNow" }, null);
+        Check(node.Actions[0].DisplayName == "On Off", "with no names the id is humanized");
+        Check(node.Actions[1].DisplayName == "Trigger Now", "the fallback humanizes every id");
+
+        BlockPortCatalog.FillActions(node, new List<string> { "OnOff", "TriggerNow" },
+                                     new List<string> { "Toggle block On/Off" });
+        Check(node.Actions[0].DisplayName == "Toggle block On/Off",
+              "a name is used when the list has one");
+        Check(node.Actions[1].DisplayName == "Trigger Now",
+              "a short name list falls back per action, it does not drop the port");
+
+        var names = new List<string>();
+        var ids = new List<string>();
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                NamedMember("MyTimerBlock", "TriggerNow", "Start", "Stop"),
+                NamedMember("MyTimerBlock", "TriggerNow", "Start", "Stop")
+            }, ids, names);
+        Check(names.Count == ids.Count, "a group gets one caption per surviving action");
+        Check(names[0] == "caption:TriggerNow", "a group caption comes from the member's name list");
+
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions>
+            {
+                NamedMember("MyDoor", "Open", "OnOff"),
+                EnabledMember("MyAirVent", true, "OnOff")
+            }, ids, names);
+        Check(names.Count == ids.Count && names[0] == "caption:OnOff",
+              "the intersection is captioned from the first member's names");
+
+        // A member without names must not leave a hole in the parallel list: the catalog then
+        // humanizes that one caption and the ids and names stay aligned.
+        BlockPortCatalog.ComputeGroupActionIds(
+            new List<GroupMemberActions> { EnabledMember("MyDoor", true, "Open", "Close") },
+            ids, names);
+        Check(names.Count == ids.Count, "a nameless member still yields one caption per action");
+        Check(names[0] == null, "a nameless member yields an empty caption, not a shifted list");
+    }
+
+    /// <summary>
+    /// An action id names the control the game built it from (ADR-0039): the control's own id, or
+    /// its id with <c>_On</c>/<c>_Off</c>, or prefixed with <c>Increase</c>/<c>Decrease</c>.
+    ///
+    /// The editor drops an action whose control the game hides for the block, so this mapping is
+    /// the difference between hiding a leaked action and hiding a real one:
+    /// <c>IncreaseFontSize</c> must belong to the hidden <c>FontSize</c> slider, while
+    /// <c>IncreaseSafetyDetach</c> must belong to the hinge's own <c>SafetyDetach</c>.
+    /// </summary>
+    private static void ActionControlMapping()
+    {
+        Check(BlockPortCatalog.ActionBelongsToControl("OnOff", "OnOff"), "a plain action belongs to its control");
+        Check(BlockPortCatalog.ActionBelongsToControl("OnOff_On", "OnOff"), "_On belongs to its control");
+        Check(BlockPortCatalog.ActionBelongsToControl("OnOff_Off", "OnOff"), "_Off belongs to its control");
+        Check(BlockPortCatalog.ActionBelongsToControl("IncreaseFontSize", "FontSize"),
+              "Increase+control belongs to that control");
+        Check(BlockPortCatalog.ActionBelongsToControl("DecreaseFontSize", "FontSize"),
+              "Decrease+control belongs to that control");
+        Check(BlockPortCatalog.ActionBelongsToControl("IncreaseTextPaddingSlider", "TextPaddingSlider"),
+              "a slider action belongs to the slider control");
+        Check(BlockPortCatalog.ActionBelongsToControl("PreserveAspectRatio", "PreserveAspectRatio"),
+              "a checkbox action belongs to its own control");
+
+        Check(!BlockPortCatalog.ActionBelongsToControl("OnOff_On", "On"),
+              "a suffix is not a prefix of another control's id");
+        Check(!BlockPortCatalog.ActionBelongsToControl("IncreaseSafetyDetach", "FontSize"),
+              "the hinge's own action does not belong to the text panel's slider");
+        Check(!BlockPortCatalog.ActionBelongsToControl("Reverse", "ReverseHandle"),
+              "a plain action is not a prefix of a longer control id");
+        Check(!BlockPortCatalog.ActionBelongsToControl("Increase", "FontSize"),
+              "the prefix with no control id is not an action of that control");
+
+        var hidden = new List<string> { "FontSize", "TextPaddingSlider" };
+        Check(BlockPortCatalog.IsActionHiddenBy("IncreaseFontSize", hidden),
+              "an action of a hidden control is hidden");
+        Check(BlockPortCatalog.IsActionHiddenBy("DecreaseTextPaddingSlider", hidden),
+              "every action of a hidden control is hidden");
+        Check(!BlockPortCatalog.IsActionHiddenBy("IncreaseTorque", hidden),
+              "an action of a visible control is not hidden");
+        Check(!BlockPortCatalog.IsActionHiddenBy("IncreaseFontSize", new List<string>()),
+              "with no hidden controls nothing is hidden");
+        Check(!BlockPortCatalog.IsActionHiddenBy("IncreaseFontSize", null),
+              "a missing control list hides nothing");
     }
 
     /// <summary>

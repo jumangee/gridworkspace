@@ -219,13 +219,21 @@ classDiagram
         -TryReadIntegrity(long, out float) bool
         -CreateNode(IMyTerminalBlock) Node
         -UpdateNode(Node, IMyTerminalBlock)
-        -TryReadActions(IMyTerminalBlock, List~string~) bool
+        -TryReadActions(IMyTerminalBlock, List~string~, List~string~) bool
+        -ReadActionSet(IMyTerminalBlock) ActionSet
+        -BuildActionSet(IMyTerminalBlock, Type) ActionSet
+        -TryAddAction(IMyTerminalBlock, ITerminalAction, List~string~, List~string~, List~string~, out bool) bool
+        -CollectHiddenControls(IMyTerminalBlock, List~string~)
+        -IsControlVisible(IMyTerminalControl, IMyTerminalBlock) bool
+        -IsHiddenByControl(string, List~string~) bool
+        -Contains(List~string~, string) bool
+        -ActionName(ITerminalAction) string
         -ReadTerminalSystem(IMyCubeGrid) IMyGridTerminalSystem
         -SafeGridId(IMyTerminalBlock) long
         -ReadGroups(IMyCubeGrid) List~IMyBlockGroup~
         -SyncGroups(GridGraph, List~IMyBlockGroup~)
-        -SyncOneGroup(GridGraph, IMyBlockGroup, string, List~long~, List~GroupMemberActions~, List~IMyTerminalBlock~, List~string~, List~string~, ref int) GroupOutcome
-        -ReadMemberActions(IMyTerminalBlock, List~string~, List~string~)
+        -SyncOneGroup(GridGraph, IMyBlockGroup, string, List~long~, List~GroupMemberActions~, List~IMyTerminalBlock~, List~string~, List~string~, List~string~, ref int) GroupOutcome
+        -ReadMemberActions(IMyTerminalBlock, List~string~, List~string~, List~string~)
         -SafeTypeKey(IMyTerminalBlock) string
         -IsFunctional(IMyTerminalBlock) bool
         -ReconcileToolbarEdges(GridGraph)
@@ -710,6 +718,7 @@ classDiagram
         +string TypeKey
         +bool IsFunctional
         +IList~string~ ActionIds
+        +IList~string~ ActionNames
         +IList~string~ EnabledActionIds
     }
 
@@ -825,12 +834,14 @@ classDiagram
         +string FalseKeySuffix
         +ResolveCategory(subtypeId) BlockCategory
         +Descriptor(BlockCategory) CategoryDescriptor
-        +FillActions(Node, IList~string~)
+        +FillActions(Node, IList~string~, IList~string~)
         +FillEvents(Node)
-        +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~)
+        +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~, List~string~)
         +EventKey(baseKey, PortGroup) string
         +EventDisplayName(baseKey, PortGroup) string
         +Humanize(key) string
+        +ActionBelongsToControl(actionId, controlId) bool
+        +IsActionHiddenBy(actionId, IList~string~) bool
     }
 
     class MySessionComponentBase {
@@ -1840,8 +1851,28 @@ Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызыв�
    должна помнить, в какой из двух списков она легла.
 
 Ключи портов (`Triggered`, `Detected#true`, `TriggerNow`) — стабильные идентификаторы для
-сохранения. Отображаемые имена получаются через `Humanize` (`TriggerNow` → `Trigger Now`), у
-групповых портов добавляется `· true` / `· false`.
+сохранения. Отображаемые имена действий берутся **у игры**: `ITerminalAction.Name` — то же
+имя, что показывает ванильный тулбар («Toggle block On/Off», «Increase Text Padding»),
+прочитанное в `Vgs.Game` и переданное в `FillActions` параллельно id (ADR-0037). `Humanize`
+(`TriggerNow` → `Trigger Now`) остаётся запасным вариантом для действия, которое имени не
+сообщило, и основным — для событий, которых игра не именует. У групповых портов добавляется
+`· true` / `· false`.
+
+**Список действий — свойство типа, а не блока, и он шире того, что блок умеет** (ADR-0038,
+ADR-0039). `IMyTerminalBlock.GetActions` разрешается через
+`MyTerminalControlFactory.GetActions(block.GetType())`, поэтому `GridGraphBuilder` читает список
+**один раз на тип** (`ActionSet` в словаре по `Type`) и держит его до конца сессии.
+
+Сам список содержит лишнее: `MyFunctionalBlock.CreateTerminalControls` регистрирует контролы
+компонента панели текста на весь тип, а прячет их колбэк `Visible` каждого контрола, которого
+`GetActions` не спрашивает. Поэтому из списка отбрасывается действие, чей **контрол игра этому
+блоку не показывает**: `GetProperties` даёт объекты value-контролов (они же
+`IMyTerminalControl`), у каждого вызывается его собственный `Visible(block)`, а id действия
+сопоставляется с id контрола по трём формам игры — `<id>`, `<id>_On` / `<id>_Off`,
+`Increase` / `Decrease` + `<id>` (`BlockPortCatalog.ActionBelongsToControl`, проверяется офлайн).
+Плюс отбрасывается повторяющийся id. `IsEnabled == false` основанием не является: это
+выключенный контрол, законное состояние. Модель получает уже очищенный список и про
+`ITerminalAction` не знает.
 
 `FillEvents` заодно выставляет `Node.CanDriveBlocks` и `ToolbarLayout.CanDrive` — признак
 «блок может управлять другими» и единственное условие существования кнопки привязки.

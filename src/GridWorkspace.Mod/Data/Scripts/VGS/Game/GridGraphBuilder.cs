@@ -366,8 +366,9 @@ namespace Vgs.Game
                 gridId);
 
             var actions = new List<string>();
-            node.HasTerminal = TryReadActions(block, actions);
-            BlockPortCatalog.FillActions(node, actions);
+            var actionNames = new List<string>();
+            node.HasTerminal = TryReadActions(block, actions, actionNames);
+            BlockPortCatalog.FillActions(node, actions, actionNames);
             BlockPortCatalog.FillEvents(node);
 
             // Whether the block has an on/off switch is a fact about its type, read once here with
@@ -410,11 +411,12 @@ namespace Vgs.Game
             // Only rebuild ports when the action set actually changed; rebuilding every
             // refresh would drop the user's port-level selections and churn allocations.
             var actions = new List<string>();
-            bool hasTerminal = TryReadActions(block, actions);
+            var actionNames = new List<string>();
+            bool hasTerminal = TryReadActions(block, actions, actionNames);
             if (hasTerminal != node.HasTerminal || !SameActions(node, actions))
             {
                 node.HasTerminal = hasTerminal;
-                BlockPortCatalog.FillActions(node, actions);
+                BlockPortCatalog.FillActions(node, actions, actionNames);
 
                 // FillActions replaces the Port objects, so the drawing slots computed for the
                 // old ones are gone; LayoutPorts (called at the end of Refresh) reassigns them.
@@ -638,6 +640,7 @@ namespace Vgs.Game
             var blocks = new List<IMyTerminalBlock>();
             var actionIds = new List<string>();
             var enabledIds = new List<string>();
+            var memberNames = new List<string>();
 
             int budget = VgsConstants.MaxGroupMembersScanned;
             int count = groups.Count < VgsConstants.MaxGroupsScanned
@@ -659,7 +662,7 @@ namespace Vgs.Game
                 if (string.IsNullOrEmpty(name)) continue;
 
                 GroupOutcome outcome = SyncOneGroup(graph, group, name, members, memberActions,
-                                                   blocks, actionIds, enabledIds, ref budget);
+                                                   blocks, actionIds, enabledIds, memberNames, ref budget);
 
                 if (outcome == GroupOutcome.Alive) alive.Add(name);
                 else if (outcome == GroupOutcome.Undetermined) undetermined.Add(name);
@@ -727,7 +730,8 @@ namespace Vgs.Game
         private static GroupOutcome SyncOneGroup(GridGraph graph, IMyBlockGroup group, string name,
                                                  List<long> members, List<GroupMemberActions> memberActions,
                                                  List<IMyTerminalBlock> blocks, List<string> actionIds,
-                                                 List<string> enabledIds, ref int budget)
+                                                 List<string> enabledIds, List<string> memberNames,
+                                                 ref int budget)
         {
             blocks.Clear();
             try
@@ -782,11 +786,13 @@ namespace Vgs.Game
 
                 actionIds.Clear();
                 enabledIds.Clear();
-                ReadMemberActions(block, actionIds, enabledIds);
+                memberNames.Clear();
+                ReadMemberActions(block, actionIds, enabledIds, memberNames);
 
                 memberActions.Add(new GroupMemberActions(
                     SafeTypeKey(block), IsFunctional(block),
-                    new List<string>(actionIds), new List<string>(enabledIds)));
+                    new List<string>(actionIds), new List<string>(enabledIds),
+                    new List<string>(memberNames)));
             }
 
             if (truncated)
@@ -809,7 +815,8 @@ namespace Vgs.Game
         /// no member will execute, which is the one failure mode this feature exists to avoid.
         /// `IsEnabled` is on the ModAPI mirror, so this costs a whitelist-safe call per action.
         /// </summary>
-        private static void ReadMemberActions(IMyTerminalBlock block, List<string> ids, List<string> enabled)
+        private static void ReadMemberActions(IMyTerminalBlock block, List<string> ids, List<string> enabled,
+                                              List<string> names)
         {
             try
             {
@@ -817,26 +824,14 @@ namespace Vgs.Game
                 block.GetActions(actions);
                 if (actions == null) return;
 
+                var hiddenControls = new List<string>(8);
+                CollectHiddenControls(block, hiddenControls);
+
                 for (int i = 0; i < actions.Count; i++)
                 {
-                    var action = actions[i];
-                    if (action == null) continue;
-
-                    string id = action.Id;
-                    if (string.IsNullOrEmpty(id)) continue;
-
-                    ids.Add(id);
-
                     bool isEnabled;
-                    try { isEnabled = action.IsEnabled(block); }
-                    catch (Exception e)
-                    {
-                        // An action that cannot answer is treated as available: hiding it would
-                        // make the group's list shrink for a reason the player cannot see.
-                        VgsLog.Throttled("group-enabled", "could not read action state", e, 600);
-                        isEnabled = true;
-                    }
-                    if (isEnabled) enabled.Add(id);
+                    if (!TryAddAction(block, actions[i], hiddenControls, ids, names, out isEnabled)) continue;
+                    if (isEnabled) enabled.Add(ids[ids.Count - 1]);
                 }
             }
             catch (Exception e)
@@ -987,25 +982,82 @@ namespace Vgs.Game
         }
 
         /// <summary>
-        /// Reads the terminal actions a block exposes. Returns false when the block has no
-        /// terminal at all.
+        /// One block type's action list: the ids the game reports for that type, the localized
+        /// captions parallel to them, and nothing that belongs to another block (ADR-0038).
+        ///
+        /// The list is a property of the *type*, not of an instance — `IMyTerminalBlock.GetActions`
+        /// resolves through `MyTerminalControlFactory.GetActions(block.GetType())` [ПРОВЕРЕНО по IL]
+        /// — so reading it once per type and reusing it costs one `GetActions` call per block type
+        /// per session instead of one per block per refresh.
         /// </summary>
-        private static bool TryReadActions(IMyTerminalBlock block, List<string> into)
+        private sealed class ActionSet
         {
+            public readonly List<string> Ids;
+            public readonly List<string> Names;
+
+            public ActionSet(List<string> ids, List<string> names)
+            {
+                Ids = ids;
+                Names = names;
+            }
+        }
+
+        /// <summary>
+        /// Action sets by runtime block type, filled on first sight of each type.
+        ///
+        /// Actions are registered by the game at load, so a type's list cannot change while the
+        /// session lasts; only the per-block <em>enabled</em> flag can, and that is asked of the
+        /// block, not of this cache.
+        /// </summary>
+        private static readonly Dictionary<Type, ActionSet> _actionSets =
+            new Dictionary<Type, ActionSet>(64);
+
+        /// <summary>
+        /// The action set of a block's runtime type, read and sanitised on first use.
+        ///
+        /// <b>Why a cache at all.</b> The editor scans up to
+        /// <see cref="VgsConstants.MaxGridBlocksScanned"/> blocks per structural refresh, and most
+        /// of them share a handful of types. Asking the game for the same list hundreds of times a
+        /// second is waste that shows up as a hitch on a large ship; asking once per type does not.
+        /// </summary>
+        private static ActionSet ReadActionSet(IMyTerminalBlock block)
+        {
+            Type type;
+            try { type = block.GetType(); }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("action-type", "could not read a block's runtime type", e, 600);
+                return null;
+            }
+            if (type == null) return null;
+
+            ActionSet cached;
+            if (_actionSets.TryGetValue(type, out cached)) return cached;
+
+            ActionSet built = BuildActionSet(block, type);
+            if (built != null) _actionSets[type] = built;
+            return built;
+        }
+
+        private static ActionSet BuildActionSet(IMyTerminalBlock block, Type type)
+        {
+            var ids = new List<string>(32);
+            var names = new List<string>(32);
+            var hiddenControls = new List<string>(8);
+
+            CollectHiddenControls(block, hiddenControls);
+
             try
             {
                 var actions = new List<Sandbox.ModAPI.Interfaces.ITerminalAction>();
                 block.GetActions(actions);
-                if (actions == null) return false;
+                if (actions == null) return null;
 
                 for (int i = 0; i < actions.Count; i++)
                 {
-                    var a = actions[i];
-                    if (a == null) continue;
-                    string id = a.Id;
-                    if (!string.IsNullOrEmpty(id)) into.Add(id);
+                    bool enabled;
+                    TryAddAction(block, actions[i], hiddenControls, ids, names, out enabled);
                 }
-                return into.Count > 0;
             }
             catch (Exception e)
             {
@@ -1013,7 +1065,214 @@ namespace Vgs.Game
                 // node keeps its subtype, so the user can see it and place it even though it
                 // offers no inputs.
                 VgsLog.Throttled("getactions.block", "GetActions failed", e, 300);
+                return null;
+            }
+
+            return new ActionSet(ids, names);
+        }
+
+        /// <summary>
+        /// Collects the ids of the block's terminal controls that the game itself hides for this
+        /// block — the same <c>Visible</c> callback the terminal panel consults before drawing a
+        /// control (ADR-0039).
+        ///
+        /// <b>Why this is needed at all.</b> `MyTerminalBlock.CreateTerminalControls` registers the
+        /// multi-text-panel component's controls for the whole <c>MyFunctionalBlock</c> type, so
+        /// every functional block's *action* list inherits them — a hinge included, which has no
+        /// text surface. The component keeps them out of sight per block through each control's
+        /// `Visible` callback, and `GetActions` never asks for it, so the action list is a superset
+        /// of what the block can do. The terminal panel asks, and shows the hinge without a font
+        /// slider; the toolbar list does not, and offers the hinge a font slider anyway.
+        ///
+        /// <c>GetProperties</c> is the only per-block route to control objects that the whitelist
+        /// allows: it returns the type's *value* controls (sliders, checkboxes, comboboxes), and
+        /// each of them is also an <see cref="Sandbox.ModAPI.Interfaces.Terminal.IMyTerminalControl"/>,
+        /// so its `Visible` delegate can be asked the very question the panel asks.
+        ///
+        /// A control that cannot answer is treated as visible: hiding an action because a callback
+        /// threw would take a real action away for a reason the player cannot see.
+        /// </summary>
+        private static void CollectHiddenControls(IMyTerminalBlock block, List<string> into)
+        {
+            if (into == null) return;
+
+            try
+            {
+                var properties = new List<Sandbox.ModAPI.Interfaces.ITerminalProperty>();
+                block.GetProperties(properties);
+                if (properties == null) return;
+
+                for (int i = 0; i < properties.Count; i++)
+                {
+                    var control = properties[i] as Sandbox.ModAPI.Interfaces.Terminal.IMyTerminalControl;
+                    if (control == null) continue;
+
+                    string id = control.Id;
+                    if (string.IsNullOrEmpty(id)) continue;
+                    if (IsControlVisible(control, block)) continue;
+
+                    into.Add(id);
+                }
+            }
+            catch (Exception e)
+            {
+                // An unreadable control list means "no filtering this time", never "no actions":
+                // the ports still appear, and the next structural pass tries again.
+                VgsLog.Throttled("action-hidden-controls", "could not read terminal controls", e, 600);
+            }
+        }
+
+        /// <summary>
+        /// The control's own visibility for this block, as the terminal panel evaluates it.
+        /// True when the control has no visibility callback at all.
+        /// </summary>
+        private static bool IsControlVisible(Sandbox.ModAPI.Interfaces.Terminal.IMyTerminalControl control,
+                                             IMyTerminalBlock block)
+        {
+            try
+            {
+                Func<IMyTerminalBlock, bool> visible = control.Visible;
+                return visible == null || visible(block);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("action-control-visible", "a control's Visible callback failed", e, 600);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// True when an action id names the given control.
+        ///
+        /// The rule itself lives in the model (<see cref="BlockPortCatalog.ActionBelongsToControl"/>)
+        /// so it can be asserted offline: it is a pure statement about how the game builds an
+        /// action id, and getting it wrong would silently hide real actions.
+        /// </summary>
+        private static bool IsHiddenByControl(string actionId, List<string> hiddenControlIds)
+        {
+            return BlockPortCatalog.IsActionHiddenBy(actionId, hiddenControlIds);
+        }
+
+        /// <summary>
+        /// Appends one action to a set, or refuses it. Returns false when the action was skipped
+        /// and <paramref name="enabled"/> then means nothing.
+        ///
+        /// Three kinds of action are refused, and each is a real defect the editor used to show:
+        ///
+        ///  1. <b>A duplicate id.</b> The game's per-type list can report the same action twice —
+        ///     the text panel's own controls are registered once through its block class and once
+        ///     through its LCD component — and two rows with one id are the same action, which
+        ///     the vanilla toolbar deletes as a duplicate anyway.
+        ///  2. <b>An action of a control this block does not have</b> (ADR-0039): the id carries
+        ///     its control's id, and <paramref name="hiddenControls"/> holds the controls the game
+        ///     hides for this block. This is the rule the terminal panel uses, applied to the
+        ///     action list the toolbar would otherwise offer.
+        ///  3. <b>An action that cannot be applied to this block at all.</b>
+        ///     `MyTerminalAction&lt;TBlock&gt;.IsEnabled` casts the block to the type the action was
+        ///     registered for [ПРОВЕРЕНО по IL], so a genuinely foreign action throws
+        ///     <see cref="InvalidCastException"/>. `false` is *not* a reason to refuse: it means
+        ///     the control is switched off, which the player can see and change.
+        ///
+        /// Anything else — including an action that answers `false` — is kept.
+        /// </summary>
+        private static bool TryAddAction(IMyTerminalBlock block,
+                                         Sandbox.ModAPI.Interfaces.ITerminalAction action,
+                                         List<string> hiddenControls,
+                                         List<string> ids, List<string> names, out bool enabled)
+        {
+            enabled = false;
+            if (action == null) return false;
+
+            string id = action.Id;
+            if (string.IsNullOrEmpty(id)) return false;
+            if (Contains(ids, id)) return false;
+
+            if (hiddenControls != null && IsHiddenByControl(id, hiddenControls))
+            {
+                VgsLog.Throttled("action-control-hidden",
+                                 "skipping action '" + id + "' — its control is not shown on "
+                                 + SafeTypeKey(block), 600);
                 return false;
+            }
+
+            try
+            {
+                enabled = action.IsEnabled(block);
+            }
+            catch (InvalidCastException)
+            {
+                // The action is registered for another block type. Its control was added to this
+                // type's list by the game (a component's controls are appended to whichever block
+                // is initialised around them), and offering it would be a connection that writes
+                // an item the game then refuses.
+                VgsLog.Throttled("action-foreign",
+                                 "skipping action '" + id + "' reported for " + SafeTypeKey(block),
+                                 600);
+                return false;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("action-enabled", "could not read action state", e, 600);
+                enabled = true;
+            }
+
+            ids.Add(id);
+            if (names != null) names.Add(ActionName(action));
+            return true;
+        }
+
+        private static bool Contains(List<string> ids, string id)
+        {
+            for (int i = 0; i < ids.Count; i++)
+            {
+                if (string.Equals(ids[i], id, StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Reads the terminal actions a block exposes. Returns false when the block has no
+        /// terminal at all.
+        ///
+        /// <paramref name="names"/> receives the game's localized caption for each id, in the same
+        /// order (ADR-0037). Both come from the type's cached set (ADR-0038), so this is a copy,
+        /// not a world read.
+        /// </summary>
+        private static bool TryReadActions(IMyTerminalBlock block, List<string> into, List<string> names)
+        {
+            ActionSet set = ReadActionSet(block);
+            if (set == null) return false;
+
+            for (int i = 0; i < set.Ids.Count; i++)
+            {
+                into.Add(set.Ids[i]);
+                if (names != null) names.Add(set.Names[i]);
+            }
+            return into.Count > 0;
+        }
+
+        /// <summary>
+        /// The game's own label for one action — "Toggle block On/Off", "Increase Text Padding".
+        ///
+        /// <c>ITerminalAction.Name</c> is a <see cref="System.Text.StringBuilder"/> the game fills
+        /// with the localized control title plus its " On"/" Off" suffix, and it is what the
+        /// vanilla toolbar lists. It is copied here and never kept: the action object is the
+        /// game's, and holding its buffer across a refresh would be holding a live game object in
+        /// the model.
+        ///
+        /// Null when the game reports no name; the catalog then captions the port from the id.
+        /// </summary>
+        private static string ActionName(Sandbox.ModAPI.Interfaces.ITerminalAction action)
+        {
+            try
+            {
+                System.Text.StringBuilder name = action.Name;
+                return name != null ? name.ToString() : null;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("action-name", "could not read an action name", e, 600);
+                return null;
             }
         }
 

@@ -1426,11 +1426,29 @@ namespace Vgs.Ui
             // round a row past the menu's bottom edge (ADR-0024 §5).
             VgsScreenDraw.Panel(topLeft, size, ColMenu, ColMenuBorder, Hairline);
 
-            VgsScreenDraw.Text(_menuTitle,
-                               topLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
-                                                     VgsConstants.ActionMenuTitleHeight * 0.22f),
-                               VgsConstants.NodeTitleScale * 0.85f, ColText,
-                               size.X - VgsConstants.PortLabelPadding * 3.2f);
+            // The title shrinks to make room for the "rows 1-9 / 15" counter rather than being
+            // clipped by it: the counter is the only sign that the list continues past the
+            // visible rows, so it must never be the text that loses the fight for space.
+            float titleWidth = size.X - VgsConstants.PortLabelPadding * 3.2f;
+            Vector2 titleTopLeft = topLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
+                                                         VgsConstants.ActionMenuTitleHeight * 0.22f);
+
+            if (_menuCountLabel != null)
+            {
+                float countScale = VgsConstants.NodeSubtitleScale * 0.85f;
+                Vector2 countSize = VgsScreenDraw.Measure(_menuCountLabel, countScale);
+
+                VgsScreenDraw.TextRight(_menuCountLabel,
+                                        new Vector2(topLeft.X + size.X - VgsConstants.PortLabelPadding * 1.6f,
+                                                    titleTopLeft.Y),
+                                        countScale, ColTextDim);
+
+                titleWidth -= countSize.X + VgsConstants.PortLabelPadding;
+                if (titleWidth < 0f) titleWidth = 0f;
+            }
+
+            VgsScreenDraw.Text(_menuTitle, titleTopLeft,
+                               VgsConstants.NodeTitleScale * 0.85f, ColText, titleWidth);
 
             if (_menuRows.Count == 0)
             {
@@ -1443,6 +1461,11 @@ namespace Vgs.Ui
                                    rowSize.X - VgsConstants.PortLabelPadding * 3.2f);
                 return;
             }
+
+            // Rows keep clear of the scroll indicator when there is one, so a long caption is
+            // clipped by the menu edge rather than running under the thumb.
+            float rowTextWidth = size.X - VgsConstants.PortLabelPadding * 3.2f;
+            if (_menuCountLabel != null) rowTextWidth -= MenuScrollbarWidth + MenuScrollbarInset;
 
             for (int i = 0; i < VisibleMenuRows; i++)
             {
@@ -1461,8 +1484,17 @@ namespace Vgs.Ui
                                    rowTopLeft + new Vector2(VgsConstants.PortLabelPadding * 1.6f,
                                                             rowSize.Y * 0.22f),
                                    VgsConstants.NodeSubtitleScale * 0.95f, ColText,
-                                   rowSize.X - VgsConstants.PortLabelPadding * 3.2f);
+                                   rowTextWidth);
             }
+
+            // Track and thumb last, so the thumb is not covered by a hovered row.
+            if (_menuCountLabel == null) return;
+
+            Vector2 trackTopLeft, trackSize, thumbTopLeft, thumbSize;
+            GetMenuScrollbarRects(out trackTopLeft, out trackSize, out thumbTopLeft, out thumbSize);
+
+            VgsScreenDraw.Rect(trackTopLeft, trackSize, ColMenuRowHot);
+            VgsScreenDraw.Rect(thumbTopLeft, thumbSize, ColMenuBorder);
         }
 
         /// <summary>

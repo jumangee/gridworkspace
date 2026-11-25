@@ -73,6 +73,13 @@ namespace Vgs.Model
         /// <summary>Scratch buffer for the group action rule; reused so a refresh allocates nothing.</summary>
         private readonly List<string> _groupActionIds = new List<string>(16);
 
+        /// <summary>
+        /// Captions parallel to <see cref="_groupActionIds"/>: the game's names for the surviving
+        /// actions (ADR-0037). A group's ports must read like the same block's own ports, and the
+        /// name lives on the member's list, not in the id.
+        /// </summary>
+        private readonly List<string> _groupActionNames = new List<string>(16);
+
 
         /// <summary>
         /// Next cell of the automatic layout. Monotonic for the graph's lifetime so that a block
@@ -296,10 +303,10 @@ namespace Vgs.Model
             node.Members.Clear();
             for (int i = 0; i < members.Count; i++) node.Members.Add(members[i]);
 
-            BlockPortCatalog.ComputeGroupActionIds(memberActions, _groupActionIds);
+            BlockPortCatalog.ComputeGroupActionIds(memberActions, _groupActionIds, _groupActionNames);
             if (!SamePortKeys(node.Actions, _groupActionIds))
             {
-                BlockPortCatalog.FillActions(node, _groupActionIds);
+                BlockPortCatalog.FillActions(node, _groupActionIds, _groupActionNames);
 
                 // An action that dropped out of the group's list — the composition changed, so
                 // it is no longer the intersection — cannot be executed any more. Its edges go

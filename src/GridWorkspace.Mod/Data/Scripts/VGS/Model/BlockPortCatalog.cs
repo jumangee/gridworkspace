@@ -254,8 +254,18 @@ namespace Vgs.Model
         /// <summary>
         /// Builds the action (input) port list from the actions the block actually reports.
         /// Anchors are spread so the ports line up with their catalog order.
+        ///
+        /// <b>The caption is the game's own action name, not the id</b> (ADR-0037). The id is a
+        /// save-data key — "OnOff", "OnOff_On", "IncreaseTextPaddingSlider" — and turning it into
+        /// "On Off_ On" is not a translation, it is a misreading: the game already has a localized
+        /// name for every action ("Toggle block On", "Increase Text Padding"), it is what the
+        /// vanilla toolbar shows, and it is what the player recognizes. <see cref="Humanize"/> is
+        /// only the fallback for an action that reports no name at all.
+        ///
+        /// <paramref name="actionNames"/> is parallel to <paramref name="actionIds"/> and may be
+        /// null or shorter, in which case the remaining captions fall back to the id.
         /// </summary>
-        public static void FillActions(Node node, IList<string> actionIds)
+        public static void FillActions(Node node, IList<string> actionIds, IList<string> actionNames)
         {
             node.Actions.Clear();
             if (actionIds == null) return;
@@ -266,9 +276,22 @@ namespace Vgs.Model
                 string id = actionIds[i];
                 if (string.IsNullOrEmpty(id)) continue;
 
+                string name = actionNames != null && i < actionNames.Count ? actionNames[i] : null;
+                if (string.IsNullOrEmpty(name)) name = Humanize(id);
+
                 float anchor = count == 1 ? 0.5f : (float)i / (count - 1);
-                node.Actions.Add(new Port(id, Humanize(id), PortKind.Action, PortDirection.Input, anchor));
+                node.Actions.Add(new Port(id, name, PortKind.Action, PortDirection.Input, anchor));
             }
+        }
+
+        /// <summary>
+        /// Builds action ports without display names, so every caption is derived from the id.
+        /// Kept for callers that have no names to give — the offline checks, which assert the
+        /// placement rules and not the captions.
+        /// </summary>
+        public static void FillActions(Node node, IList<string> actionIds)
+        {
+            FillActions(node, actionIds, null);
         }
 
         /// <summary>
@@ -307,8 +330,23 @@ namespace Vgs.Model
         /// </summary>
         public static void ComputeGroupActionIds(IList<GroupMemberActions> members, List<string> into)
         {
+            ComputeGroupActionIds(members, into, null);
+        }
+
+        /// <summary>
+        /// Same rule, and additionally the game's display name of every surviving action.
+        ///
+        /// The names are taken from the member whose list the id came from — always the first
+        /// readable member, because both branches below walk its lists — so a group's ports are
+        /// captioned exactly like the same block's own ports, not with a second naming scheme.
+        /// <paramref name="intoNames"/> may be null when the caller does not need captions.
+        /// </summary>
+        public static void ComputeGroupActionIds(IList<GroupMemberActions> members, List<string> into,
+                                                 List<string> intoNames)
+        {
             if (into == null) return;
             into.Clear();
+            if (intoNames != null) intoNames.Clear();
             if (members == null || members.Count == 0) return;
 
             // The first readable member defines the base: its type and its action order. A
@@ -339,7 +377,7 @@ namespace Vgs.Model
                     string id = first.ActionIds[i];
                     if (string.IsNullOrEmpty(id)) continue;
                     if (ContainsId(into, id)) continue;
-                    if (EnabledAnywhere(members, id)) into.Add(id);
+                    if (EnabledAnywhere(members, id)) Add(into, intoNames, id, NameOf(first, i));
                 }
                 return;
             }
@@ -362,8 +400,39 @@ namespace Vgs.Model
                     if (member == null || ReferenceEquals(member, first)) continue;
                     if (!ContainsId(member.EnabledActionIds, id)) everywhere = false;
                 }
-                if (everywhere) into.Add(id);
+                if (everywhere) Add(into, intoNames, id, NameOf(first, id));
             }
+        }
+
+        private static void Add(List<string> ids, List<string> names, string id, string name)
+        {
+            ids.Add(id);
+            if (names != null) names.Add(name);
+        }
+
+        /// <summary>
+        /// Display name of the action at position <paramref name="index"/> of a member's own
+        /// list, or null when the member carries no names.
+        /// </summary>
+        private static string NameOf(GroupMemberActions member, int index)
+        {
+            IList<string> names = member.ActionNames;
+            if (names == null || index < 0 || index >= names.Count) return null;
+            return names[index];
+        }
+
+        /// <summary>Display name of an action id within one member's list, or null.</summary>
+        private static string NameOf(GroupMemberActions member, string id)
+        {
+            IList<string> names = member.ActionNames;
+            if (names == null) return null;
+
+            IList<string> ids = member.ActionIds;
+            for (int i = 0; i < ids.Count && i < names.Count; i++)
+            {
+                if (string.Equals(ids[i], id, StringComparison.Ordinal)) return names[i];
+            }
+            return null;
         }
 
         private static bool EnabledAnywhere(IList<GroupMemberActions> members, string id)
@@ -401,6 +470,57 @@ namespace Vgs.Model
                 sb.Append(c);
             }
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// True when an action id is one the game builds from the given control id.
+        ///
+        /// The game derives every action id from its control's id, in exactly three shapes
+        /// [ПРОВЕРЕНО по IL: `MyTerminalControlExtensions.EnableAction` — the control's own id,
+        /// `EnableOnOffActions` — `control.Id + "_On"` / `"_Off"`, `EnableActions` —
+        /// `"Increase"` / `"Decrease"` + `control.Id`]. So "which control does this action belong
+        /// to" needs no table of action names, and a control the game hides for a block hides its
+        /// actions with it (ADR-0039).
+        /// </summary>
+        public static bool ActionBelongsToControl(string actionId, string controlId)
+        {
+            if (string.IsNullOrEmpty(actionId) || string.IsNullOrEmpty(controlId)) return false;
+
+            if (string.Equals(actionId, controlId, StringComparison.Ordinal)) return true;
+
+            return HasSuffix(actionId, controlId, "_On")
+                || HasSuffix(actionId, controlId, "_Off")
+                || HasPrefix(actionId, "Increase", controlId)
+                || HasPrefix(actionId, "Decrease", controlId);
+        }
+
+        /// <summary>
+        /// True when the action belongs to any of the controls the game hides for this block.
+        /// Allocation-free and ordinal: it runs once per action of a block type.
+        /// </summary>
+        public static bool IsActionHiddenBy(string actionId, IList<string> hiddenControlIds)
+        {
+            if (hiddenControlIds == null) return false;
+
+            for (int i = 0; i < hiddenControlIds.Count; i++)
+            {
+                if (ActionBelongsToControl(actionId, hiddenControlIds[i])) return true;
+            }
+            return false;
+        }
+
+        private static bool HasSuffix(string id, string prefix, string suffix)
+        {
+            if (id.Length != prefix.Length + suffix.Length) return false;
+            return string.CompareOrdinal(id, 0, prefix, 0, prefix.Length) == 0
+                && string.CompareOrdinal(id, prefix.Length, suffix, 0, suffix.Length) == 0;
+        }
+
+        private static bool HasPrefix(string id, string prefix, string rest)
+        {
+            if (id.Length != prefix.Length + rest.Length) return false;
+            return string.CompareOrdinal(id, 0, prefix, 0, prefix.Length) == 0
+                && string.CompareOrdinal(id, prefix.Length, rest, 0, rest.Length) == 0;
         }
     }
 }

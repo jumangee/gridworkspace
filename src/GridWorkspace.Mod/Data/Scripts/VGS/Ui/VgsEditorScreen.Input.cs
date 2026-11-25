@@ -1235,11 +1235,11 @@ namespace Vgs.Ui
 
             FillMenuRows(target);
 
-            // Formatted once, here, because DrawActionMenu runs every frame and string.Format
-            // in a draw path is an allocation per frame for as long as the menu is open.
-            _menuTitle = string.Format(VgsText.ActionMenuTitleFormat, target.DisplayName);
-
-            VgsLog.Debug("action menu for " + target.EntityId + ": " + _menuRows.Count + " action(s)");
+            // The log is the only place a wrong list can be diagnosed from: the editor shows the
+            // block's own actions, so a report of "the event controller offers font actions" is
+            // answered by this line naming the block and every id that was read.
+            VgsLog.Info("action menu for " + target.SubtypeId + " (" + target.EntityId + "): "
+                        + _menuRows.Count + " action(s): " + JoinActionIds(_menuRows));
         }
 
         /// <summary>
@@ -1253,7 +1253,11 @@ namespace Vgs.Ui
         {
             _menuRows.Clear();
             _menuLabels.Clear();
+            _menuTitle = null;
+            _menuCountLabel = null;
             if (target == null) return;
+
+            _menuTitle = string.Format(VgsText.ActionMenuTitleFormat, target.DisplayName);
 
             for (int i = 0; i < target.Actions.Count; i++)
             {
@@ -1275,6 +1279,43 @@ namespace Vgs.Ui
             int maxScroll = _menuRows.Count - VgsConstants.ActionMenuMaxRows;
             if (maxScroll < 0) maxScroll = 0;
             if (_menuScroll > maxScroll) _menuScroll = maxScroll;
+
+            RefreshMenuCountLabel();
+        }
+
+        /// <summary>
+        /// Rebuilds the "rows 1-9 / 15" counter. Only for a list that does not fit: on a short
+        /// list the number would be noise, and the absence of the counter is itself the message
+        /// "this is the whole list".
+        /// </summary>
+        private void RefreshMenuCountLabel()
+        {
+            int visible = VisibleMenuRows;
+            if (_menuRows.Count <= visible)
+            {
+                _menuCountLabel = null;
+                return;
+            }
+
+            _menuCountLabel = string.Format(VgsText.ActionMenuRangeFormat,
+                                            _menuScroll + 1, _menuScroll + visible, _menuRows.Count);
+        }
+
+        /// <summary>
+        /// Action ids of the open menu, comma separated, for the diagnostic line in
+        /// <see cref="OpenActionMenu"/>. Never called from the draw path.
+        /// </summary>
+        private static string JoinActionIds(List<Port> rows)
+        {
+            if (rows.Count == 0) return "-";
+
+            var text = new System.Text.StringBuilder(rows.Count * 12);
+            for (int i = 0; i < rows.Count; i++)
+            {
+                if (i > 0) text.Append(", ");
+                text.Append(rows[i].Key);
+            }
+            return text.ToString();
         }
 
         private void CloseActionMenu()
@@ -1283,6 +1324,7 @@ namespace Vgs.Ui
             _menuRows.Clear();
             _menuLabels.Clear();
             _menuTitle = null;
+            _menuCountLabel = null;
             _menuHoverRow = -1;
             _menuScroll = 0;
         }
@@ -1295,6 +1337,8 @@ namespace Vgs.Ui
             _menuScroll += delta;
             if (_menuScroll > maxScroll) _menuScroll = maxScroll;
             if (_menuScroll < 0) _menuScroll = 0;
+
+            RefreshMenuCountLabel();
         }
 
         /// <summary>

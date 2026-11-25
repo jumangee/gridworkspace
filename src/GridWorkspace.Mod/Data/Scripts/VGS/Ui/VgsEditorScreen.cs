@@ -217,6 +217,16 @@ namespace Vgs.Ui
         /// </summary>
         private readonly List<string> _menuLabels = new List<string>();
 
+        /// <summary>
+        /// "rows 1-9 / 15" for a list too long to show at once, or null when it fits.
+        ///
+        /// The menu shows at most <see cref="VgsConstants.ActionMenuMaxRows"/> rows and scrolls
+        /// with the wheel. Without this counter a block with fifteen actions looks exactly like
+        /// one with nine — the list appears to end, and the player concludes the editor offers
+        /// the wrong actions. Formatted on open and on every scroll, never per frame.
+        /// </summary>
+        private string _menuCountLabel;
+
         private int _menuScroll;
         private int _menuHoverRow = -1;
         private Vector2 _menuAnchorScreen;
@@ -950,6 +960,56 @@ namespace Vgs.Ui
             topLeft = new Vector2(
                 menuTopLeft.X,
                 menuTopLeft.Y + VgsConstants.ActionMenuTitleHeight + index * VgsConstants.ActionMenuRowHeight);
+        }
+
+        /// <summary>Thickness of the action menu's scroll indicator, in client-area units.</summary>
+        private const float MenuScrollbarWidth = 0.0045f;
+
+        /// <summary>Gap between the scroll indicator and the menu's own edge.</summary>
+        private const float MenuScrollbarInset = 0.0035f;
+
+        /// <summary>
+        /// Track and thumb of the action menu's scroll indicator.
+        ///
+        /// Drawn only when the list is longer than the menu, and that is the whole point: the
+        /// menu shows <see cref="VgsConstants.ActionMenuMaxRows"/> rows and scrolls with the
+        /// wheel, so a fifteen-action block and a nine-action one looked identical — the list
+        /// appeared to end, and the missing half read as "the editor offers the wrong actions".
+        ///
+        /// The thumb is a fraction of the track and its position is the scroll progress, so the
+        /// two facts the user needs — "there is more" and "how much more" — come from one small
+        /// shape. Kept here, next to the row geometry, so a later draggable thumb cannot disagree
+        /// with what was drawn.
+        /// </summary>
+        private void GetMenuScrollbarRects(out Vector2 trackTopLeft, out Vector2 trackSize,
+                                           out Vector2 thumbTopLeft, out Vector2 thumbSize)
+        {
+            Vector2 menuTopLeft, menuSize;
+            GetMenuRect(out menuTopLeft, out menuSize);
+
+            float top = menuTopLeft.Y + VgsConstants.ActionMenuTitleHeight + MenuScrollbarInset;
+            float height = menuSize.Y - VgsConstants.ActionMenuTitleHeight - MenuScrollbarInset * 2f;
+            float x = menuTopLeft.X + menuSize.X - MenuScrollbarWidth - MenuScrollbarInset;
+
+            trackTopLeft = new Vector2(x, top);
+            trackSize = new Vector2(MenuScrollbarWidth, height);
+
+            int total = _menuRows.Count;
+            int visible = VisibleMenuRows;
+
+            float ratio = total > 0 ? (float)visible / total : 1f;
+            if (ratio > 1f) ratio = 1f;
+
+            // A thumb shorter than this stops reading as a thumb and starts reading as a dot;
+            // the minimum is a legibility floor, not a measurement.
+            if (ratio < 0.12f) ratio = 0.12f;
+
+            float thumbHeight = height * ratio;
+            int maxScroll = total - visible;
+            float progress = maxScroll > 0 ? (float)_menuScroll / maxScroll : 0f;
+
+            thumbTopLeft = new Vector2(x, top + (height - thumbHeight) * progress);
+            thumbSize = new Vector2(MenuScrollbarWidth, thumbHeight);
         }
 
         /// <summary>

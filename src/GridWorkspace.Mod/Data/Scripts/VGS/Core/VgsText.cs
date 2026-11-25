@@ -261,6 +261,13 @@ namespace Vgs.Core
         public static string ActionMenuEmpty { get { return S("ACTION_MENU_EMPTY"); } }
         public static string ActionMenuFanInFormat { get { return S("ACTION_MENU_FAN_IN_FORMAT"); } }
 
+        /// <summary>
+        /// "rows 1-9 / 15" for an action list longer than the menu can show. Numbers and a slash
+        /// in both languages: what needs translating is the word "rows", and the counter is
+        /// deliberately wordless so a truncated list is visible without a new sentence.
+        /// </summary>
+        public static string ActionMenuRangeFormat { get { return S("ACTION_MENU_RANGE_FORMAT"); } }
+
         // ---- Write failures ----
 
         public static string WarnNoFreeCellFormat { get { return S("WARN_NO_FREE_CELL_FORMAT"); } }

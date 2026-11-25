@@ -133,6 +133,7 @@ namespace Vgs.Core
                 { "ACTION_MENU_TITLE_FORMAT", "Action for \"{0}\"" },
                 { "ACTION_MENU_EMPTY", "No actions available" },
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  sources: {0}" },
+                { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
 
                 // ---- Write failures ----
                 { "WARN_NO_FREE_CELL_FORMAT",
@@ -253,6 +254,7 @@ namespace Vgs.Core
                 { "ACTION_MENU_TITLE_FORMAT", "Действие для «{0}»" },
                 { "ACTION_MENU_EMPTY", "Нет доступных действий" },
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  источников: {0}" },
+                { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
 
                 // ---- Write failures ----
                 { "WARN_NO_FREE_CELL_FORMAT",
