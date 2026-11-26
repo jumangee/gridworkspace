@@ -246,8 +246,8 @@ pwsh -File tools/offline-check.ps1         # OFFLINE OK, включая два �
   переиспользуется; рабочая память строителя переживает длинный маршрут перед коротким.
 
 Картинка, которой проверялась геометрия до игры:
-[`images/conveyor-pipe.png`](images/conveyor-pipe.png) (полное окно 1920×1080) и
-[`images/conveyor-pipe-bend.png`](images/conveyor-pipe-bend.png) (изгиб ×14). Обе получены
+[`images/conveyor-pipe.png`](../01-research/images/conveyor-pipe.png) (полное окно 1920×1080) и
+[`images/conveyor-pipe-bend.png`](../01-research/images/conveyor-pipe-bend.png) (изгиб ×14). Обе получены
 прогоном **настоящих** `EdgeRouting` и `PipeRouter`, а не рисунком от руки.
 
 Приёмка в игре (человек):

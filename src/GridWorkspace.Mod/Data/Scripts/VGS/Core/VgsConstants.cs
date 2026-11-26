@@ -746,7 +746,8 @@ namespace Vgs.Core
         /// </summary>
         public const int MaxConveyorGrids = 32;
 
-        // ---- Action menu (opened by clicking a target while in bind mode) ----
+        // ---- Action menu (opened by clicking a target while in bind mode, or by a right
+        // click on a card in idle mode — ADR-0041) ----
 
         public const float ActionMenuWidth = 0.22f;
         public const float ActionMenuRowHeight = 0.023f;
@@ -754,6 +755,33 @@ namespace Vgs.Core
 
         /// <summary>Rows shown at once. Longer action lists are scrolled with the wheel.</summary>
         public const int ActionMenuMaxRows = 9;
+
+        /// <summary>
+        /// How far the pointer may travel between a right press on a card and its release for
+        /// that press to still count as a click — the click that opens the manual action menu
+        /// (ADR-0041). Four pixels.
+        ///
+        /// <b>Why a distance and not "the press itself".</b> The right button also pans, and it
+        /// has panned from anywhere on the canvas since stage 1. Opening the menu on the press
+        /// would take that away from every card — on a dense schema the pan would start only in
+        /// the gaps — so the press only *arms* a candidate and the release decides: within this
+        /// distance it was a click, farther it was a pan and the candidate is dropped. The
+        /// number is small on purpose: it absorbs the hand's tremor, not a deliberate move.
+        ///
+        /// <b>Pixels, not layout units.</b> One X unit of this layout is the window width and one
+        /// Y unit is its height (ADR-0009), so a threshold in layout units is a different
+        /// physical distance per axis. <see cref="Ui.PointerGesture.ExceedsClickSlop"/> converts
+        /// each axis through the window size and compares against this value in pixels;
+        /// <see cref="ClickSlop"/> below is only the fallback for a window that has not been
+        /// measured yet, and nothing else should read this constant directly.
+        /// </summary>
+        public const float ClickSlopPixels = 4f;
+
+        /// <summary>
+        /// <see cref="ClickSlopPixels"/> in the layout's vertical units, used only when the window
+        /// size is not known yet. See the constant above for why it is not the rule itself.
+        /// </summary>
+        public const float ClickSlop = ClickSlopPixels / ReferenceHeightPixels;
 
         /// <summary>Distance in normalized units a pointer must travel before it counts as a drag.</summary>
         public const float DragThreshold = 0.0025f;

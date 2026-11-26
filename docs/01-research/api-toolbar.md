@@ -252,6 +252,73 @@ bool ok = change.Apply();
 синхронизацией. Работал бы и на клиенте, но `MyToolbar` и `MyToolbarItemFactory` лежат в
 `Sandbox.Game.Screens.Helpers`, который моду запрещён. Именно на нём мод однажды не загрузился.
 
+### 4.3. Что делает элемент, когда срабатывает, и как это повторить вручную
+
+Вопрос из [ADR-0041](../adr/0041-manual-action-menu.md): редактор умеет запускать действие
+**сейчас**, без записи в тулбар, — и для этого нужно повторить ровно то, что делает игра,
+когда срабатывает записанный элемент, а не придумать своё правило.
+
+[ПРОВЕРЕНО по IL] `MyToolbarItemTerminalBlock.Activate()` целиком:
+
+```il
+action = GetCurrentAction();                       // MyToolbarItemActions.GetActionOrNull(ActionId)
+if (m_block != null && action != null)
+    action.Apply(m_block, m_parameters);           // Sandbox.Game.Gui.ITerminalAction::Apply
+return m_block != null && action != null;
+```
+
+```powershell
+& .\tools\dump-se-il.ps1 -Type 'Sandbox.Game.Screens.Helpers.MyToolbarItemTerminalBlock' -Method 'Activate'
+& .\tools\dump-se-il.ps1 -Type 'Sandbox.Game.Screens.Helpers.MyToolbarItemActions' -Method 'GetActionOrNull'
+```
+
+`GetActionOrNull(String id)` обходит `AllActions` и сравнивает `Id` строкой — то есть действие
+выбирается **по id из списка, который игра собрала для этого блока**, а не по чему-то ещё.
+
+Три следствия, которые нельзя вывести «по аналогии»:
+
+1. **`IsEnabled` в этом пути не проверяется вообще.** Значит «кнопка серая» — свойство
+   *терминальной панели*, а не исполнения: игра применит действие, даже если контрол сейчас
+   выключен (для этого блока), и это её ответ. Мод, отказавший по `IsEnabled`, разошёлся бы с
+   игрой и с собственным меню привязки, которое такие строки показывает (ADR-0038, ADR-0039).
+2. **Одиночный блок не проверяется на `IsFunctional`.** Проверка есть только у группового
+   элемента (пункт 4), то есть у блока, чьё состояние игра считает по-другому.
+3. **`IMyTerminalBlock.GetActionWithName(id)` — это поиск по типу блока, а не по блоку:**
+   `MyTerminalBlock.GetActionWithName` → `MyTerminalControlFactoryHelper.Static.GetActionWithName(name, block.GetType())`.
+   Поэтому «действие исчезло» здесь означает «его больше нет у типа», а не «оно выключено».
+   Это тот же факт, что ADR-0038 записал про кэш по типу.
+
+[ПРОВЕРЕНО по IL] `MyToolbarItemTerminalGroup.Activate()` — групповой путь:
+
+```il
+blocks  = GetBlocks();                                  // по имени группы через грид контекстного блока
+actions = GetActionsWithGenericDuplicates(blocks);
+found   = FindActions(ActionId);                        // по Id, пусто → return false
+if (found.Count == 0) return false;
+foreach (block in blocks)
+    if (block != null && block.IsFunctional)
+    {
+        a = GetMatchingGenericAction(found, block);      // по предку типа
+        if (a != null) a.Apply(block, m_parameters);
+    }
+return true;                                            // ← всегда, даже если не применилось ни к кому
+```
+
+```powershell
+& .\tools\dump-se-il.ps1 -Type 'Sandbox.Game.Screens.Helpers.MyToolbarItemTerminalGroup' -Method 'Activate'
+```
+
+4. **У группы два пропуска — нефункциональный блок и блок без подходящего действия**, — и
+   возвращает она `true` независимо от того, применилось ли что-нибудь. Мод, повторяющий
+   групповое действие вручную, обязан считать применённые блоки сам: иначе «сработало» будет
+   означать «игра не упала».
+
+Тип `MyToolbarItemTerminalBlock`/`MyToolbarItemTerminalGroup` моду запрещён (namespace
+`Sandbox.Game.Screens.Helpers`) — дампился только как факт о поведении. Разрешённый путь,
+которым мод делает то же самое, — `IMyTerminalBlock.GetActionWithName` +
+`Sandbox.ModAPI.Interfaces.ITerminalAction.Apply(IMyCubeBlock)`; обе сигнатуры проверены
+`dump-se-api.ps1 -Types 'Sandbox.ModAPI.Ingame.IMyTerminalBlock','Sandbox.ModAPI.Interfaces.ITerminalAction'`.
+
 ## 5. Ограничение «одно действие — один раз на странице»
 
 Ванильный экран, когда игрок бросает действие в ячейку, сначала **удаляет** все остальные

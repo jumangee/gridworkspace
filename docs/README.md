@@ -35,6 +35,10 @@
 - **«Почему у порта две круглые кнопки и что делает „x“?»** →
   [ADR-0014](adr/0014-port-remove-button-and-port-look.md) и
   [06-terminology.md](06-terminology.md) §2.
+- **«Зачем правый клик по карточке, и почему он не создаёт связь?»** →
+  [ADR-0041](adr/0041-manual-action-menu.md): то же меню действий, что при привязке, но строка
+  выполняется сразу (`ITerminalAction.Apply`), а правая кнопка остаётся панорамой — клик
+  отличает от движения порог 4 px в пикселях (`Ui.PointerGesture`).
 - **«Почему связь — это тулбар блока, и почему вместо кнопок T/F теперь лампы?»** →
   [ADR-0011](adr/0011-toolbar-is-the-connection.md) и
   [01-research/api-toolbar.md](01-research/api-toolbar.md).

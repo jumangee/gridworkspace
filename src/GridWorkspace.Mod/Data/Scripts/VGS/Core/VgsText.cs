@@ -269,6 +269,29 @@ namespace Vgs.Core
         /// </summary>
         public static string ActionMenuRangeFormat { get { return S("ACTION_MENU_RANGE_FORMAT"); } }
 
+        // ---- Manual action (ADR-0041) ----
+
+        /// <summary>
+        /// Heading of the menu a right click on a card opens. It names the mode, not the target:
+        /// the target is the card under the pointer, and the rows are its actions.
+        /// </summary>
+        public static string ManualActionTitle { get { return S("MANUAL_ACTION_TITLE"); } }
+
+        /// <summary>Bottom-bar line while the manual action menu is open.</summary>
+        public static string ManualActionHint { get { return S("MANUAL_ACTION_HINT"); } }
+
+        /// <summary>Shown when the block the menu was opened for is gone.</summary>
+        public static string WarnManualBlockGone { get { return S("WARN_MANUAL_BLOCK_GONE"); } }
+
+        /// <summary>Shown when the chosen row is no longer an action of the target.</summary>
+        public static string WarnManualActionGoneFormat { get { return S("WARN_MANUAL_ACTION_GONE_FORMAT"); } }
+
+        /// <summary>Shown when the group the frame stands for is no longer in the terminal system.</summary>
+        public static string WarnManualGroupGoneFormat { get { return S("WARN_MANUAL_GROUP_GONE_FORMAT"); } }
+
+        /// <summary>Shown when the game threw while applying the action.</summary>
+        public static string WarnManualRejected { get { return S("WARN_MANUAL_REJECTED"); } }
+
         // ---- Write failures ----
 
         public static string WarnNoFreeCellFormat { get { return S("WARN_NO_FREE_CELL_FORMAT"); } }

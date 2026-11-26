@@ -136,6 +136,19 @@ namespace Vgs.Core
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  sources: {0}" },
                 { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
 
+                // ---- Manual action (ADR-0041) ----
+                //
+                // The menu's heading is the words the feature was asked for, and nothing else:
+                // which block the rows belong to is already answered by the card under the
+                // pointer (it keeps the hover outline) and by the rows themselves.
+                { "MANUAL_ACTION_TITLE", "Manual action" },
+                { "MANUAL_ACTION_HINT",
+                  "Manual action: click a row to run it on the block now · right-click closes" },
+                { "WARN_MANUAL_BLOCK_GONE", "Action not run: the block is gone" },
+                { "WARN_MANUAL_ACTION_GONE_FORMAT", "Action not run: \"{0}\" has no action \"{1}\"" },
+                { "WARN_MANUAL_GROUP_GONE_FORMAT", "Action not run: the group \"{0}\" is gone" },
+                { "WARN_MANUAL_REJECTED", "Action not run: the game did not accept it" },
+
                 // ---- Write failures ----
                 { "WARN_NO_FREE_CELL_FORMAT",
                   "Link not added: the toolbar of \"{0}\" has no free cell" },
@@ -257,6 +270,20 @@ namespace Vgs.Core
                 { "ACTION_MENU_EMPTY", "Нет доступных действий" },
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  источников: {0}" },
                 { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
+
+                // ---- Manual action ----
+                //
+                // Английский заголовок остаётся ровно тем, что просили, а русский называет то
+                // же действие по-русски: подпись меню — предложение, а не идентификатор.
+                { "MANUAL_ACTION_TITLE", "Ручное действие" },
+                { "MANUAL_ACTION_HINT",
+                  "Ручное действие: нажмите строку, чтобы выполнить его на блоке сейчас · "
+                  + "ПКМ — закрыть" },
+                { "WARN_MANUAL_BLOCK_GONE", "Действие не выполнено: блок исчез" },
+                { "WARN_MANUAL_ACTION_GONE_FORMAT",
+                  "Действие не выполнено: у «{0}» нет действия «{1}»" },
+                { "WARN_MANUAL_GROUP_GONE_FORMAT", "Действие не выполнено: группы «{0}» больше нет" },
+                { "WARN_MANUAL_REJECTED", "Действие не выполнено: игра не приняла его" },
 
                 // ---- Write failures ----
                 { "WARN_NO_FREE_CELL_FORMAT",

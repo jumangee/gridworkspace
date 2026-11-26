@@ -368,7 +368,7 @@
 |---|---|
 | удалить строку `Bell` из таблицы | `'Bell' is in tools/icon-atlas/icons.txt but has no row in the catalogue` |
 | переименовать `Bell` → `BellX` только в таблице | 4 находки: нет превью, иконка пропала из каталога, лишняя иконка в каталоге, порядок разошёлся |
-| сломать ссылку на превью (`icons/NoSuchBell.png`) | `'Bell' must show ![...](icons/Bell.png)` |
+| сломать ссылку на превью (`icons/NoSuchBell.png`) | `'Bell' must show ![...](../icons/Bell.png)` |
 
 Отдельно: `tools/icon-atlas/verify_textures.py` (инструмент, не шлюз) поймал настоящую ошибку
 в собственной проверке при добавлении этих трёх иконок. Он сверял **ширину** чернил с

@@ -202,8 +202,43 @@ namespace Vgs.Ui
         /// </summary>
         private int _watchErrorUntilFrame;
 
-        /// <summary>Card whose action menu is open. Non-null implies bind mode.</summary>
+        /// <summary>
+        /// Card whose action menu is open, or null. Non-null means one of the menu modes is on:
+        /// <see cref="ActionMenuMode.Bind"/> or <see cref="ActionMenuMode.Manual"/>.
+        /// </summary>
         private Node _menuTarget;
+
+        /// <summary>
+        /// Which menu the pointer is in, or <see cref="ActionMenuMode.None"/> (ADR-0041).
+        ///
+        /// <b>A field of its own, not "a bind source is null".</b> The two menus show the same
+        /// rows and differ in exactly one decision — a row means "connect the source to this
+        /// action" or "run this action right now" — and that decision is a property of the menu
+        /// that was opened, not of a gesture that may have ended. Deriving it from
+        /// <c>_bindSource == null</c> would answer the question today and put a second meaning on
+        /// a field that names a gesture; the first caller to clear the gesture before the menu
+        /// would silently turn a bind into a manual run.
+        /// </summary>
+        private ActionMenuMode _menuMode;
+
+        /// <summary>
+        /// Card under the right button while it is held down, or null (ADR-0041).
+        ///
+        /// The right button both pans and opens the manual action menu, so the press only arms a
+        /// candidate: the release decides. Cleared as soon as the pointer travels farther than the
+        /// allowance — that is a pan, and the candidate is dropped before the pan starts, so a
+        /// right drag over a card pans instead of popping a menu open. The allowance itself is
+        /// <see cref="PointerGesture.ExceedsClickSlop"/> (four pixels per axis, converted through
+        /// the window size); <see cref="VgsConstants.ClickSlop"/> is only its fallback for a window
+        /// that has not been measured yet.
+        /// </summary>
+        private Node _rightClickNode;
+
+        /// <summary>
+        /// Pointer position, in client-area units, where the right button was pressed. Compared
+        /// against the current position to tell a click from a pan; never used to place anything.
+        /// </summary>
+        private Vector2 _rightClickAnchor;
 
         /// <summary>Actions offered for the open menu, in terminal order. Reused between opens.</summary>
         private readonly List<Port> _menuRows = new List<Port>();
@@ -723,11 +758,12 @@ namespace Vgs.Ui
         {
             try
             {
-                // Esc exits the deepest mode first — cancelling a bind or a watch is what the
-                // player expects from Escape — and only closes the editor when there is none.
+                // Esc exits the deepest mode first — closing the action menu (and the bind it
+                // belongs to) or cancelling a watch is what the player expects from Escape — and
+                // only closes the editor when there is none.
                 if (_menuTarget != null || _bindSource != null)
                 {
-                    CancelBind();
+                    DismissActionMenu();
                     return false;
                 }
 
@@ -778,10 +814,12 @@ namespace Vgs.Ui
                 // references the rebuild drops, and a second hand-written list here is a list that
                 // goes stale the moment a field is added.
                 DropNodeReferences();
-                _menuTarget = null;
-                _menuRows.Clear();
-                _menuLabels.Clear();
-                _menuTitle = null;
+
+                // The menu goes with them, and through its own reset rather than a list copied
+                // here: `CloseActionMenu` also clears the mode, the hover row and the scroll, so a
+                // reopened editor cannot start with a stale row highlighted. The earlier version
+                // of this block cleared four of the menu's eight fields by hand.
+                CloseActionMenu();
                 _statusText = null;
                 _titleWidth = -1f;
                 _titleWidthClientWidth = -1f;
@@ -1371,7 +1409,7 @@ namespace Vgs.Ui
 
         /// <summary>
         /// Drops every reference the pointer holds into the current graph: selection, drag,
-        /// hover and the two gestures that aim at a node.
+        /// hover, the card under a held right button, and the two gestures that aim at a node.
         ///
         /// Cancelling the gestures rather than re-aiming them is deliberate: after a rebuild
         /// there is no node to re-aim at, and a bind that silently pointed at a block the player
@@ -1387,6 +1425,7 @@ namespace Vgs.Ui
             _draggedGroup = null;
             _dragging = false;
             _watchErrorUntilFrame = 0;
+            _rightClickNode = null;
             ClearHoverHighlights();
         }
 
@@ -1441,6 +1480,33 @@ namespace Vgs.Ui
         {
             ClearHoverTargets();
             _panning = false;
+        }
+
+        /// <summary>
+        /// Which action menu is open, if any (ADR-0010 §5 for the bind one, ADR-0041 for the
+        /// manual one).
+        ///
+        /// The two menus are one control with two meanings for a row, and they share the geometry,
+        /// the scroll, the captions and the empty state (<see cref="FillMenuRows"/>). Only the
+        /// meaning of choosing a row differs, which is why this is one small enum on the open
+        /// menu rather than two menus drawn twice.
+        /// </summary>
+        private enum ActionMenuMode
+        {
+            /// <summary>No menu is open.</summary>
+            None = 0,
+
+            /// <summary>
+            /// Opened by a left click on a target while binding: a row ends the bind by writing
+            /// that action into the source block's toolbar.
+            /// </summary>
+            Bind = 1,
+
+            /// <summary>
+            /// Opened by a right click on a card in idle mode: a row runs that action on the block
+            /// (or on every member of the group) right now, and writes nothing (ADR-0041).
+            /// </summary>
+            Manual = 2
         }
 
     }

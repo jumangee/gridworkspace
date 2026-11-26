@@ -306,6 +306,13 @@ namespace Vgs.Ui
             if (_watchSource != null && !_graph.ContainsNode(_watchSource)) CancelWatch();
 
             if (_hoverButton != null && !_graph.ContainsNode(_hoverButton)) _hoverButton = null;
+
+            // The card under a held right button is a reference like the others: a refresh that
+            // removes it would make the release open the manual menu of a card that is no longer
+            // drawn (ADR-0041). Dropped rather than re-aimed, because the click was aimed at a
+            // picture that has changed under the player's hand.
+            if (_rightClickNode != null && !_graph.ContainsNode(_rightClickNode)) _rightClickNode = null;
+
             if (_hoverWatchRemoveNode != null && !_graph.ContainsNode(_hoverWatchRemoveNode))
             {
                 _hoverWatchRemoveNode = null;
@@ -340,8 +347,10 @@ namespace Vgs.Ui
                 if (!_graph.ContainsNode(_menuTarget) || !SamePorts(_menuRows, _menuTarget.Actions))
                 {
                     // The menu is bound to specific port objects; if the target's action list
-                    // was rebuilt they are stale, and a click would connect the wrong action.
-                    CancelBind();
+                    // was rebuilt they are stale, and a click would connect — or, in the manual
+                    // menu, run — the wrong action. Both menus go through the same exit: in bind
+                    // mode that ends the gesture too, in manual mode it only closes the menu.
+                    DismissActionMenu();
                     return;
                 }
 

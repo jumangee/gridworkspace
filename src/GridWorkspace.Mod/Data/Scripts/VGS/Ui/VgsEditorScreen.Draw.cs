@@ -1945,9 +1945,10 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// The bar's hint line. Bind mode and watch mode replace the idle hint, because while
-        /// those modes are on the only thing the user needs to know is how to finish or cancel —
-        /// and on a yes/no toolbar, which of the two lists the connection is going into.
+        /// The bar's hint line. Bind mode, watch mode and the manual action menu replace the idle
+        /// hint, because while those modes are on the only thing the user needs to know is how to
+        /// finish or cancel — and on a yes/no toolbar, which of the two lists the connection is
+        /// going into.
         ///
         /// A pointer over the jump button, the modes button or the search field replaces it too
         /// (ADR-0021, ADR-0023): each of those either closes the screen or changes what the whole
@@ -1958,6 +1959,12 @@ namespace Vgs.Ui
             get
             {
                 if (_watchSource != null) return VgsText.WatchHint;
+
+                // The manual menu says what a row does — nothing is written, the action runs —
+                // because that is the one thing it does *not* share with the bind menu that looks
+                // exactly like it (ADR-0041).
+                if (_menuMode == ActionMenuMode.Manual) return VgsText.ManualActionHint;
+
                 if (_bindSource == null)
                 {
                     if (_hoverButton != null && _hoverButtonKind == CardButtonKind.Jump)

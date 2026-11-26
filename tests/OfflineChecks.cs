@@ -249,6 +249,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== localization tables (ADR-0033) ===");
         Localization();
 
+        Console.WriteLine("=== click versus drag (ADR-0041) ===");
+        ClickVersusDrag();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -5964,6 +5967,83 @@ internal static class OfflineChecks
         // number to a player, and a different string to the game).
         Check(0.5f.ToString(VgsText.WatchThresholdFormat, CultureInfo.InvariantCulture) == "0.50",
               "the threshold format is invariant and two-place");
+    }
+
+    /// <summary>
+    /// The right button both opens the manual action menu and pans, and one threshold decides
+    /// which (ADR-0041). Both ways of getting it wrong are silent: too tight and no menu ever
+    /// opens, too loose and a short pan pops a menu instead of moving the world.
+    ///
+    /// The threshold is checked in **screen pixels**, because the layout's two axes are different
+    /// lengths on any non-square window (ADR-0009): a 5-pixel tremor must read the same on a
+    /// narrow window and on a 21:9 one, and the assertion below proves it does — and proves the
+    /// pixel branch is not dead code, since the same 5 pixels are *below* the layout-unit
+    /// fallback on a wide window and above the allowance once converted.
+    /// </summary>
+    private static void ClickVersusDrag()
+    {
+        const float wide = 1920f;
+        const float hd = 1080f;
+
+        // A pointer that did not move is a click.
+        Check(!PointerGesture.ExceedsClickSlop(Vector2.Zero, wide, hd),
+              "a still pointer is a click, not a drag");
+
+        // The hand's tremor is a click: 3 px is inside the 4 px allowance on both axes.
+        Check(!PointerGesture.ExceedsClickSlop(new Vector2(3f / wide, 3f / hd), wide, hd),
+              "a 3-pixel tremor is still a click");
+
+        // Beyond the allowance on either axis alone is a drag — the rule is per axis, so a
+        // movement that is large in one direction is not averaged away by a small other one.
+        Check(PointerGesture.ExceedsClickSlop(new Vector2(5f / wide, 0f), wide, hd),
+              "5 pixels horizontally is a drag");
+        Check(PointerGesture.ExceedsClickSlop(new Vector2(0f, 5f / hd), wide, hd),
+              "5 pixels vertically is a drag");
+
+        // Exactly the allowance is still a click: the rule is "greater than", which is what makes
+        // the constant a clean boundary rather than a value that is both inside and outside.
+        Check(!PointerGesture.ExceedsClickSlop(new Vector2(VgsConstants.ClickSlopPixels / wide, 0f),
+                                               wide, hd),
+              "exactly the allowance is still a click");
+
+        // The same physical movement gives the same answer on every window shape: 16:9, 16:10,
+        // 21:9 and 4:3. A threshold in layout units would answer differently on each of them.
+        var shapes = new[]
+        {
+            new Vector2(1920f, 1080f),
+            new Vector2(1920f, 1200f),
+            new Vector2(2560f, 1080f),
+            new Vector2(1280f, 960f)
+        };
+
+        for (int i = 0; i < shapes.Length; i++)
+        {
+            Vector2 size = shapes[i];
+            string shape = ((int)size.X) + "x" + ((int)size.Y);
+
+            Check(!PointerGesture.ExceedsClickSlop(new Vector2(2f / size.X, 2f / size.Y), size.X, size.Y),
+                  "a 2-pixel move is a click on " + shape);
+            Check(PointerGesture.ExceedsClickSlop(new Vector2(6f / size.X, 0f), size.X, size.Y),
+                  "a 6-pixel horizontal move is a drag on " + shape);
+            Check(PointerGesture.ExceedsClickSlop(new Vector2(0f, 6f / size.Y), size.X, size.Y),
+                  "a 6-pixel vertical move is a drag on " + shape);
+        }
+
+        // The pixel branch is what makes the wide-window verdict different from the layout-unit
+        // one: 5 px on a 1920-wide window is 0.0026 layout units, which is *under* the fallback
+        // allowance, yet the click rule calls it a drag because it is 5 pixels.
+        float wideMove = 5f / wide;
+        Check(wideMove < VgsConstants.ClickSlop,
+              "the pixel allowance is stricter than the layout-unit fallback on a wide window");
+        Check(PointerGesture.ExceedsClickSlop(new Vector2(wideMove, 0f), wide, hd),
+              "5 pixels is a drag even where it is under the layout-unit allowance");
+
+        // An unmeasured window must still answer: the fallback keeps the rule defined instead of
+        // reporting "did not move" for every press and blocking the pan.
+        Check(!PointerGesture.ExceedsClickSlop(new Vector2(VgsConstants.ClickSlop * 0.5f, 0f), 0f, 0f),
+              "an unmeasured window treats a small move as a click");
+        Check(PointerGesture.ExceedsClickSlop(new Vector2(VgsConstants.ClickSlop * 2f, 0f), 0f, 0f),
+              "an unmeasured window still detects a drag");
     }
 
     /// <summary>

@@ -97,6 +97,11 @@ $sources = @(
     # arithmetic, and the predicate is where the bottom edge of the canvas was cut one header
     # height too early — a defect that is invisible in a compile and obvious in the game.
     (Join-Path $sourceRoot 'Ui\CanvasRect.cs'),
+    # The click-versus-drag decision (ADR-0041): the right button both opens the manual action
+    # menu and pans, so one threshold separates the two. Pure arithmetic over a delta and the
+    # window size, and wrong in both directions it can be wrong — a menu that never opens, or a
+    # pan that never starts — which is exactly what an offline assertion is for.
+    (Join-Path $sourceRoot 'Ui\PointerGesture.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.
     (Join-Path $sourceRoot 'Ui\IconPlacement.cs'),

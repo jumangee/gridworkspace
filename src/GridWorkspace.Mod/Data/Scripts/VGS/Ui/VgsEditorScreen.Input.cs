@@ -444,6 +444,75 @@ namespace Vgs.Ui
                                 mouse, canvasTopLeft, canvasSize);
         }
 
+        /// <summary>
+        /// Right click on a card opens the manual action menu (ADR-0041). Returns true when this
+        /// frame's pointer input was consumed by such a click.
+        ///
+        /// <b>Why a press/release pair and not just the press.</b> The right button has panned the
+        /// canvas since stage 1, and opening a menu on the press would take the pan away from
+        /// every card — on a dense schema it would only work in the gaps between cards. So the
+        /// press arms a candidate when it lands on a node, the pointer travelling farther than
+        /// <see cref="VgsConstants.ClickSlopPixels"/> drops it (that is a pan), and the release
+        /// turns what is left into a click. Nothing is armed mid-drag either: while a card or a
+        /// group is being dragged, the right button belongs to the drag.
+        ///
+        /// <b>Ports count as their card.</b> The hit test is the ordinary node test, so a right
+        /// click on a port bar opens the menu of the block the bar belongs to — the bar is part of
+        /// that block's picture, not a separate thing to click.
+        /// </summary>
+        private bool HandleManualActionClick(Vector2 mouse, Vector2 canvasTopLeft, bool insideCanvas)
+        {
+            bool rightNew = MyAPIGateway.Input.IsNewRightMousePressed();
+            bool rightDown = MyAPIGateway.Input.IsRightMousePressed();
+            bool rightReleased = MyAPIGateway.Input.IsNewRightMouseReleased();
+
+            if (rightNew)
+            {
+                _rightClickAnchor = mouse;
+                _rightClickNode = insideCanvas && !_dragging
+                    ? HitTest(ScreenToGraph(mouse, canvasTopLeft))
+                    : null;
+
+                // A press and its release can arrive in the same frame — the game reports both
+                // flags at once when a frame is long enough. That is still a click, and an early
+                // `return` here would throw it away without a trace (the candidate is cleared on
+                // the next frame before any release is seen), so the frame falls through to the
+                // release branch below with the slop trivially satisfied.
+                if (!rightReleased) return false;
+            }
+
+            if (_rightClickNode == null) return false;
+
+            // A drag that started after the press means the press belongs to the drag, not to a
+            // click: the player grabbed a card with the left button and the right one was already
+            // down. Dropped here rather than checked only at press time, because the order of the
+            // two buttons is not ours to require.
+            if (_dragging) { _rightClickNode = null; return false; }
+
+            // The movement is re-checked here and not only in the held branch above: a frame that
+            // comes after a long gap sees the button already up, so the last position the held
+            // branch compared is not necessarily where the release happened.
+            bool moved = PointerGesture.ExceedsClickSlop(mouse - _rightClickAnchor,
+                                                         VgsScreenDraw.ClientWidth,
+                                                         VgsScreenDraw.ClientHeight);
+
+            if (rightDown)
+            {
+                if (moved) _rightClickNode = null;
+                return false;
+            }
+
+            // The button is up. Clear the candidate even when no release event was seen (a frame
+            // without focus can swallow it), so a stale card cannot be opened by the next press.
+            Node target = _rightClickNode;
+            _rightClickNode = null;
+
+            if (!rightReleased || moved) return false;
+
+            OpenManualActionMenu(target, mouse);
+            return true;
+        }
+
         private void HandleCanvasInput(Vector2 mouse)
         {
             Vector2 canvasTopLeft, canvasSize;
@@ -478,8 +547,17 @@ namespace Vgs.Ui
             bool rightDown = MyAPIGateway.Input.IsRightMousePressed();
             bool middleDown = MyAPIGateway.Input.IsMiddleMousePressed();
 
+            // ---- right click on a card: the manual action menu (ADR-0041) ----
+            // Resolved before the pan, because the click and the pan share the right button: the
+            // press only arms a candidate and the release decides between the two.
+            if (HandleManualActionClick(mouse, canvasTopLeft, insideCanvas)) return;
+
             // ---- pan (right or middle button) ----
-            if (PanWhileHeld(rightDown || middleDown, mouse, canvasTopLeft, canvasSize)) return;
+            // The right button pans unless the press landed on a card: while that candidate is
+            // armed the press belongs to the click, and a pointer that travels drops the candidate
+            // (in HandleManualActionClick) so the pan starts on the next frame instead of never.
+            if (PanWhileHeld((rightDown && _rightClickNode == null) || middleDown, mouse,
+                             canvasTopLeft, canvasSize)) return;
 
             // ---- hover: the remove button, the card's button row and the card ----
             UpdateHover(mouse, canvasTopLeft, canvasSize);
@@ -734,7 +812,7 @@ namespace Vgs.Ui
             // game fires such an item exactly like any other (ADR-0036). No special case is
             // needed here — the action menu below is the source's own action list, and the
             // write path does not care that source and target are one block.
-            OpenActionMenu(target, mouse);
+            OpenActionMenu(target, mouse, ActionMenuMode.Bind);
         }
 
         // ------------------------------------------------------------------ watch mode
@@ -1007,12 +1085,19 @@ namespace Vgs.Ui
             }
         }
 
-        /// <summary>Input while the action menu is open.</summary>
+        /// <summary>
+        /// Input while an action menu is open — the bind's menu or the manual one (ADR-0041).
+        ///
+        /// Everything is shared but the meaning of a row: identical geometry, identical scroll,
+        /// identical "a click outside is a miss" rule. A right click and Esc leave the menu in
+        /// both modes; in bind mode that is also leaving the gesture, because the menu is the last
+        /// step of it.
+        /// </summary>
         private void HandleMenuInput(Vector2 mouse)
         {
             if (MyAPIGateway.Input.IsNewRightMousePressed())
             {
-                CancelBind();
+                DismissActionMenu();
                 return;
             }
 
@@ -1030,28 +1115,122 @@ namespace Vgs.Ui
 
             if (!insideMenu)
             {
-                // A click next to the menu is a miss, not a decision: close the menu but keep
-                // the bind, so a near-miss does not cost the user the source they picked.
+                // A click next to the menu is a miss, not a decision: close the menu but keep the
+                // bind (if there is one), so a near-miss does not cost the user the source they
+                // picked. The manual menu has no gesture to keep, so the click simply ends it.
                 CloseActionMenu();
                 return;
             }
 
             if (_menuRows.Count == 0)
             {
-                // The target offers no actions at all, so this bind can never complete. Say so
-                // and drop the whole gesture rather than leaving an unclickable menu on screen.
-                VgsLog.Debug("bind cancelled: target has no terminal actions");
-                CancelBind();
+                // The target offers no actions at all, so nothing can be chosen. Say so — the row
+                // that is drawn says it — and drop the whole gesture rather than leaving an
+                // unclickable menu on screen.
+                VgsLog.Debug(_menuMode == ActionMenuMode.Manual
+                                 ? "manual action menu closed: target has no terminal actions"
+                                 : "bind cancelled: target has no terminal actions");
+                DismissActionMenu();
                 return;
             }
 
             if (hoverRow < 0) return;   // title strip
 
             Port action = _menuRows[hoverRow];
+
+            if (_menuMode == ActionMenuMode.Manual)
+            {
+                TryRunManualAction(action);
+                return;
+            }
+
             if (TryCompleteBind(action))
             {
                 CloseActionMenu();
                 CancelBind();
+            }
+        }
+
+        /// <summary>
+        /// Runs the chosen row on its target and leaves the menu — the manual mode's answer to a
+        /// clicked row (ADR-0041).
+        ///
+        /// <b>Order: run, then close, and close only on success.</b> The action was asked for once,
+        /// so a second click is a second action rather than a repeat of the first; and a refusal
+        /// keeps the menu open with the reason on the bottom bar, exactly like a refused bind, so
+        /// the player can pick another row instead of reopening the menu to retry.
+        ///
+        /// Nothing is written to the graph or to a toolbar: the group of an action is its target,
+        /// not a connection (ADR-0011). What changes is the block, and the card catches up through
+        /// the ordinary state pass or the next structural refresh — no cache is patched here.
+        /// </summary>
+        private void TryRunManualAction(Port action)
+        {
+            Node target = _menuTarget;
+            if (target == null || action == null) return;
+
+            int applied;
+
+            // The grid is only needed to find a group's members through the terminal system; a
+            // block is its own entity and needs no such indirection.
+            long groupGridId = target.IsGroup ? GroupGridEntityId(target) : 0L;
+
+            TerminalActionRunner.RunResult result =
+                TerminalActionRunner.TryRun(target, action, groupGridId, out applied);
+
+            if (result == TerminalActionRunner.RunResult.Ok)
+            {
+                VgsLog.Info("manual action " + action.Key + " on "
+                            + (target.IsGroup ? "group:" + target.GroupName : target.EntityId.ToString())
+                            + " applied to " + applied + " block(s)");
+                CloseActionMenu();
+                return;
+            }
+
+            Warn(DescribeManualFailure(result, target, action));
+        }
+
+        /// <summary>
+        /// The grid whose terminal system knows the group the frame stands for.
+        ///
+        /// A group is not an entity, so the lookup starts from a block on the same construct
+        /// (`docs/01-research/api-block-groups.md` §1: the system is the *logical* grid group's,
+        /// covering subgrids). Any drawn member's grid answers it; the editor's own grid is the
+        /// fallback for a group whose members are all on grids the graph could not name. Read from
+        /// cached node values, so it costs nothing and cannot throw.
+        /// </summary>
+        private long GroupGridEntityId(Node group)
+        {
+            for (int i = 0; i < group.Members.Count; i++)
+            {
+                Node member = _graph.GetNode(group.Members[i]);
+                if (member != null && member.GridEntityId != 0) return member.GridEntityId;
+            }
+            return _graph.GridEntityId;
+        }
+
+        /// <summary>
+        /// Turns a refusal into the sentence the player sees. Each reason has its own wording
+        /// because they call for different actions: a rebuilt block needs a refresh, a vanished
+        /// group needs the group fixed in the terminal, a throw means the game itself declined.
+        /// </summary>
+        private static string DescribeManualFailure(TerminalActionRunner.RunResult result, Node target,
+                                                    Port action)
+        {
+            switch (result)
+            {
+                case TerminalActionRunner.RunResult.BlockGone:
+                    return VgsText.WarnManualBlockGone;
+                case TerminalActionRunner.RunResult.ActionGone:
+                    // The same sentence for a block and for a group: "«target» has no action
+                    // «action»" is true of both, and which one it was is already visible on the
+                    // frame the menu was opened for.
+                    return string.Format(VgsText.WarnManualActionGoneFormat, target.DisplayName,
+                                         action.DisplayName);
+                case TerminalActionRunner.RunResult.GroupGone:
+                    return string.Format(VgsText.WarnManualGroupGoneFormat, target.GroupName);
+                default:
+                    return VgsText.WarnManualRejected;
             }
         }
 
@@ -1239,11 +1418,21 @@ namespace Vgs.Ui
             CloseActionMenu();
         }
 
-        private void OpenActionMenu(Node target, Vector2 mouse)
+        /// <summary>
+        /// Opens the action menu for a target: the same rows in both modes, a different meaning
+        /// for a click.
+        ///
+        /// Bind mode opens it after the source's button and a click on the target (ADR-0010 §5);
+        /// idle mode opens it with a right click on a card (ADR-0041). The rows, the captions, the
+        /// scroll and the fan-in counts are shared — a player who saw the list while binding sees
+        /// exactly the same list here, which is the whole point of the manual mode.
+        /// </summary>
+        private void OpenActionMenu(Node target, Vector2 mouse, ActionMenuMode mode)
         {
             if (target == null) return;
 
             _menuTarget = target;
+            _menuMode = mode;
             _menuAnchorScreen = mouse;
             _menuScroll = 0;
             _menuHoverRow = -1;
@@ -1261,8 +1450,42 @@ namespace Vgs.Ui
             // The log is the only place a wrong list can be diagnosed from: the editor shows the
             // block's own actions, so a report of "the event controller offers font actions" is
             // answered by this line naming the block and every id that was read.
-            VgsLog.Info("action menu for " + target.SubtypeId + " (" + target.EntityId + "): "
+            VgsLog.Info((mode == ActionMenuMode.Manual ? "manual action menu for " : "action menu for ")
+                        + target.SubtypeId + " (" + target.EntityId + "): "
                         + _menuRows.Count + " action(s): " + JoinActionIds(_menuRows));
+        }
+
+        /// <summary>
+        /// Opens the manual action menu — the one a right click on a card produces (ADR-0041).
+        ///
+        /// A group frame is a legal target for the same reason it is a legal target while
+        /// binding: it has an action list of its own (ADR-0015), and the rows are the game's own
+        /// rule for the group, so running one applies it to the whole group exactly as a wired
+        /// group item would.
+        ///
+        /// <b>It does not move the selection.</b> A right click is a look, not a choice of what
+        /// the next gesture works on; the card under it keeps the hover outline while the menu is
+        /// open (set by <see cref="OpenActionMenu"/>), which marks the target without editing what
+        /// the player had selected.
+        /// </summary>
+        private void OpenManualActionMenu(Node target, Vector2 mouse)
+        {
+            if (target == null) return;
+            OpenActionMenu(target, mouse, ActionMenuMode.Manual);
+        }
+
+        /// <summary>
+        /// Closes the action menu and, when a bind is in progress, ends that too. The one way out
+        /// for both menus: a bind's menu is part of the gesture, so closing it without ending the
+        /// gesture would leave a line following the pointer that can no longer be completed; a
+        /// manual menu has no gesture behind it and is simply closed (ADR-0041).
+        /// </summary>
+        private void DismissActionMenu()
+        {
+            // CancelBind closes the menu as part of leaving the gesture, because the menu is that
+            // gesture's last step. The manual menu has no gesture behind it and is closed directly.
+            if (_bindSource != null) CancelBind();
+            else CloseActionMenu();
         }
 
         /// <summary>
@@ -1280,7 +1503,14 @@ namespace Vgs.Ui
             _menuCountLabel = null;
             if (target == null) return;
 
-            _menuTitle = string.Format(VgsText.ActionMenuTitleFormat, target.DisplayName);
+            // The manual menu is titled by the mode and the bind menu by the target: "Manual
+            // action" is what the player asked for and what the card under the pointer already
+            // identifies, while the bind menu has to name the block it is aiming an action at.
+            // The fan-in counters are kept in both — they describe the target's input port, and
+            // a manual menu that dropped them would no longer be the same list (ADR-0041).
+            _menuTitle = _menuMode == ActionMenuMode.Manual
+                ? VgsText.ManualActionTitle
+                : string.Format(VgsText.ActionMenuTitleFormat, target.DisplayName);
 
             for (int i = 0; i < target.Actions.Count; i++)
             {
@@ -1344,6 +1574,7 @@ namespace Vgs.Ui
         private void CloseActionMenu()
         {
             _menuTarget = null;
+            _menuMode = ActionMenuMode.None;
             _menuRows.Clear();
             _menuLabels.Clear();
             _menuTitle = null;

@@ -367,6 +367,28 @@ classDiagram
         +Probe(IMyTerminalBlock) ToolbarLayout
     }
 
+    class TerminalActionRunner {
+        <<static>>
+        +TryRun(Node, Port, long, out int) RunResult
+        -TryRunBlock(long, Port, out int) RunResult
+        -TryRunGroup(string, long, Port, out int) RunResult
+        -TryReadGroupMembers(long, string, List~IMyTerminalBlock~) bool
+        -TryFindAction(IMyTerminalBlock, string, out ITerminalAction) bool
+        -IsFunctional(IMyTerminalBlock) bool
+        -TryApply(ITerminalAction, IMyTerminalBlock) bool
+    }
+
+    class RunResult {
+        <<enum, nested in TerminalActionRunner>>
+        Ok
+        BlockGone
+        ActionGone
+        GroupGone
+        Refused
+    }
+
+    TerminalActionRunner ..> RunResult
+
     class ToolbarWriter {
         <<static>>
         +TryWrite(IMyTerminalBlock, Node, Port, IMyTerminalBlock, string, out ToolbarCell) WriteResult
@@ -458,6 +480,9 @@ classDiagram
         -Node _hoverWatchRemoveNode
         -WatchTarget _hoverWatchRemoveTarget
         -Node _menuTarget
+        -ActionMenuMode _menuMode
+        -Node _rightClickNode
+        -Vector2 _rightClickAnchor
         -List~Port~ _menuRows
         -List~string~ _menuLabels
         -List~Vector4~ _route
@@ -504,9 +529,15 @@ classDiagram
         -RefuseWatch(string) void
         -DescribeWatchFailure(WatchResult, IMyTerminalBlock, Node) string
         -HandleMenuInput(Vector2) void
+        -TryRunManualAction(Port) void
+        -OpenManualActionMenu(Node, Vector2) void
+        -DismissActionMenu() void
+        -GroupGridEntityId(Node) long
+        -DescribeManualFailure(RunResult, Node, Port) string$
+        -HandleManualActionClick(Vector2, Vector2, bool) bool
         -BeginBind(Node, PortGroup) void
         -CancelBind() void
-        -OpenActionMenu(Node, Vector2) void
+        -OpenActionMenu(Node, Vector2, ActionMenuMode) void
         -CloseActionMenu() void
         -TryCompleteBind(Port) bool
         -RemovePortConnections(Node, Port) void
@@ -582,6 +613,22 @@ classDiagram
     }
 
     VgsEditorScreen ..> CellState : классифицирует ячейку тулбара
+
+    class ActionMenuMode {
+        <<enum, nested in VgsEditorScreen>>
+        None
+        Bind
+        Manual
+    }
+
+    VgsEditorScreen ..> ActionMenuMode : чем открыто меню действий
+
+    class PointerGesture {
+        <<static>>
+        +ExceedsClickSlop(Vector2, float, float) bool
+    }
+
+    VgsEditorScreen --> PointerGesture : клик или перетаскивание (ADR-0041)
 
     class PortGeometry {
         <<static>>
@@ -948,6 +995,7 @@ classDiagram
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Build, Refresh (структура) и RefreshState (2 Гц)
     VgsEditorScreen --> ToolbarWriter : запись и очистка связи
+    VgsEditorScreen --> TerminalActionRunner : ручное действие (ADR-0041)
     VgsEditorScreen --> NodeStateStore : сохранение позиции
     VgsEditorScreen --> GridViewStore : камера, масштаб, режим
     VgsEditorScreen --> BlockSearch : правило фильтра карточек
@@ -1233,6 +1281,7 @@ public bool IsEventController { get { return Controller != null; } }
 | `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами, фильтр скрытых блоков |
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
+| `TerminalActionRunner.cs` | разовый запуск действия блока или группы **сейчас**, без связи и без записи в тулбар (ADR-0041): поиск действия по id на блоке → `ITerminalAction.Apply`, для группы — по каждому функциональному члену из терминальной системы. Повторяет ровно то, что делает игра при срабатывании элемента тулбара, включая отсутствие проверки `IsEnabled` (`01-research/api-toolbar.md` §4.3) |
 | `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
 | `GridViewStore.cs` | камера, масштаб и четыре режима показа в `MyModStorageComponent` **грида** (ADR-0022, ADR-0040): состояние общее для всех кокпитов конструкта |
 | `TextClipboard.cs` | буфер обмена поля поиска — **только собственный**: системный буфер моду недоступен (ADR-0027), поэтому файл не ссылается ни на один тип игры и сломать загрузку не может |
@@ -1488,8 +1537,9 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `VgsEditorScreen.cs` | **частичный класс**: поля, палитра, конструктор, жизненный цикл (`OnOpened`/`OnClosed`/`OpenFor`), раскладка окна (прямоугольники полос), `OnUpdate` и проходы обновления |
 | `VgsEditorScreen.View.cs` | **частичный класс**: запись вида на грид — когда и куда; сами значения и правило «изменилось ли» живут в `ViewState` |
 | `VgsEditorScreen.Search.cs` | **частичный класс**: что запрос *значит* для картинки — затемнение карточек, видимость линий, переход по Enter; сам ввод поля — `SearchField` |
-| `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test |
+| `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test; развод правой кнопки между кликом (ручное действие) и панорамой (ADR-0041) |
 | `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003) |
+| `PointerGesture.cs` | единственное правило «это клик или перетаскивание»: порог `ClickSlopPixels` по каждой оси в пикселях окна (ADR-0041). **Без** ссылок на `Sandbox.*` — проверяется офлайн на четырёх формах окна |
 | `SearchField.cs` | поле поиска как самостоятельный тип: запрос, каретка, выделение, прокрутка и кэш позиций; шрифт подаётся делегатом, поэтому арифметика проверяется офлайн |
 | `ViewState.cs` | состояние вида: камера, зум, четыре режима показа (скрытые блоки, субгриды, границы гридов, конвейерная сеть) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
@@ -1945,15 +1995,21 @@ OnHandleInput() SyncScreenSpace(); кнопка «Закрыть» (своя, hi
                 обычный  — панорама ПКМ/СКМ, выбор и перетаскивание ЛКМ;
                            отпускание после перетаскивания пишет позицию в блок
                            (NodeStateStore.SavePosition); клик по «x» на полосе
-                           снимает связи этого порта (RemovePortConnections).
+                           снимает связи этого порта (RemovePortConnections);
+                           **правый клик по карточке открывает «Manual action»**
+                           — нажатие фиксирует кандидата, движение дальше
+                           ClickSlopPixels сбрасывает его в панораму,
+                           отпускание открывает меню (ADR-0041).
                            Группа перетаскивается за полосу имени: одно смещение
                            на всех нарисованных участников, рамка следует за ними
                            (ADR-0016); внутренность рамки остаётся холстом
                 привязка — линия за курсором, ПКМ/void сбрасывают,
                            клик по карточке или по полосе имени группы открывает
                            меню действий
-                меню     — строки действий, колесо прокручивает,
-                           ПКМ сбрасывает привязку
+                меню     — строки действий, колесо прокручивает, ПКМ сбрасывает;
+                           строка значит «связать» (меню привязки) или
+                           «выполнить сейчас» (ручное меню, ADR-0041) —
+                           это решает _menuMode, а не _bindSource
 
 OnClosed()    сброс кэшей, ссылок на узлы и статического указателя
 ```
@@ -1964,11 +2020,17 @@ OnClosed()    сброс кэшей, ссылок на узлы и статич�
 игрок замечает. Для группы это N записей — по одной на участника, потому что собственной
 позиции у группы нет ([ADR-0016](adr/0016-group-drag.md)).
 
-Три режима — явные поля (`_bindSource`, `_menuTarget`), а не набор флагов кнопок, потому
-что режимы именно взаимоисключающие: перетаскивание, начатое во время привязки, дралось бы
-с линией за указатель, а панорама, начатая с открытым меню, уводила бы мир из-под него.
-Каждый обработчик получает управление целиком и не смешивается с остальными. Подробности и
-обоснование — [ADR-0010](adr/0010-port-presentation-and-binding.md).
+Три режима — явные поля (`_bindSource`, `_menuTarget`, `_watchSource`), а не набор флагов
+кнопок, потому что режимы именно взаимоисключающие: перетаскивание, начатое во время привязки,
+дралось бы с линией за указатель, а панорама, начатая с открытым меню, уводила бы мир из-под
+него. Каждый обработчик получает управление целиком и не смешивается с остальными. Подробности
+и обоснование — [ADR-0010](adr/0010-port-presentation-and-binding.md).
+
+**Меню действий — один контрол с двумя смыслами строки** ([ADR-0041](adr/0041-manual-action-menu.md)).
+Открытое меню носит признак режима (`ActionMenuMode.Bind` | `Manual`), а не выводит его из
+наличия привязки: геометрия, прокрутка, подписи и счётчики общие, различается только то, что
+делает выбор строки — пишет связь или применяет действие к блоку сейчас. Выход один:
+`DismissActionMenu()`, и он же снимает привязку, если меню было её частью.
 
 Esc обрабатывает сам `MyModScreen` (`CloseOnEscape`), вызывая `OnCancelling`. Реализация
 выходит из самого глубокого режима первым: в привязке — сбрасывает её и возвращает `false`
@@ -2105,6 +2167,38 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
   (игровое `MyToolbarItemKind` отображается на `CellKind` в `ToolbarWriter.ReadCell`),
   поэтому элемент, поставленный руками в ванильном терминале, превращается в линию так же,
   как записанный модом.
+
+### Как выполняется ручное действие ([ADR-0041](adr/0041-manual-action-menu.md))
+
+Обратная сторона той же монеты: то же меню, те же строки, но строка **выполняет** действие, а
+не связывает. Поток целиком:
+
+```
+правый клик по карточке (обычный режим)
+   └─► PointerGesture.ExceedsClickSlop(Δ, ширина, высота)
+        ├─ Δ больше 4 px по любой оси → это панорама, кандидат сброшен
+        └─ Δ в пределах             → открыть меню с _menuMode = Manual
+   └─► OpenActionMenu(target, mouse, ActionMenuMode.Manual)
+        ├─ строки = target.Actions       ← те же, что при привязке (ADR-0038, ADR-0039)
+        └─ заголовок = MANUAL_ACTION_TITLE
+   └─► клик по строке → TerminalActionRunner.TryRun(node, action, gridId, out applied)
+        ├─ блок  → GetActionWithName(id) → action.Apply(block)
+        └─ группа → члены из терминальной системы → каждому IsFunctional
+                    → у кого есть действие → action.Apply(block)
+        ├─ Ok    → меню закрывается, в лог: id действия и число блоков
+        └─ отказ → меню остаётся, причина в нижнюю панель
+```
+
+Три вещи, которые здесь важны и которые нельзя «улучшить» по дороге:
+
+- **никакой связи не появляется**: ни `ToolbarWriter`, ни `TryConnect`, ни `LayoutPorts`.
+  Ручное действие не ребро и не ячейка ([ADR-0011](adr/0011-toolbar-is-the-connection.md));
+- **проверок «можно ли» мы не добавляем**: `IsEnabled` игра в этом пути не спрашивает, а
+  `IsFunctional` спрашивает только у группы — проверено по IL
+  ([`01-research/api-toolbar.md`](01-research/api-toolbar.md) §4.3). Свой порог разошёлся бы с
+  игрой и с меню привязки, которое эти строки показывает;
+- **карточка не правится**: после запуска состояние обновляет обычный проход
+  (ADR-0018), потому что действие могло быть отвергнуто или сделать не то, что мы предполагаем.
 
 ### Как порт попадает на экран
 
