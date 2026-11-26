@@ -53,6 +53,12 @@ terminal are drawn as a frame behind their members.
 Right-click cancels at any step. A port may have several sources; the list then shows
 "sources: N".
 
+**Run an action now.** **Right-click a card** — the same list of actions opens, but a row is
+executed **immediately** on that block (on a group: on all its members), and **no link is
+created**. It is the one-off "press the button" from the terminal, without leaving the diagram.
+The menu is titled `Manual action`; right-clicking a card with a small movement still pans, as
+before.
+
 **Remove a link.** The **"x"** on a port removes all links of that port. There is no way to
 remove a single line — do that in the game terminal.
 
