@@ -353,9 +353,32 @@ namespace Vgs.Ui
                 case 0: ToggleShowHidden(); return;
                 case 1: ToggleShowSubgrids(); return;
                 case 2: ToggleShowGridBorders(); return;
+                case 3: ToggleShowConveyors(); return;
             }
         }
 
+        /// <summary>
+        /// Flips whether the conveyor network is drawn as pipes (ADR-0040).
+        ///
+        /// <b>Rebuilds the graph, like "show subgrids".</b> The links are derived from the grid's
+        /// serialised conveyor lines, and that read is heavy enough that it is not paid for a
+        /// picture nobody asked to see; whether the links exist is therefore decided while the
+        /// graph is built. A draw-time filter would have bought a free toggle at the price of
+        /// serialising every card-holding grid on every structural refresh.
+        ///
+        /// Nothing in the world changes: the pipes are derived, never written, so turning the
+        /// network off cannot break a conveyor and turning it back on shows exactly the same
+        /// network.
+        /// </summary>
+        private void ToggleShowConveyors()
+        {
+            _view.ShowConveyors = !_view.ShowConveyors;
+
+            RebuildGraph();
+            SaveView();
+
+            VgsLog.Info("show conveyor network: " + (_view.ShowConveyors ? "on" : "off"));
+        }
 
         /// <summary>
         /// Click handling for the self-drawn Close button. Returns true when the click was

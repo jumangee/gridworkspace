@@ -198,6 +198,7 @@ namespace Vgs.Core
         public static string ModesShowHidden { get { return S("MODES_SHOW_HIDDEN"); } }
         public static string ModesShowSubgrids { get { return S("MODES_SHOW_SUBGRIDS"); } }
         public static string ModesShowGridBorders { get { return S("MODES_SHOW_GRID_BORDERS"); } }
+        public static string ModesShowConveyors { get { return S("MODES_SHOW_CONVEYORS"); } }
         public static string ModesHint { get { return S("MODES_HINT"); } }
         public static string SearchHint { get { return S("SEARCH_HINT"); } }
 

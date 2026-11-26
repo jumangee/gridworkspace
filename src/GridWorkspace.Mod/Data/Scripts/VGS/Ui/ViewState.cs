@@ -64,6 +64,25 @@ namespace Vgs.Ui
         /// </summary>
         public bool ShowGridBorders { get; set; }
 
+        /// <summary>
+        /// True while the conveyor network is drawn as pipes between the cards on the canvas
+        /// (ADR-0040).
+        ///
+        /// <b>On by default.</b> A conveyor network is part of the ship, not a diagnostic: a
+        /// schema that hid it until asked would silently omit the logistics of the construct,
+        /// which is exactly what the requirement asks to show.
+        ///
+        /// <b>It is a schema option, not a drawing option, and that is a cost decision.</b> The
+        /// links are derived from the grid's serialised conveyor lines, and serialising a grid
+        /// is far more expensive than reading a flag — far too expensive to pay on every
+        /// structural refresh for a picture nobody asked to see. The toggle is therefore passed
+        /// into the graph build, and flipping it rebuilds the graph, exactly as
+        /// <see cref="ShowSubgrids"/> does. The alternative — build the links always and filter
+        /// at draw time — would buy a free toggle at the price of serialising every grid twice
+        /// a second on every ship.
+        /// </summary>
+        public bool ShowConveyors { get; set; }
+
         // ---- what was last written (ADR-0022) ----
 
         /// <summary>Camera as it was when the view was last written, or recorded as written.</summary>
@@ -75,6 +94,7 @@ namespace Vgs.Ui
         private bool _savedShowHidden;
         private bool _savedShowSubgrids;
         private bool _savedShowGridBorders;
+        private bool _savedShowConveyors;
 
         private int _lastSaveFrame;
 
@@ -89,7 +109,7 @@ namespace Vgs.Ui
         /// it was only waste, and this is the one place that can rule it out.
         /// </summary>
         public ViewState(Vector2 camera, float zoom, bool showHidden)
-            : this(camera, zoom, showHidden, true, true)
+            : this(camera, zoom, showHidden, true, true, true)
         {
         }
 
@@ -99,18 +119,30 @@ namespace Vgs.Ui
         /// </summary>
         public ViewState(Vector2 camera, float zoom, bool showHidden,
                          bool showSubgrids, bool showGridBorders)
+            : this(camera, zoom, showHidden, showSubgrids, showGridBorders, true)
+        {
+        }
+
+        /// <summary>
+        /// The full form, with the conveyor network as well (ADR-0040). The overload above
+        /// passes the default: the network shown.
+        /// </summary>
+        public ViewState(Vector2 camera, float zoom, bool showHidden,
+                         bool showSubgrids, bool showGridBorders, bool showConveyors)
         {
             Camera = camera;
             Zoom = zoom;
             ShowHidden = showHidden;
             ShowSubgrids = showSubgrids;
             ShowGridBorders = showGridBorders;
+            ShowConveyors = showConveyors;
 
             _savedCamera = camera;
             _savedZoom = zoom;
             _savedShowHidden = showHidden;
             _savedShowSubgrids = showSubgrids;
             _savedShowGridBorders = showGridBorders;
+            _savedShowConveyors = showConveyors;
         }
 
         /// <summary>True when the camera, the zoom or the mode differs from what was last written.</summary>
@@ -122,6 +154,7 @@ namespace Vgs.Ui
                        || _savedShowHidden != ShowHidden
                        || _savedShowSubgrids != ShowSubgrids
                        || _savedShowGridBorders != ShowGridBorders
+                       || _savedShowConveyors != ShowConveyors
                        || _savedCamera != Camera;
             }
         }
@@ -137,6 +170,7 @@ namespace Vgs.Ui
             _savedShowHidden = ShowHidden;
             _savedShowSubgrids = ShowSubgrids;
             _savedShowGridBorders = ShowGridBorders;
+            _savedShowConveyors = ShowConveyors;
             _lastSaveFrame = frame;
         }
 

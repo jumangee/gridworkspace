@@ -44,19 +44,21 @@ namespace Vgs.Game
         /// </summary>
         public static bool TryRead(IMyCubeGrid grid, out Vector2 camera, out float zoom,
                                    out bool showHidden, out bool showSubgrids,
-                                   out bool showGridBorders)
+                                   out bool showGridBorders, out bool showConveyors)
         {
             camera = Vector2.Zero;
             zoom = 0f;
             showHidden = false;
             showSubgrids = true;
             showGridBorders = true;
+            showConveyors = true;
 
             string raw;
             if (!TryReadValue(grid, out raw)) return false;
 
             return GridViewFormat.TryParse(raw, out camera, out zoom, out showHidden,
-                                           out showSubgrids, out showGridBorders);
+                                           out showSubgrids, out showGridBorders,
+                                           out showConveyors);
         }
 
         /// <summary>
@@ -65,7 +67,7 @@ namespace Vgs.Game
         /// remembered camera position.
         /// </summary>
         public static bool Save(IMyCubeGrid grid, Vector2 camera, float zoom, bool showHidden,
-                                bool showSubgrids, bool showGridBorders)
+                                bool showSubgrids, bool showGridBorders, bool showConveyors)
         {
             if (grid == null) return false;
 
@@ -84,7 +86,8 @@ namespace Vgs.Game
 
                 storage.SetValue(VgsConstants.ViewStorageKey,
                                  GridViewFormat.Format(camera, zoom, showHidden,
-                                                       showSubgrids, showGridBorders));
+                                                       showSubgrids, showGridBorders,
+                                                       showConveyors));
                 return true;
             }
             catch (Exception e)

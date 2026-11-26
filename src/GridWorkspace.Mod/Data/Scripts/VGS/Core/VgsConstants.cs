@@ -647,6 +647,105 @@ namespace Vgs.Core
         /// <summary>Hard cap on drawn connections; protects the frame budget on a dense graph.</summary>
         public const int MaxRenderedEdges = 600;
 
+        // ---- Conveyor network (ADR-0040) ----
+        //
+        // A pipe is drawn "in section": two lines with a gap between them, never a filled
+        // band. The numbers below are the whole of its look, and they are written in
+        // *conditional* pixels at the reference height — the same unit the port controls and
+        // the grid borders use — because "four pixels of bore" is a design proportion, not a
+        // distance on the field.
+
+        /// <summary>
+        /// Bore of a pipe: the clear space between its two walls, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>.
+        /// </summary>
+        public const float ConveyorGapPixels = 4f;
+
+        /// <summary>
+        /// Thickness of one wall of a pipe, in device pixels. One pixel at every zoom, like
+        /// <see cref="GridLinePixels"/> and <see cref="GridBorderPixels"/>: a wall that grew
+        /// with the zoom would compete with the cards it runs past, and a wall expressed in
+        /// layout units comes out one pixel tall and <c>height/width</c> wide (ADR-0009).
+        /// </summary>
+        public const float ConveyorWallPixels = 1f;
+
+        /// <summary>
+        /// Radius of a pipe's bend, in pixels at <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// A bend is rounded (requirement), and the rounding is a staircase of axis-aligned
+        /// pieces because the screen-space API has no arc (<see cref="Ui.PipeRouter"/>). The
+        /// radius sets how many pixels the staircase spans; below a couple of pixels the bend
+        /// would read as square anyway, so this is deliberately larger than the bore.
+        /// </summary>
+        public const float ConveyorCornerPixels = 6f;
+
+        /// <summary>
+        /// Half of a pipe's overall width, in the layout's vertical units: half the bore plus
+        /// half of one wall. Horizontal extents multiply it by the client aspect, exactly as
+        /// every other round or square control does (ADR-0009).
+        /// </summary>
+        public const float ConveyorHalfWidth =
+            (ConveyorGapPixels + ConveyorWallPixels) * 0.5f / ReferenceHeightPixels;
+
+        /// <summary>Radius of a pipe's bend in the layout's vertical units.</summary>
+        public const float ConveyorCorner = ConveyorCornerPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Longest one piece of a pipe's bend may be, in the layout's vertical units: two device
+        /// pixels at the reference height.
+        ///
+        /// <b>This is what makes the rounding look round.</b> The screen-space API has no arc, so
+        /// a bend is a staircase of axis-aligned pieces (<see cref="Ui.PipeRouter"/>), and the
+        /// number of steps is derived from the radius divided by this length. A fixed step count
+        /// would be a chamfer at a small radius and a coarse stair at a large one; a step
+        /// proportional to the radius keeps the rounding the same shape at every zoom, the rule
+        /// <c>VgsScreenDraw.Disc</c> follows with one slab per screen pixel.
+        ///
+        /// <b>Two pixels, not one, and the reason is the budget.</b> A wall is one pixel thick,
+        /// so a two-pixel step of a six-pixel bend is already below what the eye resolves on a
+        /// line that thin — measured on the preview at 1080p, one and two pixels are
+        /// indistinguishable — while halving the number of pieces a bend costs. The pieces are
+        /// what the frame pays for: a bend is two rectangles per step per rail, so one pixel per
+        /// step took about 230 pieces for an S-route, which at
+        /// <see cref="MaxRenderedConveyors"/> links would be tens of thousands of quads a frame.
+        /// The caller scales this value by the zoom, exactly as it scales the radius.
+        /// </summary>
+        public const float ConveyorStepPixels = 2f;
+
+        /// <summary><see cref="ConveyorStepPixels"/> in the layout's vertical units.</summary>
+        public const float ConveyorStep = ConveyorStepPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Hard cap on drawn conveyor links; protects the frame budget on a cargo ship, where
+        /// almost every container is on one network.
+        ///
+        /// <b>Lower than <see cref="MaxRenderedEdges"/> on purpose, and the arithmetic is the
+        /// reason.</b> A connection line is three to five rectangles, so its cap of 600 is a few
+        /// thousand quads. A pipe is two rails per straight plus a staircase per bend — about
+        /// seventy pieces for a link with one bend and about a hundred and forty for the S-shape
+        /// a backward link takes (measured by <c>tools/offline-check.ps1</c>'s preview and
+        /// printed by the harness that produced
+        /// <c>docs/01-research/images/conveyor-pipe.png</c>). A hundred links is therefore about
+        /// seven thousand quads, which sits alongside the connection lines, the cards and their
+        /// controls rather than above them. Links past the cap stay in the graph and are not
+        /// drawn, exactly like connections past <see cref="MaxRenderedEdges"/>.
+        /// </summary>
+        public const int MaxRenderedConveyors = 100;
+
+        /// <summary>
+        /// How many raw conveyor lines one structural refresh may read. The lines are cheap per
+        /// line, but a very large cargo construct has thousands of them and the pass runs on a
+        /// frame.
+        /// </summary>
+        public const int MaxConveyorSegments = 4000;
+
+        /// <summary>
+        /// How many grids of the construct one refresh reads conveyor lines from. Only a grid
+        /// with at least two drawn cards can produce a link, which already excludes most
+        /// subgrids; this is the backstop for a construct with dozens of them.
+        /// </summary>
+        public const int MaxConveyorGrids = 32;
+
         // ---- Action menu (opened by clicking a target while in bind mode) ----
 
         public const float ActionMenuWidth = 0.22f;
@@ -809,3 +908,4 @@ namespace Vgs.Core
     }
 
 }
+

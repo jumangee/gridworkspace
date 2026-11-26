@@ -67,6 +67,19 @@ namespace Vgs.Ui
         public static readonly Color ColLinePending = new Color(255, 170, 60, 235);
 
         /// <summary>
+        /// A conveyor pipe: two lines of <c>#444455</c> with a bore between them (ADR-0040).
+        ///
+        /// <b>Deliberately the quietest thing on the canvas.</b> A pipe is a fact about the
+        /// ship, not a gesture and not a signal: it must be readable as "these blocks are
+        /// plumbed together" without competing with a connection line (green), a watch line
+        /// (amber) or a card. The value is the one the requirement names, kept verbatim rather
+        /// than tuned, so the acceptance check in the game is a comparison against a stated
+        /// colour. On the canvas (18,22,29) it reads as a cool dark grey-blue — visible when
+        /// looked for, invisible when the player is reading the logic.
+        /// </summary>
+        public static readonly Color ColConveyorPipe = new Color(68, 68, 85, 255);
+
+        /// <summary>
         /// A watch line is a third kind of line: the controller <em>observes</em> a block instead
         /// of calling it (ADR-0017). It is drawn in a warm yellow, dashed, so it cannot be
         /// confused with a connection at a glance — the fill is the same family as the watch

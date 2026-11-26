@@ -38,6 +38,7 @@
 | [0028](adr/0028-block-damage-band.md) | Повреждение блока — красная полоса справа на карточке, ширина = 1 − целостность, прозрачность 50%, под рамкой/подписями/портами/кнопками; порога по величине нет, у группы полосы нет |
 | [0029](adr/0029-editor-does-not-pause.md) | Редактор **не ставит игру на паузу**: пауза останавливала симуляцию, поэтому повреждение нельзя было увидеть растущим; часы экрана — свои кадры, `UpdateOnPause` не включается |
 | [0030](adr/0030-block-category-descriptor.md) | Категория блока — enum + описатель (`ResolveCategory`, `Descriptor`: события + ключи метрик); специфика event controller уходит с `Node` в `ControllerState`, `IsEventController` производный |
+| [0040](adr/0040-conveyor-network.md) | Конвейерная сеть — третье хранилище графа, выводимое из мира: узлы редукции — только блоки с карточкой, скрытые блоки и трубы проходятся насквозь; труба рисуется двумя линиями со скруглёнными изгибами под карточками; режим `Show conveyor network`, по умолчанию вкл |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -72,6 +73,7 @@
         │                  TextClipboard         собственный буфер поля поиска (системный недоступен)
         │                  TerminalJump          открывает терминал игры на блоке
         │                  EntityResolver        id сущности → живой блок (один поиск)
+        │                  ConveyorProbe         линии конвейеров грида → пары блоков
         │                  EventControllerProbe  список отслеживания контроллера
         │                  EventControllerKeeper проигрывает список после загрузки
         │                  (единственное место, где трогаются живые сущности)
@@ -79,6 +81,7 @@
         ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockState,
         │                  BlockCategory + CategoryDescriptor, ControllerState,
         │                  BlockPortCatalog, ToolbarPlanner, NodeStateFormat, GridViewFormat,
+        │                  ConveyorSegment, ConveyorLink, ConveyorNetwork,
         │                  BlockSearch, TextEditor
         │                  ЧИСТЫЕ ДАННЫЕ. Ни одного using Sandbox.*
         │
@@ -87,6 +90,7 @@
                            ├─ PortGeometry         геометрия карточки, портов и рамки группы
                            ├─ GridFrames           рамка грида и вкладка её имени
                            ├─ EdgeRouting          маршрут линии
+                           ├─ PipeRouter          две рельсы трубы и скругление изгибов
                            └─ VgsScreenDraw        единственное место, где
                                                    вызывается API отрисовки
 ```
@@ -213,8 +217,8 @@ classDiagram
 
     class GridGraphBuilder {
         <<static>>
-        +Build(IMyCubeGrid, bool includeHidden) GridGraph
-        +Refresh(GridGraph, IMyCubeGrid, bool includeHidden)
+        +Build(IMyCubeGrid, bool includeHidden, bool includeSubgrids, bool includeConveyors) GridGraph
+        +Refresh(GridGraph, IMyCubeGrid, bool includeHidden, bool includeSubgrids, bool includeConveyors)
         +RefreshState(GridGraph, IList~long~) int
         -TryReadIntegrity(long, out float) bool
         -CreateNode(IMyTerminalBlock) Node
@@ -239,6 +243,7 @@ classDiagram
         -ReconcileToolbarEdges(GridGraph)
         -SyncCells(GridGraph, Node, IMyToolbar, ref int)
         -ResolveToolbar(long, int) IMyToolbar
+        -SyncConveyors(GridGraph, bool)
     }
 
     class GridViewStore {
@@ -340,6 +345,7 @@ classDiagram
     class EntityResolver {
         <<static>>
         +TryResolveTerminalBlock(long, out IMyTerminalBlock) bool
+        +TryResolveGrid(long, out IMyCubeGrid) bool
     }
 
     class WatchResult {
@@ -455,6 +461,7 @@ classDiagram
         -List~Port~ _menuRows
         -List~string~ _menuLabels
         -List~Vector4~ _route
+        -List~Vector4~ _pipeBuffer
         -Node _hoverRemoveNode
         -Port _hoverRemovePort
         -List~Edge~ _removeBuffer
@@ -549,6 +556,8 @@ classDiagram
         -DrawPortRemoveButton(Vector2, Color, bool, Vector2, Vector2) void
         -PortLabelHeight float
         -DrawEdges(Vector2, Vector2) void
+        -DrawConveyors(Vector2, Vector2) void
+        -PipeAnchor(Node, bool, out Vector2) bool$
         -DrawSelfRoute(Vector2, Vector2, Vector2, Vector2, Color, Vector2, Vector2) void
         -DrawRouteBuffer(Color, Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
@@ -640,6 +649,42 @@ classDiagram
         +BuildDashes(Vector4 segment, float dashLength, float gapLength, List~Vector4~)
     }
 
+    class PipeRouter {
+        <<static>>
+        +Build(IList~Vector4~ route, float cornerRadius, float halfWidth, float aspect, float stepLength, List~Vector4~) int
+        -AddRail(...)
+        -AddArc(...)
+        -ArcPoint(...)
+        -Direction(...)
+        -Offset(...)
+        -AxisScale(...)
+        -AddSegment(...)
+    }
+
+    class ConveyorSegment {
+        <<struct>>
+        +long A
+        +long B
+    }
+
+    class ConveyorLink {
+        +long SourceEntityId
+        +long TargetEntityId
+        +SameAs(ConveyorLink) bool
+    }
+
+    class ConveyorNetwork {
+        <<static>>
+        +Build(IList~ConveyorSegment~, IList~long~, IList~ConveyorLink~) int
+        -AddNeighbour(...)
+    }
+
+    class ConveyorProbe {
+        <<static>>
+        +TryReadGrid(IMyCubeGrid, List~ConveyorSegment~) bool
+        -ResolveEndpoint(IMyCubeGrid, SerializableVector3I) long
+    }
+
     class VgsScreenDraw {
         <<static>>
         +bool ResourcesReady
@@ -653,6 +698,7 @@ classDiagram
         +Border(Vector2 pos, Vector2 size, Color c, float t)
         +BorderClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color, float)
         +Segment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
+        +SegmentPixels(Vector2 from, Vector2 to, float thicknessPixels, Vector2 clip, Vector2 clipSize, Color)
         +SegmentDashed(Vector2 from, Vector2 to, float t, float dash, float gap, Vector2 clip, Vector2 clipSize, Color)
         +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
         +Text(string text, Vector2 pos, float scale, Color c)
@@ -669,10 +715,12 @@ classDiagram
         +int NodeCount
         +int GroupCount
         +int EdgeCount
+        +int ConveyorCount
         +IList~Node~ Nodes
         +IList~Node~ Groups
         +IList~Edge~ Edges
         +IList~Edge~ Lines
+        +IList~ConveyorLink~ Conveyors
         +AddNode(Node) Node
         +RemoveNode(long) bool
         +GetGroup(string) Node
@@ -702,6 +750,8 @@ classDiagram
         +CollectEdgesForPort(long, string, PortDirection, List~Edge~) void
         +CollectEdgesForPort(Node, string, PortDirection, List~Edge~) void
         +RemoveEdge(Edge) bool
+        +ClearConveyors() void
+        +AddConveyor(ConveyorLink) void
         +ApplyIntegrity(long, float) bool
         +ApplySwitch(long, bool, bool) bool
         +LayoutPorts()
@@ -904,6 +954,7 @@ classDiagram
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
     VgsEditorScreen --> EdgeRouting : маршрут линии
+    VgsEditorScreen --> PipeRouter : две рельсы трубы (ADR-0040)
     VgsEditorScreen --> IMyCubeGrid
     VgsEditorScreen --> IMyInput : TextInput и клавиши поиска (ADR-0023)
     VgsEditorScreen --> VgsScreenDraw : вся отрисовка
@@ -940,6 +991,13 @@ classDiagram
     GridGraphBuilder --> IMyToolbar
     GridGraphBuilder --> IMyBlockGroup
     GridGraphBuilder --> IMyGridTerminalSystem
+    GridGraphBuilder --> ConveyorProbe : линии конвейеров грида (ADR-0040)
+    ConveyorProbe --> ConveyorSegment
+    ConveyorProbe --> EntityResolver : id блока → живой блок
+    GridGraphBuilder --> ConveyorNetwork : редукция сети (ADR-0040)
+    ConveyorNetwork --> ConveyorSegment
+    ConveyorNetwork --> ConveyorLink
+    GridGraphBuilder --> IMyCubeGrid
 
     NodeStateStore --> NodeStateFormat : формат позиции
     NodeStateStore --> IMyTerminalBlock
@@ -963,6 +1021,7 @@ classDiagram
     GridGraph "1" *-- "0..*" Node : содержит блоки
     GridGraph "1" *-- "0..*" Node : содержит группы (по имени)
     GridGraph "1" *-- "0..*" Edge : содержит
+    GridGraph "1" *-- "0..*" ConveyorLink : содержит (ADR-0040)
     Node "1" *-- "0..*" Port : действия/события
     Node "1" *-- "1" BlockState : снимок состояния
     Node --> ToolbarLayout
@@ -984,6 +1043,7 @@ classDiagram
     PortGeometry ..> Node : читает Position, FrameSize и Slot
     PortGeometry ..> Port : читает Slot и Direction
     EdgeRouting ..> VgsConstants
+    PipeRouter ..> VgsConstants : радиус изгиба и шаг лесенки
 
     ToolbarWriter --> MyToolbarItemInfo : BlockAction / GroupAction
 
@@ -1083,7 +1143,10 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
-| `GridViewFormat.cs` | формат состояния вида: «`x y zoom hidden subgrids borders`» ↔ камера, масштаб и три режима показа; три поля (старый формат) принимаются как значение прежней сборки, недостающие режимы берутся по умолчанию |
+| `GridViewFormat.cs` | формат состояния вида: «`x y zoom hidden subgrids borders conveyors`» ↔ камера, масштаб и четыре режима показа; три поля (старый формат) принимаются как значение прежней сборки, недостающие режимы берутся по умолчанию |
+| `ConveyorSegment.cs` | `ConveyorSegment` — одна сырая конвейерная линия грида, сведённая к двум id блоков. Не связь и не ребро: факт из мира (ADR-0040) |
+| `ConveyorLink.cs` | `ConveyorLink` — логическая конвейерная связь на схеме: пара блоков, между которыми на сети нет другого **нарисованного** блока. Ненаправленная, пара нормализована |
+| `ConveyorNetwork.cs` | правило редукции: обход от нарисованного узла по сырым линиям с остановкой на первом нарисованном; скрытые блоки и трубы проходятся насквозь; петли и дубликаты не дают лишних связей |
 | `BlockSearch.cs` | правило фильтрации карточек: AND по термам, подстрока в имени или отображаемом типе, без учёта регистра — то же, что делает список блоков терминала |
 | `TextEditor.cs` | состояние однострочного поля: текст, каретка, якорь выделения и все правила правки (вставка, удаление, стрелки, Home/End, SelectAll) — ADR-0024 |
 
@@ -1171,12 +1234,13 @@ public bool IsEventController { get { return Controller != null; } }
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
 | `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
-| `GridViewStore.cs` | камера, масштаб и три режима показа в `MyModStorageComponent` **грида** (ADR-0022): состояние общее для всех кокпитов конструкта |
+| `GridViewStore.cs` | камера, масштаб и четыре режима показа в `MyModStorageComponent` **грида** (ADR-0022, ADR-0040): состояние общее для всех кокпитов конструкта |
 | `TextClipboard.cs` | буфер обмена поля поиска — **только собственный**: системный буфер моду недоступен (ADR-0027), поэтому файл не ссылается ни на один тип игры и сломать загрузку не может |
 | `EventControllerProbe.cs` | что проверяет event controller, кому из блоков он это разрешает и запись его списка |
 | `EventControllerKeeper.cs` | проигрывание сохранённого списка контроллера в живой блок после загрузки мира |
 | `TerminalJump.cs` | переход из редактора в терминал игры на выбранном блоке: выбор ветки `ShowTerminalPage`/`ChangeInteractedEntity`, флаг `remote` по дистанции взаимодействия, проверка передающей антенны, отказы (ADR-0021) |
-| `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`»: `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
+| `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`» (и «→ живой `IMyCubeGrid`» для конвейерного прохода): `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
+| `ConveyorProbe.cs` | линии конвейеров одного грида из `MyObjectBuilder_CubeGrid.ConveyorLines` (реализация конвейеров моду недоступна — ADR-0040), сведение концов линий к id блоков через `GetCubeBlock` |
 | `BlockSwitch.cs` | переключатель питания блока (ADR-0035): `CanBeEnabled` (есть ли у блока `IMyFunctionalBlock`), `TryRead` (`Enabled` + `IsFunctional` за одно чтение) и `TrySetEnabled` (сеттер `Enabled` с проверкой, что флаг действительно принял значение) |
 | `GameLanguage.cs` | **единственное** место, которое знает `MyLanguagesEnum`: читает `MyAPIGateway.Session.Config.Language` и переключает таблицу `VgsText`; всё, что ниже, говорит на `VgsLanguage` (ADR-0033) |
 
@@ -1320,6 +1384,99 @@ public bool IsEventController { get { return Controller != null; } }
 появляются не мгновенно) и вызывает тот же `AddBlocks`. Игровую часть списка игра
 восстанавливает сама.
 
+### Конвейерная сеть ([ADR-0040](adr/0040-conveyor-network.md))
+
+У грида есть **вторая** сеть, которая тоже связывает блоки: конвейеры. Она не выражается
+`Edge` и не живёт рядом с ним — у неё нет ни порта, ни ячейки тулбара, ни направления, она
+не создаётся и не удаляется из редактора. Поэтому в графе это **третье хранилище**:
+
+```csharp
+public IList<ConveyorLink> Conveyors { get; }   // GridGraph
+```
+
+Три типа, и каждый отвечает на свой вопрос:
+
+| Тип | Вопрос | Слой |
+|---|---|---|
+| `ConveyorSegment` | «какие два блока соединяет одна линия игры?» | `Model`, struct |
+| `ConveyorLink` | «какие две **карточки** соединены на схеме?» | `Model` |
+| `ConveyorNetwork` | «как из первого получить второе?» | `Model`, static |
+
+**Почему реализация конвейеров не используется.** `MyConveyorLine`, `IMyConveyorEndpoint` и
+`ConveyorLinePosition` живут в `Sandbox.Game.GameSystems.Conveyors`, а вайтлист разрешает
+пространство имён точно — подпространства нет (ADR-0008). Мод с такой ссылкой компилируется и
+не загружается; это уже случалось дважды. Разрешённый `IMyGridConveyorSystem` — про
+перемещение предметов, а не про сеть, и `IMyConveyorTube` не объявляет ни одного члена.
+Единственный доступный вид сети — **сериализованный**: `IMyEntity.GetObjectBuilder()` →
+`MyObjectBuilder_CubeGrid.ConveyorLines`, заполняемый `MyGridConveyorSystem.SerializeLines`.
+Проверено по IL, см. [`01-research/api-conveyor-network.md`](01-research/api-conveyor-network.md).
+
+**Правило редукции** — то, ради чего этот раздел существует. Узлы схемы — только блоки **с
+карточкой**. Обход от такого блока идёт по сырым линиям и останавливается на первом
+нарисованном: пара записывается, дальше через неё не идут. Всё остальное проходится насквозь.
+
+| Что встретилось | Что делает обход |
+|---|---|
+| нарисованный блок | **останавливается**: пара записывается, дальше не идёт |
+| скрытый блок («Show in Grid Workspace» выключен) | проходит насквозь |
+| конвейерная труба, junction | проходит насквозь (труба — ребро, а не узел) |
+| блок подгрида, убранного из схемы | проходит насквозь |
+| уже посещённый в этом обходе | не повторяет (петля не вешает) |
+| источник обхода | не записывает как пару (петля в себя — не связь) |
+
+Отсюда три следствия, и все они — требование:
+
+- **скрытие не рвёт сеть.** Скрытие карточки — решение про картинку, а не про корабль; труба
+  через этот блок продолжает работать в игре. То же правило уже действует для тулбара
+  скрытого блока (ADR-0013) и для скрытого наблюдаемого блока (ADR-0017);
+- **нарисованный junction — точка пересечения.** Он становится хабом, соседи соединены с ним,
+  но не друг с другом — это и есть «точками пересечения станут блоки, уже представленные на
+  схеме»;
+- **ненарисованный junction невидим**, поэтому все его нарисованные листья соединяются попарно.
+  Многие ко многим сводятся к минимальному набору, который ещё говорит правду, — вместо n²
+  линий на грузовом корабле.
+
+Направление отбрасывается: труба — физическое соединение, и показывать, куда именно сортер
+пропускает предметы, требование не просит. Пара нормализуется (меньший id первый), поэтому
+дубликаты и параллельные линии дают одну связь, а порядок списка детерминирован.
+
+**Чтение** — `GridGraphBuilder.SyncConveyors`, в конце структурного прохода (после того как
+набор нарисованных узлов окончателен). Три ограничения, и все три — про цену:
+
+- `GetObjectBuilder` сериализует **все** блоки грида, поэтому это проход ~1.5 с, а не кадровый
+  путь;
+- читаются только гриды с **≥ 2 карточками**: линия не покидает свой грид, и грид с одной
+  карточкой связи не даст;
+- читается только при включённом режиме. Это и есть причина, по которой настройка —
+  **режим схемы**, а не режим рисования: draw-time фильтр купил бы бесплатный переключатель
+  ценой сериализации каждого грида дважды в секунду.
+
+**«Не прочиталось» ≠ «нет линий».** Исчезнувший грид или исключение оставляют прежнюю сеть —
+то же правило, что у прохода состояния для целостности.
+
+**Рисунок** — труба в разрезе, и это не украшение: две линии с зазором 4 px и стенкой 1 px
+(`ColConveyorPipe`, `#444455`) не могут быть спутаны с логической связью, которая есть **одна**
+линия (ADR-0010). Маршрут — тот же `EdgeRouting.Build`, от правого края карточки-источника к
+левому краю карточки-цели, поэтому оба вида линий выходят из карточки одинаково. Труба рисуется
+**под** карточками и под логическими линиями: она физическая подложка, а не сигнал, — и концы
+её маршрута лежат внутри карточек, поэтому труба выглядит входящей в блок.
+
+Изгибы скруглены, и это единственная часть рисунка, которой нужна собственная геометрия.
+Дуги в API нет вообще (`MyScreenSpaceSprite.Draw` — прямоугольники), поэтому `PipeRouter`
+строит **лесенку** осевых кусков по четверть-дуге — ровно как `VgsScreenDraw.Disc` строит круг
+из полос. Шаг лесенки пропорционален радиусу (`ConveyorStep`), иначе при малом радиусе
+получилась бы фаска, а при большом — грубая ступень; радиус зажимается половиной прилегающего
+отрезка, иначе две рельсы пересекли бы себя на коротком плече. Пропорции экрана передаются
+параметром, а не читаются из слоя отрисовки, — поэтому геометрия проверяется офлайн.
+
+Толщина стенки — **device pixels** (`VgsScreenDraw.SegmentPixels`), а не единицы раскладки:
+у раскладки оси не равны (ADR-0009), и стенка в единицах была бы в `height/width` раз толще по
+горизонтали, а труба не сошлась бы на изгибе. Это то же правило, что у сетки поля и границ
+гридов (ADR-0032 §3).
+
+Потолок — `MaxRenderedConveyors` (100 связей на кадр). Он ниже, чем у связей (600), и посчитан:
+одна труба — это ~70 кусков на изгиб, то есть сотня труб ≈ семь тысяч квадов.
+
 ### `Vgs.Ui` — экран
 
 | Файл | Ответственность |
@@ -1330,11 +1487,12 @@ public bool IsEventController { get { return Controller != null; } }
 | `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test |
 | `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003) |
 | `SearchField.cs` | поле поиска как самостоятельный тип: запрос, каретка, выделение, прокрутка и кэш позиций; шрифт подаётся делегатом, поэтому арифметика проверяется офлайн |
-| `ViewState.cs` | состояние вида: камера, зум, три режима показа (скрытые блоки, субгриды, границы гридов) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
+| `ViewState.cs` | состояние вида: камера, зум, четыре режима показа (скрытые блоки, субгриды, границы гридов, конвейерная сеть) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
 | `GridFrames.cs` | рамка грида и её вкладка с именем: какие карточки охватывает, где углы в пикселях окна, как из них выводятся четыре края. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0032](adr/0032-construct-graph.md)) |
 | `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли пунктир отслеживания (`ShouldDrawWatchLine` — самопросмотр его не рисует, ADR-0036) |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); разбиение отрезка на штрихи для пунктира |
+| `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
 | `VgsIconAtlas.g.cs` | **сгенерированная** таблица: перечисление `VgsIcon`, имена материалов, размер текстуры, `TextureScale`. Правится только `tools/build-icon-atlas.ps1` |
@@ -1370,8 +1528,10 @@ public bool IsEventController { get { return Controller != null; } }
 - **Кнопка режимов** открывает меню **над собой** (внизу места нет) с тремя переключателями:
   «Show/hide invisible» — показывает блоки с выключенным «Show in Grid Workspace», не меняя флаг на блоке;
   «Show subgrids» — включает блоки субгридов в граф; «Show grid borders» — рисует рамки гридов
-  с вкладками имён. Все три живут в `ViewState` и сохраняются вместе с камерой
-  ([ADR-0022](adr/0022-view-state-lives-on-the-grid.md), [ADR-0032](adr/0032-construct-graph.md)).
+  с вкладками имён; «Show conveyor network» — строит и рисует конвейерную сеть (ADR-0040).
+  Все четыре живут в `ViewState` и сохраняются вместе с камерой
+  ([ADR-0022](adr/0022-view-state-lives-on-the-grid.md), [ADR-0032](adr/0032-construct-graph.md),
+  [ADR-0040](adr/0040-conveyor-network.md)).
 - **Поиск** фильтрует карточки правилом терминала (`Model/BlockSearch`): AND по термам,
   подстрока в **имени блока или в его отображаемом типе**. Несовпавшая карточка рисуется с
   альфой `VgsConstants.SearchDimOpacity` вместе со своими полосами и подписями; линия гаснет,
@@ -1767,8 +1927,8 @@ OnUpdate()    каждые RefreshIntervalFrames кадров:
               если грид исчез → Close()
 
 OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:
-                фон → сетка → рамки гридов (с вкладками имён) → рамки групп → линии
-                → пунктир отслеживания → карточки → полосы портов групп
+                фон → сетка → рамки гридов (с вкладками имён) → рамки групп → трубы
+                → линии → пунктир отслеживания → карточки → полосы портов групп
                 → нижняя панель → шапка → меню действий → меню режимов
                 Порядок — это вложенность конструкта (ADR-0032): грид содержит группы,
                 группы содержат карточки; обратный порядок закрасил бы рамку грида
@@ -2071,4 +2231,7 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
 3. Обновить этот документ: диаграмму классов, правила зависимостей, таблицу решений.
 4. Если код уже расходится с решением — запустить
    [совместное ревью](review/joint-review.md), а не править документ под код.
+
+
+
 

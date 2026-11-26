@@ -2,7 +2,8 @@
 
 Grid Workspace is an in-game editor for the block logic of a grid in Space Engineers. It draws
 your ship as a **diagram** — cards for blocks, ports and lines — and writes every connection you
-draw into the **real block toolbars**, so what you see on the diagram is what the game runs.
+draw into the **real block toolbars**, so what you see on the diagram is what the game runs. The
+conveyor network is drawn on the same diagram, read-only.
 
 > **About the name.** `Grid Workspace` is the full name; **VGS** (`Visual Grid Setup`) is the
 > technical and historical one. It is the same mod: the mod folder, the log prefix `[VGS]` and
@@ -63,7 +64,16 @@ dragging it by the name strip moves all its cards together.
 
 **Hide blocks.** Every terminal block has a **Show in Grid Workspace** checkbox. Turn it off and
 the block and its lines disappear from the diagram — the connections keep working. The `[=]`
-button at the bottom toggles hidden blocks, subgrids and grid borders.
+button at the bottom toggles hidden blocks, subgrids, grid borders and the conveyor network.
+
+**Conveyor network.** Blocks joined by pipes are linked on the diagram by a **pipe in section**:
+two thin lines in `#444455` with a gap between them, and rounded bends. Such a line does not mean
+"these blocks are on the same ship" — it means "these two blocks are adjacent on the conveyor
+network, with no other block of the diagram between them". Two consequences are visible in the
+picture: a hidden block is walked through (the card is hidden, not the pipe), and a conveyor
+junction that has a card becomes a point of intersection, with the neighbours' pipes meeting at
+it. The network is only **shown**: a pipe cannot be created or removed from the editor — pipes are
+blocks you build. The toggle is `Show conveyor network` in the `[=]` menu, on by default.
 
 **Event controller.** The bell icon starts watch mode: click the block the controller should
 watch. Up to 6 blocks per controller. The dashed yellow line means "watches", not "links".
@@ -79,7 +89,10 @@ watch. Up to 6 blocks per controller. The dashed yellow line means "watches", no
 4. **A far block needs a transmitting antenna** to jump to its terminal — a game rule, not a mod
    rule. Close up, no antenna is needed.
 5. **Hiding a block does not remove its connections.** Hiding is about the picture only.
-6. **Large grids:** only what fits on screen is drawn. Zoom out, pan, or search.
+6. **The conveyor network is display-only.** Pipe direction is not drawn: you see that blocks are
+   connected, not which way a sorter passes items. And on a very dense network no more than a
+   hundred pipes are drawn — the rest still work in the game, they are just not on the diagram.
+7. **Large grids:** only what fits on screen is drawn. Zoom out, pan, or search.
 
 ## License
 

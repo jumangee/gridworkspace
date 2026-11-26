@@ -51,6 +51,11 @@
 - **«Почему схема показывает подгриды и что за рамка с вкладкой имени?»** →
   [ADR-0032](adr/0032-construct-graph.md) и
   [01-research/api-grid-construct.md](01-research/api-grid-construct.md).
+- **«Что за трубы на схеме, почему сквозь скрытый блок и почему не все?»** →
+  [ADR-0040](adr/0040-conveyor-network.md) и
+  [01-research/api-conveyor-network.md](01-research/api-conveyor-network.md):
+  узлы редукции — только блоки с карточкой, поэтому скрытый блок и труба проходятся насквозь,
+  а junction с карточкой становится точкой пересечения; потолок — сотня труб на кадр.
 - **«Почему красная полоса на карточке и почему игра не встаёт на паузу?»** →
   [ADR-0028](adr/0028-block-damage-band.md), [ADR-0029](adr/0029-editor-does-not-pause.md).
 - **«Почему редактор на русском, а кнопка в терминале осталась английской (или наоборот)?»** →
@@ -77,6 +82,7 @@
 | [01-research/api-terminal-jump.md](01-research/api-terminal-jump.md) | Переход из редактора в терминал игры: `ShowTerminalPage` / `ChangeInteractedEntity`, флаг удалённого доступа, `TestConnection` и антенна |
 | [01-research/api-persistence.md](01-research/api-persistence.md) | Хранение данных на блоке (`MyModStorageComponent`, регистрация GUID в SBC), стабильность `EntityId` при save/load, копировании и резке грида, чекбокс на всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [01-research/api-terminal-search.md](01-research/api-terminal-search.md) | Правило фильтрации блоков в терминале (AND по термам, подстрока в имени или типе) и чтение ввода с клавиатуры в моде (`IMyInput.TextInput`, подмена буфера, `MyKeys`, модификаторы); почему движковое поле ввода моду запрещено и почему буфер обмена **недоступен** (вердикт игры, ADR-0027); почему счётчик кадров мода замирает на паузе; состояние вида на гриде — `IMyCubeGrid : IMyEntity` |
+| [01-research/api-conveyor-network.md](01-research/api-conveyor-network.md) | Конвейерная сеть: почему реализация конвейеров (`Sandbox.Game.GameSystems.Conveyors`) моду недоступна, откуда берутся линии (`MyObjectBuilder_CubeGrid.ConveyorLines` через `IMyEntity.GetObjectBuilder`) и что означает конец линии (клетка самого блока, включая многоблочный); труба — ребро, а не узел (ADR-0040) |
 | [01-research/api-language.md](01-research/api-language.md) | Язык игры из мода: `MyAPIGateway.Session.Config.Language` (проверено по IL: это выбор игрока, при отсутствии — официальный язык ОС, и он сохраняется в конфигурации), почему `MyLanguage` моду недоступен и почему смена языка возможна внутри сессии (ADR-0033) |
 | [01-research/icons-fontawesome.md](01-research/icons-fontawesome.md) | Иконки Font Awesome в редакторе: полный перечень способов (атлас, отдельная текстура на иконку, растеризация в рантайме, свой bitmap-шрифт, геометрия), что из этого разрешено моду, почему атлас не переживает мипы, почему DDS-контейнер оказался непригоден для спрайтов и чем текстура отличается от растеризации под размер — с измерениями, и какие правила размера при этом сохраняются |
 | [01-research/block-catalog-notes.md](01-research/block-catalog-notes.md) | Как собран каталог 1559 подтипов блоков, 50 кокпитов, пробелы |

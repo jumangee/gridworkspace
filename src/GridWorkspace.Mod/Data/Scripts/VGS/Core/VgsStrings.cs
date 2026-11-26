@@ -72,7 +72,8 @@ namespace Vgs.Core
                 { "MODES_SHOW_HIDDEN", "Show/hide invisible" },
                 { "MODES_SHOW_SUBGRIDS", "Show subgrids" },
                 { "MODES_SHOW_GRID_BORDERS", "Show grid borders" },
-                { "MODES_HINT", "View modes: show hidden blocks" },
+                { "MODES_SHOW_CONVEYORS", "Show conveyor network" },
+                { "MODES_HINT", "View modes: hidden, subgrids, borders, conveyors" },
                 { "SEARCH_HINT",
                   "Block search · Enter — first match · \"x\" — clear · "
                   + "Ctrl+A / C / X / V — select, copy, cut, paste "
@@ -195,7 +196,8 @@ namespace Vgs.Core
                 { "MODES_SHOW_HIDDEN", "Показать/скрыть игнорируемые" },
                 { "MODES_SHOW_SUBGRIDS", "Показывать субгриды" },
                 { "MODES_SHOW_GRID_BORDERS", "Показывать границы гридов" },
-                { "MODES_HINT", "Режимы просмотра: показывать скрытые блоки" },
+                { "MODES_SHOW_CONVEYORS", "Показывать конвейерную сеть" },
+                { "MODES_HINT", "Режимы просмотра: скрытые, субгриды, границы, конвейеры" },
                 { "SEARCH_HINT",
                   "Поиск блоков · Enter — к первому совпадению · «x» — сбросить · "
                   + "Ctrl+A / C / X / V — выделить, копировать, вырезать, вставить "

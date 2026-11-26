@@ -318,6 +318,31 @@ namespace Vgs.Ui
         /// </summary>
         private readonly List<Vector4> _route = new List<Vector4>(8);
 
+        /// <summary>
+        /// Scratch buffers for the conveyor pipes (ADR-0040).
+        ///
+        /// <see cref="_pipeBuffer"/> holds the rail pieces the router produced for one pipe —
+        /// both walls, with the staircase of every bend already unrolled into axis-aligned
+        /// pieces. The capacity is the size of the worst case the router can produce for a
+        /// connection's route: two rails per straight, plus up to <c>2 × 2 × 8</c> pieces per
+        /// bend on an S-shape, which is about a hundred and forty.
+        ///
+        /// Separate from <see cref="_route"/> on purpose: <see cref="_route"/> is the centre
+        /// line, which the router consumes while the rail buffer is being produced, and sharing
+        /// one list would overwrite the input halfway through.
+        /// </summary>
+        private readonly List<Vector4> _pipeBuffer = new List<Vector4>(160);
+
+        /// <summary>
+        /// The pipe's rail builder, with its own scratch (ADR-0040).
+        ///
+        /// One instance for the lifetime of the screen rather than a static call: the builder
+        /// keeps vertex and fillet arrays sized to the longest route it has seen, and the draw
+        /// path builds up to <see cref="VgsConstants.MaxRenderedConveyors"/> pipes per frame. A
+        /// static entry point would allocate those arrays on every call (rule R010).
+        /// </summary>
+        private readonly PipeRouter _pipeRouter = new PipeRouter();
+
         // Refresh throttling: the grid can change at any time, but re-reading it every
         // frame would dominate the frame budget on a large ship.
         private int _lastRefreshFrame;
@@ -463,7 +488,8 @@ namespace Vgs.Ui
         private float _hintLineHeight = -1f;
 
         private VgsEditorScreen(GridGraph graph, IMyCubeGrid grid, Vector2 camera, float zoom,
-                                bool showHidden, bool showSubgrids, bool showGridBorders)
+                                bool showHidden, bool showSubgrids, bool showGridBorders,
+                                bool showConveyors)
             : base(
                 name: "VGS.Workbench",
                 position: new Vector2(0.5f, 0.5f),
@@ -477,7 +503,8 @@ namespace Vgs.Ui
         {
             _graph = graph;
             _grid = grid;
-            _view = new ViewState(camera, zoom, showHidden, showSubgrids, showGridBorders);
+            _view = new ViewState(camera, zoom, showHidden, showSubgrids, showGridBorders,
+                                  showConveyors);
 
             // The editor is a full-screen modal: Esc closes it, the pointer is visible.
             CloseOnEscape = true;
@@ -558,22 +585,29 @@ namespace Vgs.Ui
             bool showSubgrids = true;
             bool showGridBorders = true;
 
+            // The conveyor network is shown by default (ADR-0040): it is part of the ship, not
+            // a diagnostic, so a schema that hid it would omit the construct's logistics.
+            bool showConveyors = true;
+
             Vector2 savedCamera;
             float savedZoom;
             bool savedShowHidden;
             bool savedShowSubgrids;
             bool savedShowGridBorders;
+            bool savedShowConveyors;
             if (GridViewStore.TryRead(grid, out savedCamera, out savedZoom, out savedShowHidden,
-                                      out savedShowSubgrids, out savedShowGridBorders))
+                                      out savedShowSubgrids, out savedShowGridBorders,
+                                      out savedShowConveyors))
             {
                 camera = savedCamera;
                 zoom = savedZoom;
                 showHidden = savedShowHidden;
                 showSubgrids = savedShowSubgrids;
                 showGridBorders = savedShowGridBorders;
+                showConveyors = savedShowConveyors;
             }
 
-            GridGraph graph = GridGraphBuilder.Build(grid, showHidden, showSubgrids);
+            GridGraph graph = GridGraphBuilder.Build(grid, showHidden, showSubgrids, showConveyors);
 
             // Group frames are derived from the cards of their members, so they are laid out
             // once the graph is complete — before the first frame is drawn, and outside any
@@ -581,7 +615,7 @@ namespace Vgs.Ui
             PortGeometry.LayoutGroupFrames(graph);
 
             var screen = new VgsEditorScreen(graph, grid, camera, zoom, showHidden,
-                                             showSubgrids, showGridBorders);
+                                             showSubgrids, showGridBorders, showConveyors);
 
             VgsScreenDraw.EnsureResources();
             if (!VgsScreenDraw.ResourcesReady)
@@ -758,6 +792,7 @@ namespace Vgs.Ui
                 _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
+                _pipeBuffer.Clear();
                 _removeBuffer.Clear();
                 _searchTerms.Clear();
                 _searchField.Clear(_screenFrame);
@@ -887,7 +922,7 @@ namespace Vgs.Ui
         /// rows are a fixed list of options, and the menu's height, its hit test and its drawing
         /// all have to agree about how many there are.
         /// </summary>
-        private const int ModesMenuRowCount = 3;
+        private const int ModesMenuRowCount = 4;
 
         /// <summary>Rectangle of one row of the modes menu, by index from the top.</summary>
         private static void GetModesRowRect(int index, out Vector2 topLeft, out Vector2 size)
@@ -1156,7 +1191,8 @@ namespace Vgs.Ui
                     return;
                 }
 
-                GridGraphBuilder.Refresh(_graph, _grid, _view.ShowHidden, _view.ShowSubgrids);
+                GridGraphBuilder.Refresh(_graph, _grid, _view.ShowHidden, _view.ShowSubgrids,
+                                         _view.ShowConveyors);
 
                 // The refresh moves cards (LayoutUnplaced) and rebuilds the groups, so the
                 // frames have to be recomputed before the next draw reads them.
@@ -1317,7 +1353,8 @@ namespace Vgs.Ui
 
             DropNodeReferences();
 
-            _graph = GridGraphBuilder.Build(_grid, _view.ShowHidden, _view.ShowSubgrids);
+            _graph = GridGraphBuilder.Build(_grid, _view.ShowHidden, _view.ShowSubgrids,
+                                            _view.ShowConveyors);
             PortGeometry.LayoutGroupFrames(_graph);
             GridFrames.Layout(_graph, _gridFrames);
 

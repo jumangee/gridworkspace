@@ -69,6 +69,7 @@ namespace Vgs.Model
         private readonly List<Node> _groupList = new List<Node>();
         private readonly List<Edge> _edges = new List<Edge>();
         private readonly List<Edge> _lines = new List<Edge>();
+        private readonly List<ConveyorLink> _conveyors = new List<ConveyorLink>();
 
         /// <summary>Scratch buffer for the group action rule; reused so a refresh allocates nothing.</summary>
         private readonly List<string> _groupActionIds = new List<string>(16);
@@ -130,6 +131,46 @@ namespace Vgs.Model
         /// path never has to de-duplicate anything per frame.
         /// </summary>
         public IList<Edge> Lines { get { return _lines; } }
+
+        /// <summary>
+        /// The logical conveyor links between the drawn nodes (ADR-0040).
+        ///
+        /// <b>A third list, not a kind of edge.</b> An <see cref="Edge"/> is a toolbar item: it
+        /// has ports and a cell, it is created and removed by the player, and the game executes
+        /// it. A conveyor link has none of that — it is derived from the world, read-only, and
+        /// never persisted. Folding it into <see cref="Edges"/> would break every invariant that
+        /// list enforces (a cell, a port, a toolbar) and every reconcile pass that owns it.
+        ///
+        /// The list is rebuilt by <c>GridGraphBuilder</c> from the grid's serialised conveyor
+        /// lines; the draw path only reads it. It may contain links whose endpoints no longer
+        /// have cards for one refresh, which the draw path tolerates by skipping them, exactly
+        /// as it does for an edge whose block was just destroyed.
+        /// </summary>
+        public IList<ConveyorLink> Conveyors { get { return _conveyors; } }
+
+        public int ConveyorCount { get { return _conveyors.Count; } }
+
+        /// <summary>
+        /// Drops every conveyor link. Called when the network is hidden or before it is rebuilt.
+        /// </summary>
+        public void ClearConveyors()
+        {
+            _conveyors.Clear();
+        }
+
+        /// <summary>
+        /// Appends one logical conveyor link. The caller owns de-duplication
+        /// (<see cref="ConveyorNetwork.Build"/> does it while walking the raw lines), because a
+        /// linear scan here would turn a refresh of a dense network into a quadratic pass.
+        /// </summary>
+        public void AddConveyor(ConveyorLink link)
+        {
+            if (link == null) return;
+            if (link.SourceEntityId <= 0 || link.TargetEntityId <= 0) return;
+            if (link.SourceEntityId == link.TargetEntityId) return;
+
+            _conveyors.Add(link);
+        }
 
         public Node GetNode(long entityId)
         {
@@ -259,6 +300,15 @@ namespace Vgs.Model
             {
                 Edge e = _edges[i];
                 if (e.SourceEntityId == entityId || e.TargetEntityId == entityId) _edges.RemoveAt(i);
+            }
+
+            // A conveyor link is not an edge, but it ends on the same nodes and must disappear
+            // with them: the draw path would skip it anyway, and a list that only grows would
+            // outlive the cards it describes (ADR-0040).
+            for (int i = _conveyors.Count - 1; i >= 0; i--)
+            {
+                ConveyorLink c = _conveyors[i];
+                if (c.SourceEntityId == entityId || c.TargetEntityId == entityId) _conveyors.RemoveAt(i);
             }
             return true;
         }
@@ -886,6 +936,7 @@ namespace Vgs.Model
             _groupList.Clear();
             _edges.Clear();
             _lines.Clear();
+            _conveyors.Clear();
             _layoutCell = 0;
         }
 

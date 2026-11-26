@@ -237,6 +237,12 @@ internal static class OfflineChecks
         Console.WriteLine("=== view state writes (Step 4.3, ADR-0022) ===");
         ViewStateWrites();
 
+        Console.WriteLine("=== conveyor network reduction (ADR-0040) ===");
+        ConveyorNetworkReduction();
+
+        Console.WriteLine("=== conveyor pipe rails (ADR-0040) ===");
+        ConveyorPipeRails();
+
         Console.WriteLine("=== localization tables (ADR-0033) ===");
         Localization();
 
@@ -3765,23 +3771,24 @@ internal static class OfflineChecks
 
     // ------------------------------------------------------------------ view state (ADR-0022)
     //
-    // The camera, the zoom and the three view toggles are written on the grid and read back on
+    // The camera, the zoom and the four view toggles are written on the grid and read back on
     // the next open. The round trip is the part that can silently open the schema at the wrong
     // place, and it is the only part that can be exercised without the game.
     private static void ViewStateFormat()
     {
         var camera = new Vector2(-0.26f, 1.75f);
 
-        string text = GridViewFormat.Format(camera, 1.37f, true, false, true);
+        string text = GridViewFormat.Format(camera, 1.37f, true, false, true, false);
 
         Vector2 parsedCamera;
         float parsedZoom;
         bool parsedHidden;
         bool parsedSubgrids;
         bool parsedBorders;
+        bool parsedConveyors;
 
         Check(GridViewFormat.TryParse(text, out parsedCamera, out parsedZoom, out parsedHidden,
-                                      out parsedSubgrids, out parsedBorders),
+                                      out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "a formatted view state parses back");
         CheckClose(parsedCamera.X, camera.X, "the camera X of a round trip is unchanged");
         CheckClose(parsedCamera.Y, camera.Y, "the camera Y of a round trip is unchanged");
@@ -3789,84 +3796,112 @@ internal static class OfflineChecks
         Check(parsedHidden, "the show-invisible flag of a round trip is unchanged");
         Check(!parsedSubgrids, "the show-subgrids flag of a round trip is unchanged");
         Check(parsedBorders, "the grid-borders flag of a round trip is unchanged");
+        Check(!parsedConveyors, "the conveyor-network flag of a round trip is unchanged");
 
         // The same round trip with the flags off, so a formatter that always wrote "1" would be
         // caught: the checks above alone cannot tell "wrote 1" from "always reads 1".
-        string off = GridViewFormat.Format(camera, 1f, false, false, false);
+        string off = GridViewFormat.Format(camera, 1f, false, false, false, false);
         Check(GridViewFormat.TryParse(off, out parsedCamera, out parsedZoom, out parsedHidden,
-                                      out parsedSubgrids, out parsedBorders),
+                                      out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "a view state with every flag off parses back");
         Check(!parsedHidden, "the show-invisible flag reads back as off");
         Check(!parsedSubgrids, "the show-subgrids flag reads back as off");
         Check(!parsedBorders, "the grid-borders flag reads back as off");
+        Check(!parsedConveyors, "the conveyor-network flag reads back as off");
+
+        // ...and with every flag on, so a formatter that always wrote "0" is caught too.
+        string on = GridViewFormat.Format(camera, 1f, true, true, true, true);
+        Check(GridViewFormat.TryParse(on, out parsedCamera, out parsedZoom, out parsedHidden,
+                                      out parsedSubgrids, out parsedBorders, out parsedConveyors),
+              "a view state with every flag on parses back");
+        Check(parsedHidden && parsedSubgrids && parsedBorders && parsedConveyors,
+              "every flag reads back as on");
 
         // Invariant culture: on a locale with a decimal comma the format would otherwise contain
         // commas, and the value would be unreadable on the next open.
         Check(text.IndexOf(',') < 0,
               "the view format uses no comma, so a decimal comma locale cannot corrupt it");
         Check(text.Split(' ').Length == GridViewFormat.FieldCount,
-              "the view format writes exactly six space-separated fields");
+              "the view format writes exactly seven space-separated fields");
 
         // ---- older builds keep their camera ----
         //
         // Forward compatibility by field count rather than by a format version: a world saved
         // before a toggle existed must keep its camera and get that toggle's default. Three
         // fields is the oldest format; four added "show invisible"; six added the two construct
-        // options (ADR-0032). A missing field takes the default the new build shows.
+        // options (ADR-0032); seven added the conveyor network (ADR-0040). A missing field takes
+        // the default the new build shows.
         Check(GridViewFormat.TryParse("0.5 -0.25 2", out parsedCamera, out parsedZoom, out parsedHidden,
-                                      out parsedSubgrids, out parsedBorders),
+                                      out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "a three-field value from an older build still parses");
         CheckClose(parsedCamera.X, 0.5f, "an older value keeps its camera X");
         CheckClose(parsedZoom, 2f, "an older value keeps its zoom");
         Check(!parsedHidden, "an older value defaults the show-invisible toggle to off");
         Check(parsedSubgrids, "an older value defaults subgrids to shown");
         Check(parsedBorders, "an older value defaults grid borders to drawn");
+        Check(parsedConveyors, "an older value defaults the conveyor network to shown");
 
         Check(GridViewFormat.TryParse("0.5 -0.25 2 1", out parsedCamera, out parsedZoom,
-                                      out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                      out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                      out parsedConveyors),
               "a four-field value from the previous build still parses");
         Check(parsedHidden, "a four-field value keeps its show-invisible flag");
         Check(parsedSubgrids && parsedBorders,
               "a four-field value gets the construct options' defaults");
+        Check(parsedConveyors, "a four-field value gets the conveyor default");
+
+        Check(GridViewFormat.TryParse("0.5 -0.25 2 1 0 0", out parsedCamera, out parsedZoom,
+                                      out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                      out parsedConveyors),
+              "a six-field value from the previous build still parses");
+        Check(!parsedSubgrids && !parsedBorders, "a six-field value keeps its construct options");
+        Check(parsedConveyors, "a six-field value gets the conveyor default");
 
         // ---- rejections ----
         //
         // Each of these must fall back to the default view rather than producing a garbage camera.
         Check(!GridViewFormat.TryParse(null, out parsedCamera, out parsedZoom, out parsedHidden,
-                                       out parsedSubgrids, out parsedBorders),
+                                       out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "null is not a view state");
         Check(!GridViewFormat.TryParse("", out parsedCamera, out parsedZoom, out parsedHidden,
-                                       out parsedSubgrids, out parsedBorders),
+                                       out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "an empty string is not a view state");
         Check(!GridViewFormat.TryParse("0.5 0.5", out parsedCamera, out parsedZoom, out parsedHidden,
-                                       out parsedSubgrids, out parsedBorders),
+                                       out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "two fields are not a view state: there is no zoom");
-        Check(!GridViewFormat.TryParse("0.5 0.5 1 1 1 1 1", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
-              "seven fields are not a view state");
+        Check(!GridViewFormat.TryParse("0.5 0.5 1 1 1 1 1 1", out parsedCamera, out parsedZoom,
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
+              "eight fields are not a view state");
         Check(!GridViewFormat.TryParse("0.5  0.5 1 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "an empty field is not a view state");
         Check(!GridViewFormat.TryParse("a b c d", out parsedCamera, out parsedZoom, out parsedHidden,
-                                       out parsedSubgrids, out parsedBorders),
+                                       out parsedSubgrids, out parsedBorders, out parsedConveyors),
               "non-numeric fields are not a view state");
         Check(!GridViewFormat.TryParse("0,5 0.5 1 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "a decimal comma is not our format");
         Check(!GridViewFormat.TryParse("NaN 0.5 1 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "NaN is not a view state");
         Check(!GridViewFormat.TryParse("0.5 Infinity 1 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "infinity is not a view state");
 
         // A zoom of zero or less is refused rather than clamped here: the clamp belongs to the
         // editor's own zoom limits, and a stored zero would divide by zero in ScreenToGraph.
         Check(!GridViewFormat.TryParse("0.5 0.5 0 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "a zero zoom is not a view state");
         Check(!GridViewFormat.TryParse("0.5 0.5 -1 0", out parsedCamera, out parsedZoom,
-                                       out parsedHidden, out parsedSubgrids, out parsedBorders),
+                                       out parsedHidden, out parsedSubgrids, out parsedBorders,
+                                       out parsedConveyors),
               "a negative zoom is not a view state");
 
         // A rejected parse must not leak a half-built camera: the caller writes the out parameters
@@ -3876,14 +3911,447 @@ internal static class OfflineChecks
         bool rejectedHidden = true;
         bool rejectedSubgrids = false;
         bool rejectedBorders = false;
+        bool rejectedConveyors = false;
         Check(!GridViewFormat.TryParse("bogus", out rejectedCamera, out rejectedZoom,
-                                       out rejectedHidden, out rejectedSubgrids, out rejectedBorders),
+                                       out rejectedHidden, out rejectedSubgrids, out rejectedBorders,
+                                       out rejectedConveyors),
               "a bogus view state is rejected");
         Check(rejectedCamera == Vector2.Zero, "a rejected parse leaves the camera at zero");
         Check(rejectedZoom == 0f, "a rejected parse leaves the zoom at zero");
         Check(!rejectedHidden, "a rejected parse leaves the show-invisible toggle off");
         Check(rejectedSubgrids && rejectedBorders,
               "a rejected parse leaves the construct options at their defaults");
+        Check(rejectedConveyors, "a rejected parse leaves the conveyor network at its default");
+    }
+
+    // ------------------------------------------------------------------ conveyor network (ADR-0040)
+    //
+    // The reduction from raw conveyor lines to the links between drawn cards. This is the rule
+    // the whole feature rests on: "stop at the next drawn block, walk through everything else".
+    // Its failure modes are invisible in a compile — a link to a card that is not there, a
+    // missing link through a hidden container, a quadratic explosion on a junction — and all of
+    // them are decidable from the lists alone.
+    private static void ConveyorNetworkReduction()
+    {
+        var segments = new List<ConveyorSegment>();
+        var visible = new List<long>();
+        var links = new List<ConveyorLink>();
+
+        // ---- one line between two drawn blocks ----
+        segments.Add(new ConveyorSegment(10, 20));
+        visible.Add(10);
+        visible.Add(20);
+        ConveyorNetwork.Build(segments, visible, links);
+
+        Check(links.Count == 1, "two drawn blocks joined by one line are one link");
+        Check(links[0].SourceEntityId == 10 && links[0].TargetEntityId == 20,
+              "the link keeps both ends");
+        Check(links[0].SameAs(new ConveyorLink(20, 10)),
+              "a link is undirected: the same pair written the other way is the same link");
+
+        // ---- a hidden block is walked through, not cut at ----
+        //
+        // This is the difference between "these two blocks are plumbed together" and "these two
+        // blocks are on the same ship". A container with no card sits between them and the game
+        // carries items straight through it, so the schema must show one link, not two.
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 99));
+        segments.Add(new ConveyorSegment(99, 20));
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 1, "a hidden block between two drawn ones is walked through");
+        Check(links[0].SourceEntityId == 10 && links[0].TargetEntityId == 20,
+              "the link spans the hidden block");
+
+        // ---- a drawn junction is a point of intersection, not a pass-through ----
+        //
+        // The other half of the rule: if the junction has a card, it is the point where the
+        // branches meet, and the picture is a star rather than a triangle. This is what makes
+        // "the points of intersection are the blocks already on the schema" true in both
+        // directions.
+        visible.Add(99);
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 2, "a drawn junction becomes two links, not one");
+        Check(FindLink(links, 10, 99) != null, "the junction is linked to the first block");
+        Check(FindLink(links, 20, 99) != null, "the junction is linked to the second block");
+        Check(FindLink(links, 10, 20) == null,
+              "the junction is not skipped: there is no direct link between its neighbours");
+
+        // ---- a hidden hub joins every pair of its drawn leaves ----
+        //
+        // A junction with no card is invisible, so all of its leaves are adjacent on the
+        // schema. Three leaves therefore give three links, not two — the many-to-many the
+        // requirement warned about, reduced to the smallest set that still tells the truth.
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 98));
+        segments.Add(new ConveyorSegment(98, 20));
+        segments.Add(new ConveyorSegment(98, 30));
+        visible.Clear();
+        visible.Add(10);
+        visible.Add(20);
+        visible.Add(30);
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 3, "a hidden hub joins every pair of its drawn leaves");
+        Check(FindLink(links, 10, 20) != null, "leaf 1 and leaf 2 are linked");
+        Check(FindLink(links, 10, 30) != null, "leaf 1 and leaf 3 are linked");
+        Check(FindLink(links, 20, 30) != null, "leaf 2 and leaf 3 are linked");
+
+        // ---- a loop is walked, not hung on ----
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 98));
+        segments.Add(new ConveyorSegment(98, 97));
+        segments.Add(new ConveyorSegment(97, 20));
+        segments.Add(new ConveyorSegment(98, 99));
+        segments.Add(new ConveyorSegment(99, 97));
+        visible.Clear();
+        visible.Add(10);
+        visible.Add(20);
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 1, "a loop between two drawn blocks is one link, not a hang");
+        Check(links[0].SourceEntityId == 10 && links[0].TargetEntityId == 20,
+              "the loop's link is the pair of drawn ends");
+
+        // ---- a loop back to the source is not a link ----
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 98));
+        segments.Add(new ConveyorSegment(98, 10));
+        segments.Add(new ConveyorSegment(10, 20));
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 1, "a loop back to the source produces no self-link");
+        Check(FindLink(links, 10, 20) != null, "and the real link is still there");
+
+        // ---- parallel lines and duplicate segments are one link ----
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 20));
+        segments.Add(new ConveyorSegment(10, 20));
+        segments.Add(new ConveyorSegment(20, 10));
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 1, "parallel lines between the same pair are one link");
+
+        // ---- only drawn blocks are nodes ----
+        segments.Clear();
+        segments.Add(new ConveyorSegment(98, 99));
+        visible.Clear();
+        visible.Add(10);
+        visible.Add(20);
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 0, "a line between two undrawn blocks links nothing");
+
+        // ---- a drawn block with no line at all ----
+        segments.Clear();
+        segments.Add(new ConveyorSegment(10, 20));
+        visible.Add(30);
+        ConveyorNetwork.Build(segments, visible, links);
+        Check(links.Count == 1, "a drawn block outside the network does not disturb the link");
+        Check(FindLink(links, 10, 20) != null, "and the link is the pair that exists");
+
+        // ---- degenerate inputs ----
+        Check(ConveyorNetwork.Build(null, visible, links) == 0 && links.Count == 0,
+              "null segments clear the link list");
+        Check(ConveyorNetwork.Build(segments, null, links) == 0 && links.Count == 0,
+              "null visible ids clear the link list");
+        Check(ConveyorNetwork.Build(segments, new List<long>(), links) == 0 && links.Count == 0,
+              "fewer than two drawn blocks cannot produce a link");
+        Check(ConveyorNetwork.Build(segments, visible, null) == 0,
+              "a null output list is refused, not thrown at");
+
+        // ---- determinism ----
+        //
+        // The list is rebuilt on every structural refresh and read by the draw path, so the same
+        // ship has to produce the same order. This is the assertion that keeps the picture from
+        // reshuffling between two passes.
+        var first = new List<ConveyorLink>();
+        var second = new List<ConveyorLink>();
+        segments.Clear();
+        segments.Add(new ConveyorSegment(30, 98));
+        segments.Add(new ConveyorSegment(98, 10));
+        segments.Add(new ConveyorSegment(98, 20));
+        visible.Clear();
+        visible.Add(10);
+        visible.Add(20);
+        visible.Add(30);
+        ConveyorNetwork.Build(segments, visible, first);
+        ConveyorNetwork.Build(segments, visible, second);
+        Check(first.Count == second.Count, "the same input produces the same number of links");
+        for (int i = 0; i < first.Count; i++)
+        {
+            Check(first[i].SameAs(second[i]), "link " + i + " is produced in the same order");
+        }
+
+        // ---- the graph's own side of the contract ----
+        var graph = new GridGraph(1);
+        graph.AddNode(MakeTarget(10, "LargeBlockConveyor"));
+        graph.AddNode(MakeTarget(20, "LargeBlockConveyor"));
+        graph.AddConveyor(new ConveyorLink(10, 20));
+        Check(graph.ConveyorCount == 1, "a conveyor link is stored on the graph");
+        Check(graph.Conveyors[0].SourceEntityId == 10, "and keeps its normalised ends");
+
+        graph.AddConveyor(new ConveyorLink(10, 10));
+        graph.AddConveyor(new ConveyorLink(0, 20));
+        graph.AddConveyor(null);
+        Check(graph.ConveyorCount == 1, "a self-link, a zero id and a null are refused");
+
+        graph.AddNode(MakeTarget(30, "LargeBlockConveyor"));
+        graph.AddConveyor(new ConveyorLink(20, 30));
+        Check(graph.ConveyorCount == 2, "a second link is stored");
+        graph.RemoveNode(20);
+        Check(graph.ConveyorCount == 0,
+              "removing a node drops every conveyor link that touched it");
+        graph.Clear();
+        Check(graph.ConveyorCount == 0, "clearing the graph drops its conveyor links");
+    }
+
+    /// <summary>
+    /// A link between two ids, in either order, or null. Used by the checks above so a failure
+    /// names the pair rather than an index.
+    /// </summary>
+    private static ConveyorLink FindLink(List<ConveyorLink> links, long a, long b)
+    {
+        for (int i = 0; i < links.Count; i++)
+        {
+            if (links[i].SameAs(new ConveyorLink(a, b))) return links[i];
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------ conveyor pipes (ADR-0040)
+    //
+    // The pipe's two rails and the staircase that rounds a bend. The draw path cannot be asked
+    // about any of this: a wrong radius is a picture that looks almost right, and a missing rail
+    // is a pipe that reads as a wire.
+    private static void ConveyorPipeRails()
+    {
+        var route = new List<Vector4>();
+        var pipes = new List<Vector4>();
+        var router = new PipeRouter();
+
+        const float half = 0.5f;      // half the pipe's width, in the route's units
+        const float corner = 6f;      // bend radius, in the same units
+
+        // ---- a straight run is two parallel rails and nothing else ----
+        route.Add(new Vector4(0f, 10f, 100f, 10f));
+        int count = router.Build(route, corner, half, 1f, half, pipes);
+
+        Check(count == 2, "a straight pipe has two rails (got " + count + ")");
+        CheckAllAxisAligned(pipes, "straight pipe");
+        Check(FindRail(pipes, true, 10f - half) != null, "the lower rail sits half a width below");
+        Check(FindRail(pipes, true, 10f + half) != null, "the upper rail sits half a width above");
+        Check(FindRail(pipes, true, 10f) == null, "there is no rail on the centre line");
+        Check(PipeRailSpan(pipes, true, 10f - half) >= 99.9f,
+              "the rail spans the whole straight run");
+
+        // ---- a bend is rounded, not a right angle ----
+        //
+        // The two rails stop at the fillet's tangent points and the corner itself is bridged by
+        // a staircase of short axis-aligned pieces. The assertion that matters is the one a
+        // sharp corner would fail: the horizontal rail stops `corner` short of the vertex.
+        route.Clear();
+        route.Add(new Vector4(0f, 0f, 100f, 0f));
+        route.Add(new Vector4(100f, 0f, 100f, 100f));
+        count = router.Build(route, corner, half, 1f, half, pipes);
+
+        Check(count > 4, "a bend adds staircase pieces to the two rails (got " + count + ")");
+        CheckAllAxisAligned(pipes, "bent pipe");
+
+        // The rail that runs into the bend stops well before the vertex: a sharp join would
+        // carry it all the way to x = 100 and drop from there.
+        Check(PipeRailSpan(pipes, true, -half) < 100f - 1f,
+              "the incoming rail stops short of the vertex: the bend is rounded");
+        Check(PipeRailSpan(pipes, true, half) < 100f - 1f,
+              "the inner incoming rail stops short of the vertex too");
+
+        // No rail piece passes through the sharp corner: every piece of the bend is offset from
+        // the vertex by at least half the pipe's width. A square join would have pieces ending
+        // exactly at (100, 0) on both axes.
+        bool touchesVertex = false;
+        for (int i = 0; i < pipes.Count; i++)
+        {
+            if (PipePassesThrough(pipes[i], 100f, 0f, 1e-4f)) touchesVertex = true;
+        }
+        Check(!touchesVertex, "no rail passes through the sharp corner: the bend is rounded");
+
+        // ---- the staircase follows the fillet's own arc ----
+        //
+        // The fillet's centre is `corner` from each leg, so the arc's 45° point is at a known
+        // distance from the vertex. The staircase samples that point exactly (it is the step
+        // boundary), and asserting it pins the centre, both radii and the sampling in one
+        // comparison — a staircase built from the wrong centre or with the wrong radius misses
+        // it by whole units.
+        const float diagonal = 0.70710678f;
+        float outerMidX = 100f - corner + (corner + half) * diagonal;
+        float outerMidY = corner - (corner + half) * diagonal;
+        float innerMidX = 100f - corner + (corner - half) * diagonal;
+        float innerMidY = corner - (corner - half) * diagonal;
+
+        Check(FindRailPoint(pipes, outerMidX, outerMidY),
+              "the outer rail passes the 45° point of its arc");
+        Check(FindRailPoint(pipes, innerMidX, innerMidY),
+              "the inner rail passes the 45° point of its arc");
+
+        // ---- a very short leg clamps the fillet ----
+        //
+        // Two bends cannot overlap: the radius may use at most half of each adjacent leg. A
+        // route that ignored this would have its rails cross themselves at the corner.
+        route.Clear();
+        route.Add(new Vector4(0f, 0f, 2f, 0f));
+        route.Add(new Vector4(2f, 0f, 2f, 100f));
+        count = router.Build(route, corner, half, 1f, half, pipes);
+        Check(count > 0, "a short leg still produces a pipe");
+        CheckAllAxisAligned(pipes, "clamped pipe");
+        Check(AllFinite(pipes), "the clamped fillet produces no NaN or infinity");
+
+        // The fillet may use at most half of the short leg, so the bend reaches at most one
+        // radius plus half a width past the vertex. An unclamped radius of six would reach
+        // 2 + 6.5 and the pipe would loop back over its own straight.
+        float maxX = 0f;
+        for (int i = 0; i < pipes.Count; i++)
+        {
+            if (pipes[i].X > maxX) maxX = pipes[i].X;
+            if (pipes[i].Z > maxX) maxX = pipes[i].Z;
+        }
+        Check(maxX <= 2f + 1f + half + 1e-3f,
+              "the clamped fillet uses at most half of the short leg (max x " + maxX + ")");
+
+        // ---- the aspect ratio widens only the horizontal extents ----
+        //
+        // One X unit of the layout is the window's width and one Y unit its height, so a pipe
+        // must be the same width on screen whatever the window shape. A horizontal rail's offset
+        // is vertical and needs no correction; a vertical rail's offset is horizontal and does.
+        route.Clear();
+        route.Add(new Vector4(0f, 0f, 100f, 0f));
+        route.Add(new Vector4(100f, 0f, 100f, 100f));
+        const float wide = 0.5f;
+        router.Build(route, corner, half, wide, half, pipes);
+        Check(FindRail(pipes, true, -half) != null,
+              "a horizontal rail keeps its vertical offset at a wide aspect");
+        Check(FindRail(pipes, false, 100f + half * wide) != null,
+              "a vertical rail's horizontal offset is scaled by the aspect");
+        Check(FindRail(pipes, false, 100f + half) == null,
+              "and it is not the uncorrected offset");
+
+        // ---- degenerate inputs ----
+        Check(router.Build(null, corner, half, 1f, half, pipes) == 0 && pipes.Count == 0,
+              "a null route clears the rail list");
+        Check(router.Build(new List<Vector4>(), corner, half, 1f, half, pipes) == 0,
+              "an empty route produces no rails");
+        Check(router.Build(route, corner, 0f, 1f, half, pipes) == 0,
+              "a zero width produces no rails");
+        Check(router.Build(route, corner, half, 0f, half, pipes) > 0,
+              "an unknown aspect degrades to square units instead of producing nothing");
+        Check(router.Build(route, corner, half, 1f, 0f, pipes) > 0,
+              "an unknown step length still produces a bend");
+
+        // The buffer is reused: a build must replace its contents, not append to them. Both
+        // builds use the same arguments, so a difference could only come from accumulation.
+        router.Build(route, corner, half, 1f, half, pipes);
+        int before = pipes.Count;
+        router.Build(route, corner, half, 1f, half, pipes);
+        Check(pipes.Count == before, "the rail buffer is cleared on each build");
+
+        // The router's own scratch survives a long route and a short one in either order: a
+        // build must not depend on what the previous build left behind.
+        var longRoute = new List<Vector4>();
+        for (int i = 0; i < 12; i++)
+        {
+            longRoute.Add(i % 2 == 0
+                ? new Vector4(0f, i * 10f, 100f, i * 10f)
+                : new Vector4(100f, i * 10f, 100f, (i + 1) * 10f));
+        }
+        var longPipes = new List<Vector4>();
+        int longCount = router.Build(longRoute, corner, half, 1f, half, longPipes);
+        Check(longCount > 0, "a long route with many bends builds");
+
+        var shortRoute = new List<Vector4> { new Vector4(0f, 0f, 50f, 0f) };
+        var shortPipes = new List<Vector4>();
+        Check(router.Build(shortRoute, corner, half, 1f, half, shortPipes) == 2,
+              "a short route after a long one still builds exactly two rails");
+    }
+
+    /// <summary>
+    /// The rail at a given offset, or null. <paramref name="horizontal"/> selects the direction
+    /// the rail runs in; <paramref name="offset"/> is the coordinate it sits at (y for a
+    /// horizontal rail, x for a vertical one). Tolerance is a thousandth of a unit, which is far
+    /// below a pixel in the layout's units.
+    /// </summary>
+    private static Vector4? FindRail(List<Vector4> pipes, bool horizontal, float offset)
+    {
+        for (int i = 0; i < pipes.Count; i++)
+        {
+            Vector4 piece = pipes[i];
+            bool isHorizontal = Math.Abs(piece.Y - piece.W) < 1e-6f;
+            bool isVertical = Math.Abs(piece.X - piece.Z) < 1e-6f;
+
+            if (horizontal && isHorizontal && Math.Abs(piece.Y - offset) < 1e-3f) return piece;
+            if (!horizontal && isVertical && Math.Abs(piece.X - offset) < 1e-3f) return piece;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// How far the rail at a given offset reaches along its own axis, from the origin: the
+    /// largest coordinate of every piece that belongs to it. Used to assert where a rail stops
+    /// at a fillet, which is the visible difference between a rounded bend and a sharp one.
+    /// </summary>
+    private static float PipeRailSpan(List<Vector4> pipes, bool horizontal, float offset)
+    {
+        float reach = 0f;
+
+        for (int i = 0; i < pipes.Count; i++)
+        {
+            Vector4 piece = pipes[i];
+            bool isHorizontal = Math.Abs(piece.Y - piece.W) < 1e-6f;
+            bool isVertical = Math.Abs(piece.X - piece.Z) < 1e-6f;
+
+            if (horizontal && isHorizontal && Math.Abs(piece.Y - offset) < 1e-3f)
+            {
+                if (piece.Z > reach) reach = piece.Z;
+                if (piece.X > reach) reach = piece.X;
+            }
+            if (!horizontal && isVertical && Math.Abs(piece.X - offset) < 1e-3f)
+            {
+                if (piece.W > reach) reach = piece.W;
+                if (piece.Y > reach) reach = piece.Y;
+            }
+        }
+        return reach;
+    }
+
+    /// <summary>
+    /// True when some rail piece has an endpoint at the given point. The staircase's sample
+    /// points are exactly the endpoints it produces, so this is how the checks pin the fillet's
+    /// geometry.
+    /// </summary>
+    private static bool FindRailPoint(List<Vector4> pipes, float x, float y)
+    {
+        const float tolerance = 1e-3f;
+
+        for (int i = 0; i < pipes.Count; i++)
+        {
+            Vector4 piece = pipes[i];
+            if (Math.Abs(piece.X - x) < tolerance && Math.Abs(piece.Y - y) < tolerance) return true;
+            if (Math.Abs(piece.Z - x) < tolerance && Math.Abs(piece.W - y) < tolerance) return true;
+        }
+        return false;
+    }
+
+    private static bool PipePassesThrough(Vector4 piece, float x, float y, float tolerance)    {
+        float minX = Math.Min(piece.X, piece.Z) - tolerance;
+        float maxX = Math.Max(piece.X, piece.Z) + tolerance;
+        float minY = Math.Min(piece.Y, piece.W) - tolerance;
+        float maxY = Math.Max(piece.Y, piece.W) + tolerance;
+
+        return x >= minX && x <= maxX && y >= minY && y <= maxY;
+    }
+
+    private static bool AllFinite(List<Vector4> pieces)
+    {
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (float.IsNaN(p.X) || float.IsNaN(p.Y) || float.IsNaN(p.Z) || float.IsNaN(p.W)) return false;
+            if (float.IsInfinity(p.X) || float.IsInfinity(p.Y)
+                || float.IsInfinity(p.Z) || float.IsInfinity(p.W)) return false;
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------ block search (ADR-0023)

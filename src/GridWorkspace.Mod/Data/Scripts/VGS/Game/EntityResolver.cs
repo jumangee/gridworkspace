@@ -62,5 +62,31 @@ namespace Vgs.Game
                 return false;
             }
         }
+
+        /// <summary>
+        /// True when <paramref name="entityId"/> is a live grid. The same rule as
+        /// <see cref="TryResolveTerminalBlock"/>: a missing entity is an ordinary answer, only an
+        /// exception is logged.
+        ///
+        /// <b>Why it belongs here and not in the conveyor probe.</b> The probe needs a grid for
+        /// every card-holding grid id it collected, and the lookup is the same "id → live
+        /// entity" question this type already owns. A second copy would mean a second throttle
+        /// tag for one condition, which is exactly what this type exists to prevent.
+        /// </summary>
+        public static bool TryResolveGrid(long entityId, out IMyCubeGrid grid)
+        {
+            grid = null;
+
+            try
+            {
+                grid = MyAPIGateway.Entities.GetEntityById(entityId) as IMyCubeGrid;
+                return grid != null;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled(LogTag, "could not resolve a grid by entity id", e, ThrottleAttempts);
+                return false;
+            }
+        }
     }
 }

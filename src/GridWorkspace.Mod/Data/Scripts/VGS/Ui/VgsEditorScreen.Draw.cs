@@ -47,6 +47,12 @@ namespace Vgs.Ui
                 // would paint a group's translucent fill over its own grid's border.
                 DrawGridBorders(canvasTopLeft, canvasSize);
                 DrawGroupFrames(canvasTopLeft, canvasSize);
+
+                // The conveyor network is the physical substrate the logic sits on: it is drawn
+                // under the cards and under the logical connections, so a wire always reads on
+                // top of a pipe it happens to share a lane with (ADR-0040).
+                DrawConveyors(canvasTopLeft, canvasSize);
+
                 DrawEdges(canvasTopLeft, canvasSize);
                 DrawWatchLines(canvasTopLeft, canvasSize);
                 DrawPendingLine(canvasTopLeft, canvasSize);
@@ -128,6 +134,106 @@ namespace Vgs.Ui
                 VgsScreenDraw.HorizontalLinePixels(topLeft.Y + y, topLeft.X, topLeft.X + size.X, c,
                                                    VgsConstants.GridLinePixels);
             }
+        }
+
+        /// <summary>
+        /// Draws the conveyor network as pipes between the cards it joins (ADR-0040).
+        ///
+        /// <b>What a link means here.</b> Not "these two blocks are somewhere on the same
+        /// conveyor network" — on a cargo ship that would be every pair of containers — but
+        /// "these two are adjacent on the network with no other <em>drawn</em> block between
+        /// them" (see <see cref="ConveyorNetwork"/>). The picture is therefore a graph of the
+        /// cards, not a picture of the tubes: a junction that has no card is invisible and its
+        /// neighbours end up directly joined, which is exactly the rule the requirement asks
+        /// for — the points of intersection are the blocks already on the schema.
+        ///
+        /// <b>Where the pipe attaches.</b> To the card's right edge on the source side and its
+        /// left edge on the target side, the same sides a connection uses, so the two kinds of
+        /// line leave a card the same way. The route is the ordinary orthogonal one
+        /// (<see cref="EdgeRouting.Build"/>), and the pipe is its two rails
+        /// (<see cref="PipeRouter.Build"/>).
+        ///
+        /// <b>Drawn before the cards, after the frames.</b> A pipe is plumbing: the card is what
+        /// the player acts on and the logical line is what he reads, so both are painted over
+        /// it. The ends of the route lie inside the cards and are hidden by them, which is what
+        /// makes the pipe look like it enters the block rather than stopping at its border.
+        ///
+        /// The per-frame budget is <see cref="VgsConstants.MaxRenderedConveyors"/>: a pipe with
+        /// one bend costs about seventy rectangles (two rails per straight, plus a staircase of
+        /// two pieces per step per bend), so the cap is what keeps a fully plumbed cargo deck
+        /// from turning the canvas into a texture. Links past the cap stay in the graph and are
+        /// not drawn, exactly like connections past <see cref="VgsConstants.MaxRenderedEdges"/>.
+        /// </summary>
+        private void DrawConveyors(Vector2 topLeft, Vector2 size)
+        {
+            if (!_view.ShowConveyors) return;
+
+            IList<ConveyorLink> links = _graph.Conveyors;
+            if (links.Count == 0) return;
+
+            float halfWidth = VgsConstants.ConveyorHalfWidth * _view.Zoom;
+            if (halfWidth <= 0f) return;
+
+            float corner = VgsConstants.ConveyorCorner * _view.Zoom;
+            float step = VgsConstants.ConveyorStep * _view.Zoom;
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            int drawn = 0;
+            for (int i = 0; i < links.Count && drawn < VgsConstants.MaxRenderedConveyors; i++)
+            {
+                ConveyorLink link = links[i];
+                if (link == null) continue;
+
+                Node source = _graph.GetNode(link.SourceEntityId);
+                Node target = _graph.GetNode(link.TargetEntityId);
+
+                // A link whose card is gone is skipped for one refresh: the pass that dropped
+                // the node has already rebuilt the network, and until then the honest answer is
+                // to draw nothing rather than a pipe to nowhere.
+                if (source == null || target == null) continue;
+
+                Color colour = Fade(ColConveyorPipe, MaxAlpha(source, target));
+                if (colour.A == 0) continue;
+
+                Vector2 from, to;
+                if (!PipeAnchor(source, true, out from)) continue;
+                if (!PipeAnchor(target, false, out to)) continue;
+
+                EdgeRouting.Build(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
+                                  VgsConstants.LineGutter * _view.Zoom, _route);
+
+                if (_pipeRouter.Build(_route, corner, halfWidth, aspect, step, _pipeBuffer) == 0) continue;
+
+                for (int p = 0; p < _pipeBuffer.Count; p++)
+                {
+                    Vector4 piece = _pipeBuffer[p];
+                    VgsScreenDraw.SegmentPixels(new Vector2(piece.X, piece.Y),
+                                                new Vector2(piece.Z, piece.W),
+                                                VgsConstants.ConveyorWallPixels,
+                                                topLeft, size, colour);
+                }
+                drawn++;
+            }
+        }
+
+        /// <summary>
+        /// The point a pipe leaves a card from, in graph units: the middle of the card's right
+        /// edge when <paramref name="trailingEdge"/> is true (the source), and the middle of its
+        /// left edge otherwise (the target). Both kinds of line therefore leave a card on the
+        /// right and arrive on the left, and a reader never has to work out which convention a
+        /// particular line follows.
+        /// </summary>
+        private static bool PipeAnchor(Node node, bool trailingEdge, out Vector2 anchor)
+        {
+            anchor = Vector2.Zero;
+
+            Vector2 cardTopLeft, cardSize;
+            PortGeometry.CardRect(node, out cardTopLeft, out cardSize);
+            if (cardSize.X <= 0f || cardSize.Y <= 0f) return false;
+
+            float x = trailingEdge ? cardTopLeft.X + cardSize.X : cardTopLeft.X;
+            anchor = new Vector2(x, cardTopLeft.Y + cardSize.Y * 0.5f);
+            return true;
         }
 
         /// <summary>
@@ -1786,6 +1892,7 @@ namespace Vgs.Ui
                 case 0: return _view.ShowHidden;
                 case 1: return _view.ShowSubgrids;
                 case 2: return _view.ShowGridBorders;
+                case 3: return _view.ShowConveyors;
             }
             return false;
         }
@@ -1798,6 +1905,7 @@ namespace Vgs.Ui
                 case 0: return VgsText.ModesShowHidden;
                 case 1: return VgsText.ModesShowSubgrids;
                 case 2: return VgsText.ModesShowGridBorders;
+                case 3: return VgsText.ModesShowConveyors;
             }
             return string.Empty;
         }

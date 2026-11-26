@@ -847,6 +847,64 @@ namespace Vgs.Ui
         private static readonly List<Vector4> _dashBuffer = new List<Vector4>(64);
 
         /// <summary>
+        /// Draws an axis-aligned segment whose thickness is a <b>device-pixel count</b>, clipped
+        /// to the canvas.
+        ///
+        /// <b>Why this exists beside <see cref="Segment"/>.</b> <see cref="Segment"/> takes its
+        /// thickness in layout units, which is right for a connection line (a hairline that
+        /// should read the same at any resolution) but wrong for a shape made of several
+        /// parallel pieces that have to line up: a wall of a conveyor pipe is one pixel thick at
+        /// every zoom, and the two walls of one pipe are separated by a fixed number of pixels.
+        /// In layout units the horizontal piece of that wall would be <c>height/width</c> times
+        /// thicker than the vertical one (ADR-0009) and the pipe would not close at its bends.
+        ///
+        /// The thickness is therefore a pixel count, exactly as it is for
+        /// <see cref="HorizontalLinePixels"/> and <see cref="VerticalLinePixels"/>, and the
+        /// clipping happens in layout units before the pixels are snapped, so a pipe that runs
+        /// under the header stops at its edge instead of poking out.
+        /// </summary>
+        public static void SegmentPixels(Vector2 from, Vector2 to, float thicknessPixels,
+                                         Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        {
+            if (thicknessPixels <= 0f) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
+
+            // Decided by magnitude, not by equality, for the same reason Segment does: the
+            // router is meant to produce axis-aligned pieces, and one that came out a hair off
+            // must still be drawn along its dominant axis instead of disappearing.
+            float dx = Math.Abs(to.X - from.X);
+            float dy = Math.Abs(to.Y - from.Y);
+
+            if (dx >= dy)
+            {
+                float y = (from.Y + to.Y) * 0.5f;
+                if (y < clipTopLeft.Y || y > clipTopLeft.Y + clipSize.Y) return;
+
+                float left = from.X < to.X ? from.X : to.X;
+                float right = from.X < to.X ? to.X : from.X;
+
+                if (left < clipTopLeft.X) left = clipTopLeft.X;
+                if (right > clipTopLeft.X + clipSize.X) right = clipTopLeft.X + clipSize.X;
+                if (right <= left) return;
+
+                HorizontalLinePixels(y, left, right, color, thicknessPixels);
+                return;
+            }
+
+            float x = (from.X + to.X) * 0.5f;
+            if (x < clipTopLeft.X || x > clipTopLeft.X + clipSize.X) return;
+
+            float top = from.Y < to.Y ? from.Y : to.Y;
+            float bottom = from.Y < to.Y ? to.Y : from.Y;
+
+            if (top < clipTopLeft.Y) top = clipTopLeft.Y;
+            if (bottom > clipTopLeft.Y + clipSize.Y) bottom = clipTopLeft.Y + clipSize.Y;
+            if (bottom <= top) return;
+
+            VerticalLinePixels(x, top, bottom, color, thicknessPixels);
+        }
+
+        /// <summary>
         /// Draws a filled disc, clipped to the canvas. <paramref name="radius"/> is measured
         /// along Y; the horizontal extent is derived so the result is round on screen.
         ///

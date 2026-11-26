@@ -54,6 +54,24 @@ namespace Vgs.Game
             new Dictionary<long, string>(8);
 
         /// <summary>
+        /// Reused buffers for the conveyor pass (ADR-0040). The pass runs on the structural
+        /// refresh, so these are not in a per-frame path; they are fields anyway because a fresh
+        /// list per refresh on a large construct is pure garbage for no benefit.
+        /// </summary>
+        private static readonly List<ConveyorSegment> _conveyorSegments =
+            new List<ConveyorSegment>(256);
+
+        /// <summary>Entity ids of the drawn blocks, in graph order — the nodes of the reduction.</summary>
+        private static readonly List<long> _conveyorVisibleIds = new List<long>(256);
+
+        /// <summary>Links produced by the reduction, copied into the graph.</summary>
+        private static readonly List<ConveyorLink> _conveyorLinks = new List<ConveyorLink>(64);
+
+        /// <summary>How many drawn cards each grid holds; a grid with fewer than two cannot link.</summary>
+        private static readonly Dictionary<long, int> _conveyorGridCounts =
+            new Dictionary<long, int>(8);
+
+        /// <summary>
         /// Creates a graph for the given grid, or an empty graph when the grid is
         /// unavailable. The caller owns the result.
         ///
@@ -62,7 +80,8 @@ namespace Vgs.Game
         /// The flag is not touched — the mode only decides what the schema draws, so turning it
         /// back off hides those cards again and nothing in the world has changed.
         /// </summary>
-        public static GridGraph Build(IMyCubeGrid grid, bool includeHidden, bool includeSubgrids)
+        public static GridGraph Build(IMyCubeGrid grid, bool includeHidden, bool includeSubgrids,
+                                      bool includeConveyors)
         {
             long gridId = 0;
             if (grid != null)
@@ -74,7 +93,7 @@ namespace Vgs.Game
             var graph = new GridGraph(gridId);
             if (grid == null) return graph;
 
-            Refresh(graph, grid, includeHidden, includeSubgrids);
+            Refresh(graph, grid, includeHidden, includeSubgrids, includeConveyors);
             return graph;
         }
 
@@ -94,7 +113,7 @@ namespace Vgs.Game
         /// rebuild twice a second (see <c>docs/03-architecture.md</c>, «два прохода»).
         /// </summary>
         public static void Refresh(GridGraph graph, IMyCubeGrid grid, bool includeHidden,
-                                   bool includeSubgrids)
+                                   bool includeSubgrids, bool includeConveyors)
         {
             if (graph == null || grid == null) return;
 
@@ -238,8 +257,135 @@ namespace Vgs.Game
             // its edges with it, so the remaining nodes' stacks have to close up.
             graph.LayoutPorts();
 
+            // The conveyor network is derived from the world as well, but from a different
+            // source: the grid's serialised conveyor lines, not the toolbars (ADR-0040). It is
+            // read last, after the set of drawn nodes is final, because the links are defined
+            // between *drawn* nodes and a node added or dropped a moment ago changes them.
+            SyncConveyors(graph, includeConveyors);
+
             VgsLog.Debug("graph refresh: " + graph.NodeCount + " nodes, " + graph.GroupCount
-                         + " groups, " + graph.EdgeCount + " edges");
+                         + " groups, " + graph.EdgeCount + " edges, " + graph.ConveyorCount
+                         + " conveyor links");
+        }
+
+        /// <summary>
+        /// Rebuilds the graph's conveyor links from the grids that have drawn cards (ADR-0040).
+        ///
+        /// <b>Only grids that can produce a link are read.</b> A conveyor line never leaves its
+        /// grid — a cross-grid pipe is two lines joined by a connector block, which is a block
+        /// like any other — so a link between two drawn nodes always lies within one grid, and a
+        /// grid with fewer than two drawn cards cannot produce one. That filter is free and it
+        /// is what keeps a construct with a dozen subgrids from paying for a serialisation of
+        /// every one of them.
+        ///
+        /// <b>The read is expensive, so the toggle gates it.</b> <c>GetObjectBuilder</c>
+        /// serialises every block of the grid; it is far heavier than reading a flag, and the
+        /// structural pass runs about once every 1.5 seconds for as long as the editor is open.
+        /// When the network is hidden nothing is read and the list is emptied, which is the
+        /// whole reason the toggle is a schema option rather than a drawing option
+        /// (<c>ViewState.ShowConveyors</c>).
+        ///
+        /// <b>"Could not read" is not "there are none".</b> A grid that has gone away, or a
+        /// serialisation that threw, leaves the previous network in place — the same rule the
+        /// state pass follows for a failed integrity read. Clearing on a failure would make the
+        /// pipes blink out for a frame.
+        /// </summary>
+        private static void SyncConveyors(GridGraph graph, bool includeConveyors)
+        {
+            if (graph == null) return;
+
+            if (!includeConveyors)
+            {
+                graph.ClearConveyors();
+                return;
+            }
+
+            try
+            {
+                _conveyorVisibleIds.Clear();
+                _conveyorGridCounts.Clear();
+
+                IList<Node> nodes = graph.Nodes;
+                for (int i = 0; i < nodes.Count; i++)
+                {
+                    Node node = nodes[i];
+                    if (node == null || node.IsGroup) continue;
+
+                    _conveyorVisibleIds.Add(node.EntityId);
+
+                    // A card whose grid could not be read has no frame and cannot be located
+                    // in a conveyor line either: its lines are read from the grid, and there
+                    // is no grid to read.
+                    if (node.GridEntityId == 0) continue;
+
+                    int count;
+                    _conveyorGridCounts.TryGetValue(node.GridEntityId, out count);
+                    _conveyorGridCounts[node.GridEntityId] = count + 1;
+                }
+
+                if (_conveyorVisibleIds.Count < 2 || _conveyorGridCounts.Count == 0)
+                {
+                    graph.ClearConveyors();
+                    return;
+                }
+
+                _conveyorSegments.Clear();
+
+                // How many grids were actually read. Distinct from `grids` below, which counts
+                // only the ones that could produce a link, because "no grid can produce a link"
+                // and "every grid refused to be read" are the same picture but different
+                // answers: the first means the network is empty, the second means it is unknown.
+                int gridsConsidered = 0;
+                int gridsRead = 0;
+
+                foreach (KeyValuePair<long, int> pair in _conveyorGridCounts)
+                {
+                    // Fewer than two drawn cards on that grid: no link can lie inside it.
+                    if (pair.Value < 2) continue;
+
+                    gridsConsidered++;
+                    if (gridsRead >= VgsConstants.MaxConveyorGrids) break;
+
+                    IMyCubeGrid conveyorGrid;
+                    if (!EntityResolver.TryResolveGrid(pair.Key, out conveyorGrid)) continue;
+
+                    // Only a read that actually happened counts: a refusal must not be mistaken
+                    // for "this grid has no lines" (see ConveyorProbe.TryReadGrid).
+                    if (!ConveyorProbe.TryReadGrid(conveyorGrid, _conveyorSegments)) continue;
+                    gridsRead++;
+
+                    if (_conveyorSegments.Count >= VgsConstants.MaxConveyorSegments)
+                    {
+                        VgsLog.Throttled("conveyor-limit",
+                                         "construct has more conveyor lines than the schema reads; "
+                                         + "the network is partial", 30);
+                        break;
+                    }
+                }
+
+                // No grid has two cards: there is nothing a link could join, so the old network
+                // is not stale but wrong, and is dropped.
+                if (gridsConsidered == 0)
+                {
+                    graph.ClearConveyors();
+                    return;
+                }
+
+                // Every grid that could produce a link refused to be read: keep the previous
+                // network rather than blinking it out for one bad frame.
+                if (gridsRead == 0) return;
+
+                graph.ClearConveyors();
+
+                if (_conveyorSegments.Count == 0) return;
+
+                ConveyorNetwork.Build(_conveyorSegments, _conveyorVisibleIds, _conveyorLinks);
+                for (int i = 0; i < _conveyorLinks.Count; i++) graph.AddConveyor(_conveyorLinks[i]);
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("conveyor-sync", "could not rebuild the conveyor network", e, 300);
+            }
         }
 
         /// <summary>

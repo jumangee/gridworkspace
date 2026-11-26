@@ -71,11 +71,21 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\BlockSearch.cs'),
     (Join-Path $sourceRoot 'Model\TextEditor.cs'),
     (Join-Path $sourceRoot 'Model\CellContents.cs'),
+    # The conveyor reduction (ADR-0040): the raw lines and the logical links between drawn
+    # nodes. Pure data, so the rule "a hidden block is walked through, not cut at" is a
+    # sentence in the gate instead of a picture somebody has to judge in the game.
+    (Join-Path $sourceRoot 'Model\ConveyorSegment.cs'),
+    (Join-Path $sourceRoot 'Model\ConveyorLink.cs'),
+    (Join-Path $sourceRoot 'Model\ConveyorNetwork.cs'),
     (Join-Path $sourceRoot 'Model\GridGraph.cs'),
     (Join-Path $sourceRoot 'Model\BlockPortCatalog.cs'),
     (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),
     (Join-Path $sourceRoot 'Ui\PortGeometry.cs'),
     (Join-Path $sourceRoot 'Ui\EdgeRouting.cs'),
+    # The pipe's rails (ADR-0040): the same route as a connection, drawn as two walls with a
+    # bore between them, with every bend unrolled into an axis-aligned staircase. Geometry the
+    # draw path cannot be asked about — hence here.
+    (Join-Path $sourceRoot 'Ui\PipeRouter.cs'),
     # The search field and the view state (Step 4): both were extracted from the screen so that
     # the arithmetic that breaks silently — where the caret lands, how far the text scrolls,
     # whether a write is due — is checked without the game. The field's one game dependency (font
@@ -454,3 +464,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 exit 0
+
