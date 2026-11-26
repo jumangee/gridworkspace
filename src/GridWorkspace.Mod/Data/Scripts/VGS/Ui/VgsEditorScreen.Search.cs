@@ -229,7 +229,7 @@ namespace Vgs.Ui
             if (!SearchActive) return;
 
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
 
             IList<Node> nodes = _graph.Nodes;
             for (int i = 0; i < nodes.Count; i++)

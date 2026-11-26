@@ -572,6 +572,12 @@ namespace Vgs.Ui
         ///
         /// Clipping happens in the same space, after snapping, so a clipped edge cannot move off
         /// the pixel it was rounded to.
+        ///
+        /// <b>A clipped edge is dropped, not moved.</b> The box is no longer clamped to the clip
+        /// and drawn as four edges of the clamped box: that painted an edge that is off-screen
+        /// onto the clip boundary, so a grid frame scrolled half out of the canvas showed a
+        /// bottom border lying exactly on the bottom bar's edge (R-015). Which edges survive is
+        /// decided by <see cref="GridFrames.AppendBorderEdgesClipped"/>, in the same pixel space.
         /// </summary>
         public static void BorderPixels(Vector2 position, Vector2 size, Vector2 clipTopLeft,
                                         Vector2 clipSize, Color color, float thicknessPixels)
@@ -605,19 +611,16 @@ namespace Vgs.Ui
                                                             _clientHeightPixels,
                                                             clipTopLeft.Y + clipSize.Y);
 
-            if (left < clipLeft) left = clipLeft;
-            if (top < clipTop) top = clipTop;
-            if (right > clipRight) right = clipRight;
-            if (bottom > clipBottom) bottom = clipBottom;
-
-            if (right <= left || bottom <= top) return;
-
-            // A whole number of pixels, at least one: half a pixel is a translucent line, and a
-            // line that rounds to nothing is a missing border (see PixelThickness).
+            // ---- which edges survive the clip, in the same pixel space ----
+            //
+            // The box is passed unclamped on purpose: clamping it here would make every edge
+            // "inside the clip" by construction, which is exactly how an off-screen edge used to
+            // end up painted on the canvas boundary (R-015).
             float t = PixelThickness(thicknessPixels);
 
             _borderEdges.Clear();
-            GridFrames.AppendBorderEdges(_borderEdges, left, top, right, bottom, t);
+            GridFrames.AppendBorderEdgesClipped(_borderEdges, left, top, right, bottom,
+                                                clipLeft, clipTop, clipRight, clipBottom, t);
 
             for (int i = 0; i < _borderEdges.Count; i++)
             {

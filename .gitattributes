@@ -1,0 +1,42 @@
+# Line endings, pinned so they cannot drift between machines.
+#
+# The repository stores LF in every blob (checked with `git ls-files --eol`: 186 files
+# `i/lf`, 0 `i/crlf`). Without this file that convention was only a habit: a Windows
+# editor that writes CRLF, or a git with `core.autocrlf=true`, silently produces a
+# working tree whose bytes differ from the index while `git status` still says "clean"
+# — git trusts its stat cache and never compares the content. The drift then surfaces
+# as "LF will be replaced by CRLF" noise on the next `git add`, or as a diff nobody
+# meant to make.
+#
+# `text=auto` normalises text to LF *in the repository*, which is the convention every
+# blob here already follows. It deliberately does not pin the working-tree form: with
+# `core.autocrlf=true` a checkout still gives CRLF, with `false` it gives LF, and both
+# compare equal because the comparison is normalised too. Pinning `eol=lf` would have
+# forced LF on disk for people whose git is set up the Windows way, for no benefit —
+# the repository bytes are what matter.
+#
+# Naming the attribute is also what stops the warning. Without it git still normalises
+# by autocrlf, but warns "LF will be replaced by CRLF the next time Git touches it"
+# on every `git add`, which is the noise that started this.
+* text=auto
+
+# Batch files are the one exception, and it is not cosmetic.
+#
+# `tools/deploy-mod.cmd` and `tools/tail-mod-log.cmd` are the cmd twins of the
+# PowerShell tools, for machines whose execution policy forbids `.ps1`. Both use
+# labels (`:havepath`) and multi-line `if (...)` blocks. cmd.exe reads a batch file
+# line by line and its label handling assumes CRLF; an LF-only `.cmd` can mis-parse
+# those constructs, and the failure looks like a broken tool rather than a broken
+# checkout. The scripts are small, the cost of CRLF is nil, so they get CRLF — on
+# every machine, whatever its autocrlf says.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binaries: never normalise, never diff as text. `text=auto` would already detect
+# most of these, but saying it is what stops a future heuristic from guessing wrong.
+*.png binary
+*.jpg binary
+*.dds binary
+*.dll binary
+*.pdb binary
+*.zip binary

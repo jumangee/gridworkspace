@@ -32,7 +32,7 @@ namespace Vgs.Ui
                 VgsScreenDraw.SyncScreenSpace();
 
                 Vector2 canvasTopLeft, canvasSize;
-                GetCanvasRect(out canvasTopLeft, out canvasSize);
+                CanvasRect.Get(out canvasTopLeft, out canvasSize);
 
                 DrawBackdrop(canvasTopLeft, canvasSize);
                 DrawGrid(canvasTopLeft, canvasSize);
@@ -883,10 +883,11 @@ namespace Vgs.Ui
                 Vector2 screen = GraphToScreen(frame.TopLeft, clipTopLeft);
                 Vector2 screenSize = frame.Size * _view.Zoom;
 
-                // Cull the same way cards are culled: a grid scrolled off-screen costs two
-                // comparisons instead of a border.
-                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
-                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+                // Cull the same way cards are culled: a grid scrolled off-screen costs one
+                // comparison instead of a border. The predicate works in canvas coordinates —
+                // comparing the absolute position against the canvas size cut the frame one
+                // header height too early at the bottom (R-015).
+                if (!CanvasRect.Overlaps(clipTopLeft, clipSize, screen, screenSize)) continue;
 
                 // The editor's own grid is the quieter of the two: the player is looking at the
                 // construct from that ship part, and a border at full strength around everything
@@ -918,8 +919,7 @@ namespace Vgs.Ui
                 Vector2 screen = GraphToScreen(frame.TopLeft, clipTopLeft);
                 Vector2 screenSize = frame.Size * _view.Zoom;
 
-                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
-                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+                if (!CanvasRect.Overlaps(clipTopLeft, clipSize, screen, screenSize)) continue;
 
                 Color color = frame.GridEntityId == _graph.GridEntityId
                     ? ColGridFrameMain
@@ -935,8 +935,10 @@ namespace Vgs.Ui
         /// <b>Why this exists.</b> Four fixes in a row were reasoned from a screenshot rather than
         /// measured, and three were wrong. A report that says "the border has a spur" cannot
         /// distinguish a wrong corner from a wrong clip from a second box drawn at almost the same
-        /// place; the numbers can. This prints the box <em>and the four edge rectangles</em> the
-        /// rasteriser was given, plus the tab, so the next report can be answered from data.
+        /// place; the numbers can. This prints the box <em>and the edge rectangles</em> the
+        /// rasteriser was given, plus the tab, so the next report can be answered from data. There
+        /// may be fewer than four of them: an edge that lies outside the canvas is dropped rather
+        /// than moved onto the canvas boundary (R-015).
         ///
         /// One line per session, not per frame: it is a diagnostic, not telemetry.
         /// </summary>
@@ -956,6 +958,23 @@ namespace Vgs.Ui
                   .Append('/').Append(VgsScreenDraw.ApiScaleY.ToString("0.#####"))
                   .Append(", offset ").Append(VgsScreenDraw.ApiOffsetX.ToString("0.#####"))
                   .Append('/').Append(VgsScreenDraw.ApiOffsetY.ToString("0.#####"));
+
+            // The canvas in pixels, so the report names the edges the rasteriser actually got:
+            // an edge outside the clip is dropped rather than moved onto it (R-015).
+            float clipLeft = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleX,
+                                                          VgsScreenDraw.ApiOffsetX,
+                                                          VgsScreenDraw.ClientWidth, clipTopLeft.X);
+            float clipTop = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleY,
+                                                         VgsScreenDraw.ApiOffsetY,
+                                                         VgsScreenDraw.ClientHeight, clipTopLeft.Y);
+            float clipRight = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleX,
+                                                           VgsScreenDraw.ApiOffsetX,
+                                                           VgsScreenDraw.ClientWidth,
+                                                           clipTopLeft.X + clipSize.X);
+            float clipBottom = GridFrames.CornerToApiPixels(VgsScreenDraw.ApiScaleY,
+                                                            VgsScreenDraw.ApiOffsetY,
+                                                            VgsScreenDraw.ClientHeight,
+                                                            clipTopLeft.Y + clipSize.Y);
 
             for (int i = 0; i < _gridFrames.Count; i++)
             {
@@ -984,11 +1003,12 @@ namespace Vgs.Ui
                       .Append(" box ").Append((int)left).Append(',').Append((int)top)
                       .Append("..").Append((int)right).Append(',').Append((int)bottom);
 
-                // The four rectangles actually handed to the sprite. If two of them disagree by a
-                // pixel at a shared corner, that disagreement is visible here.
+                // The rectangles actually handed to the sprite, after the clip. If two of them
+                // disagree by a pixel at a shared corner, that disagreement is visible here.
                 var edges = new List<Vector4>(4);
-                GridFrames.AppendBorderEdges(edges, left, top, right, bottom,
-                                             VgsConstants.GridBorderPixels);
+                GridFrames.AppendBorderEdgesClipped(edges, left, top, right, bottom,
+                                                    clipLeft, clipTop, clipRight, clipBottom,
+                                                    VgsConstants.GridBorderPixels);
                 for (int e = 0; e < edges.Count; e++)
                 {
                     Vector4 edge = edges[e];
@@ -1042,12 +1062,12 @@ namespace Vgs.Ui
             float tabLeft = screen.X;
             float tabTop = screen.Y - tabHeight;
 
-            // Cull with the frame: a tab alone, with its frame off-screen, is noise.
-            if (tabLeft > clipSize.X || tabTop > clipSize.Y) return;
-            if (tabLeft + tabWidth < 0f || tabTop + tabHeight < 0f) return;
-
             Vector2 tabTopLeft = new Vector2(tabLeft, tabTop);
             Vector2 tabSize = new Vector2(tabWidth, tabHeight);
+
+            // Cull with the frame: a tab alone, with its frame off-screen, is noise. Canvas
+            // coordinates, like every other cull (R-015).
+            if (!CanvasRect.Overlaps(clipTopLeft, clipSize, tabTopLeft, tabSize)) return;
 
             // Filled with the canvas colour rather than left transparent: the frame's own top edge
             // runs along the tab's bottom, and a translucent tab would show it through the text.
@@ -1085,7 +1105,8 @@ namespace Vgs.Ui
         }
 
         private void DrawGroupFrames(Vector2 clipTopLeft, Vector2 clipSize)
-        {            IList<Node> groups = _graph.Groups;
+        {
+            IList<Node> groups = _graph.Groups;
             for (int i = 0; i < groups.Count; i++)
             {
                 Node group = groups[i];
@@ -1097,9 +1118,8 @@ namespace Vgs.Ui
                 Vector2 screenSize = size * _view.Zoom;
 
                 // Cull against the canvas the same way cards are culled, so a group scrolled
-                // off-screen costs two comparisons instead of a rectangle and a border.
-                if (screen.X > clipSize.X || screen.Y > clipSize.Y) continue;
-                if (screen.X + screenSize.X < 0f || screen.Y + screenSize.Y < 0f) continue;
+                // off-screen costs one comparison instead of a rectangle and a border.
+                if (!CanvasRect.Overlaps(clipTopLeft, clipSize, screen, screenSize)) continue;
 
                 bool selected = ReferenceEquals(group, _selected);
                 bool hovered = ReferenceEquals(group, _hoverNode);

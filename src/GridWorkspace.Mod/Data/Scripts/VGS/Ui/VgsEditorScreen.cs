@@ -813,12 +813,9 @@ namespace Vgs.Ui
 
         // ------------------------------------------------------------------ layout
 
-        /// <summary>Canvas rectangle in normalized coordinates: everything above the bottom bar.</summary>
-        private static void GetCanvasRect(out Vector2 topLeft, out Vector2 size)
-        {
-            topLeft = new Vector2(0f, VgsConstants.HeaderHeight);
-            size = new Vector2(1f, 1f - VgsConstants.HeaderHeight - VgsConstants.BottomBarHeight);
-        }
+        // The canvas rectangle itself — and the predicate that decides what is on it — live in
+        // CanvasRect, in one place: the culling comparison against the canvas *size* was wrong
+        // for the canvas *origin* and cost the bottom edge one header height (R-015).
 
         private static void GetBottomBarRect(out Vector2 topLeft, out Vector2 size)
         {
@@ -962,7 +959,7 @@ namespace Vgs.Ui
         private void GetMenuRect(out Vector2 topLeft, out Vector2 size)
         {
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
 
             int rows = VisibleMenuRows;
             size = new Vector2(
@@ -1299,7 +1296,7 @@ namespace Vgs.Ui
             if (_graph == null) return;
 
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
 
             IList<Node> nodes = _graph.Nodes;
             for (int i = 0; i < nodes.Count && into.Count < VgsConstants.MaxRenderedBlocks; i++)
@@ -1317,15 +1314,19 @@ namespace Vgs.Ui
         /// because the bars hang below the card and a card scrolled just off the top edge still
         /// has its ports on screen. Not named <c>Draw…</c> on purpose: it is asked from the update
         /// pass as well, and the review gate's allocation rule is about methods that draw.
+        ///
+        /// The arithmetic is <see cref="CanvasRect.Overlaps"/> and not four comparisons here:
+        /// the canvas does not start at the window's origin, and a comparison of the absolute
+        /// screen coordinate against the canvas *size* culled a card one header height before it
+        /// reached the canvas's bottom edge (R-015). The same predicate answers the grid frames,
+        /// the grid tabs and the group frames, so "on the canvas" has one meaning.
         /// </summary>
         private bool IsCardOnCanvas(Node node, Vector2 canvasTopLeft, Vector2 canvasSize)
         {
             Vector2 screen = GraphToScreen(node.Position, canvasTopLeft);
             Vector2 card = new Vector2(VgsConstants.NodeWidth, PortGeometry.TotalHeight(node)) * _view.Zoom;
 
-            if (screen.X > canvasSize.X || screen.Y > canvasSize.Y) return false;
-            if (screen.X + card.X < 0f || screen.Y + card.Y < 0f) return false;
-            return true;
+            return CanvasRect.Overlaps(canvasTopLeft, canvasSize, screen, card);
         }
 
         /// <summary>

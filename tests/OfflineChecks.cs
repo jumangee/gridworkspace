@@ -171,6 +171,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== grid frames enclose their own cards (ADR-0032) ===");
         GridFramesEncloseTheirGrid();
 
+        Console.WriteLine("=== canvas culling and clipped borders (R-015) ===");
+        CanvasCullingAndClippedBorders();
+
         Console.WriteLine("=== block group action rule (ADR-0015) ===");
         GroupActionRule();
 
@@ -2414,6 +2417,173 @@ internal static class OfflineChecks
 
         GridFrames.AppendBorderEdges(noEdges, 10f, 10f, 100f, 100f, 0f);
         Check(noEdges.Count == 0, "a zero thickness produces no edges");
+    }
+
+    // ------------------------------------------------------------------ canvas culling (R-015)
+
+    /// <summary>
+    /// The canvas rectangle, the predicate that decides what is worth drawing, and the rule that
+    /// a border edge outside the canvas is dropped rather than moved onto it.
+    ///
+    /// <b>Why this is checked here.</b> Both are pure arithmetic and both were wrong in a way no
+    /// compile can see. The cull compared an <em>absolute</em> screen coordinate with the canvas
+    /// <em>size</em>; because the canvas starts below the header, that cut every card one header
+    /// height before it reached the canvas's bottom edge — the card disappeared with a strip of
+    /// canvas still below it. And the border clamped its box to the canvas before drawing four
+    /// edges, so an edge that was off-screen was painted on the canvas boundary instead of being
+    /// dropped: the grid's bottom border lay exactly on the bottom bar's edge.
+    /// </summary>
+    private static void CanvasCullingAndClippedBorders()
+    {
+        Vector2 canvasTopLeft, canvasSize;
+        CanvasRect.Get(out canvasTopLeft, out canvasSize);
+
+        // ---- the rectangle is the window minus both bars ----
+        CheckClose(canvasTopLeft.X, 0f, "the canvas starts at the window's left edge");
+        CheckClose(canvasTopLeft.Y, VgsConstants.HeaderHeight,
+                   "the canvas starts under the header");
+        CheckClose(canvasSize.X, 1f, "the canvas spans the window's full width");
+        CheckClose(canvasSize.Y, 1f - VgsConstants.HeaderHeight - VgsConstants.BottomBarHeight,
+                   "the canvas ends above the bottom bar");
+
+        float canvasBottom = canvasTopLeft.Y + canvasSize.Y;
+        CheckClose(canvasBottom, 1f - VgsConstants.BottomBarHeight,
+                   "the canvas's bottom edge is the bottom bar's top edge");
+
+        // A card-shaped rectangle. Its height is irrelevant to the arithmetic; it is here so the
+        // checks below read as statements about a card.
+        var card = new Vector2(VgsConstants.NodeWidth, 0.2f);
+
+        // ---- R-015: the bottom of the canvas, stated exactly ----
+        //
+        // The old predicate used the canvas *height* as the bottom boundary — a header height
+        // above the real bottom edge. The point below is inside the canvas and inside that dead
+        // band: on a 1200 px window a card vanished with about 66 px of canvas still below it,
+        // "before it even touched the bottom edge".
+        float deadBand = canvasBottom - VgsConstants.HeaderHeight;
+        Check(deadBand < canvasBottom, "the dead band the old predicate used is above the bottom");
+        Check(CanvasRect.Overlaps(canvasTopLeft, canvasSize, new Vector2(0.5f, deadBand), card),
+              "R-015: a card whose top is in the old dead band is still on the canvas");
+        Check(CanvasRect.Overlaps(canvasTopLeft, canvasSize,
+                                  new Vector2(0.5f, canvasBottom - 0.001f), card),
+              "R-015: a card one thousandth above the canvas bottom is still on the canvas");
+        Check(!CanvasRect.Overlaps(canvasTopLeft, canvasSize,
+                                   new Vector2(0.5f, canvasBottom + 0.001f), card),
+              "a card whose top has passed the canvas bottom is not drawn");
+
+        // ---- the top of the canvas is the header's bottom, not the window's top ----
+        Check(!CanvasRect.Overlaps(canvasTopLeft, canvasSize,
+                                   new Vector2(0.5f, canvasTopLeft.Y - card.Y - 0.001f), card),
+              "a card that ends inside the header is not drawn");
+        Check(CanvasRect.Overlaps(canvasTopLeft, canvasSize,
+                                  new Vector2(0.5f, canvasTopLeft.Y - card.Y + 0.001f), card),
+              "a card that pokes below the header is drawn");
+
+        // ---- left and right are the window's edges, because the canvas starts at x = 0 ----
+        Check(CanvasRect.Overlaps(canvasTopLeft, canvasSize, new Vector2(-0.01f, 0.3f), card),
+              "a card half off the left edge is drawn");
+        Check(!CanvasRect.Overlaps(canvasTopLeft, canvasSize,
+                                   new Vector2(-card.X - 0.01f, 0.3f), card),
+              "a card entirely off the left edge is not drawn");
+        Check(!CanvasRect.Overlaps(canvasTopLeft, canvasSize, new Vector2(1.01f, 0.3f), card),
+              "a card entirely off the right edge is not drawn");
+
+        // ---- R-015: a border edge outside the canvas is dropped, not moved onto it ----
+        //
+        // The clip is a canvas 800 x 600 px; the frame's box is 100..400 wide and 50..900 tall, so
+        // its bottom edge is 300 px below the canvas and there is no bottom edge to draw. The
+        // defect produced one, lying exactly on row 600 — the canvas boundary.
+        var edges = new List<Vector4>(4);
+        GridFrames.AppendBorderEdgesClipped(edges, 100f, 50f, 400f, 900f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 3, "a frame whose bottom edge is off the canvas draws three edges");
+
+        bool onCanvasBoundary = false;
+        int sidesEndingAtCanvasBottom = 0;
+        for (int i = 0; i < edges.Count; i++)
+        {
+            Vector4 e = edges[i];
+            if (e.Y == 599f && e.W == 600f) onCanvasBoundary = true;   // a full 1 px last row
+            if (e.W == 600f) sidesEndingAtCanvasBottom++;
+        }
+        Check(!onCanvasBoundary, "R-015: no bottom edge is painted on the canvas's bottom boundary");
+        Check(sidesEndingAtCanvasBottom == 2,
+              "the side edges run to the canvas bottom instead of stopping at a drawn edge");
+
+        // ---- a frame entirely inside the canvas is unchanged by clipping ----
+        var plain = new List<Vector4>(4);
+        GridFrames.AppendBorderEdges(plain, 100f, 50f, 400f, 500f, 1f);
+        var clipped = new List<Vector4>(4);
+        GridFrames.AppendBorderEdgesClipped(clipped, 100f, 50f, 400f, 500f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(plain.Count == 4 && clipped.Count == 4,
+              "a frame inside the canvas draws four edges either way");
+
+        bool identical = plain.Count == clipped.Count;
+        for (int i = 0; identical && i < plain.Count; i++)
+        {
+            if (plain[i].X != clipped[i].X || plain[i].Y != clipped[i].Y
+                || plain[i].Z != clipped[i].Z || plain[i].W != clipped[i].W)
+            {
+                identical = false;
+            }
+        }
+        Check(identical, "clipping changes nothing for a frame that is entirely on the canvas");
+
+        // ---- the top edge is dropped the same way, and the sides reach the canvas top ----
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, 100f, -50f, 400f, 500f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 3, "a frame whose top edge is above the canvas draws three edges");
+
+        bool topOnBoundary = false;
+        int sidesStartingAtCanvasTop = 0;
+        for (int i = 0; i < edges.Count; i++)
+        {
+            Vector4 e = edges[i];
+            if (e.Y == 0f && e.W == 1f) topOnBoundary = true;          // a full 1 px first row
+            if (e.Y == 0f) sidesStartingAtCanvasTop++;
+        }
+        Check(!topOnBoundary, "R-015: no top edge is painted on the canvas's top boundary");
+        Check(sidesStartingAtCanvasTop == 2,
+              "the side edges reach the canvas top instead of stopping a pixel below it");
+
+        // ---- nothing at all is drawn when nothing is on the canvas ----
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, -1000f, -1000f, 1000f, 1000f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 0, "a frame that surrounds the canvas draws no edge on it");
+
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, 0f, 700f, 800f, 900f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 0, "a frame entirely below the canvas draws nothing");
+
+        // ---- an edge that starts off the canvas is still cut along its own direction ----
+        //
+        // The frame is wider than the canvas, so both its side edges are off-screen and are
+        // dropped. Its horizontal edges are on screen — only their middle — and are drawn from
+        // the canvas's left edge to its right edge, because that part of them is genuinely
+        // visible. Dropping those too would leave a frame that crosses the canvas invisible.
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, -100f, 50f, 900f, 500f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 2, "a frame wider than the canvas draws only its two horizontal edges");
+        Check(edges[0].X == 0f && edges[0].Z == 800f,
+              "a horizontal edge that starts off the canvas is cut at the canvas's left edge");
+        Check(edges[1].X == 0f && edges[1].Z == 800f,
+              "a horizontal edge that ends off the canvas is cut at the canvas's right edge");
+
+        // ---- a box with no interior is still one rectangle ----
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, 10f, 10f, 12f, 12f,
+                                            0f, 0f, 800f, 600f, 1f);
+        Check(edges.Count == 1, "a frame with no interior is one rectangle, clipped or not");
+
+        edges.Clear();
+        GridFrames.AppendBorderEdgesClipped(edges, 10f, 10f, 100f, 100f,
+                                            0f, 0f, 800f, 600f, 0f);
+        Check(edges.Count == 0, "a zero thickness produces no edges when clipped");
     }
 
     private static Node WithGridPosition(Node node, Vector3I position)

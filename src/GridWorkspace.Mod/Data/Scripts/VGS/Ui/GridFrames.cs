@@ -267,6 +267,73 @@ namespace Vgs.Ui
             into.Add(new Vector4(right - thickness, innerTop, right, innerBottom));
         }
 
+        /// <summary>
+        /// Appends the edges of a border that are actually <b>on the canvas</b>, in API pixels
+        /// (ADR-0032 §3, R-015).
+        ///
+        /// <b>An edge that lies outside the clip is not drawn at all, and that is the point.</b>
+        /// Clamping the box to the clip and then drawing all four edges of the clamped box — what
+        /// this replaced — moves an edge that is off-screen <em>onto</em> the clip boundary. The
+        /// visible result was a grid frame whose bottom border lay exactly on the bottom bar's
+        /// edge, and a group frame whose top border appeared under the header: a line where the
+        /// frame does not end, saying "the box stops here" about a box that continues past the
+        /// canvas. The owner's report named it precisely: if the bottom edge of a grid goes off
+        /// the screen, do not show it.
+        ///
+        /// <b>Edges are still cut along their own direction.</b> A horizontal edge that starts
+        /// left of the canvas is drawn from the canvas's left edge, because that part of it is
+        /// genuinely on screen; only an edge lying entirely outside is dropped. The vertical
+        /// edges therefore run off the canvas's top or bottom instead of stopping one pixel
+        /// short of it: the horizontal edge they used to meet is not there, so there is nothing
+        /// to tile against.
+        ///
+        /// The caller passes corners that are already whole pixels, exactly as
+        /// <see cref="AppendBorderEdges"/> expects.
+        /// </summary>
+        public static void AppendBorderEdgesClipped(List<Vector4> into,
+                                                    float left, float top, float right, float bottom,
+                                                    float clipLeft, float clipTop,
+                                                    float clipRight, float clipBottom,
+                                                    float thickness)
+        {
+            if (into == null) return;
+            if (thickness <= 0f) return;
+            if (right <= left || bottom <= top) return;
+
+            // Which edges are inside the clip is decided before the box is clamped: after it,
+            // every edge is inside by construction, which is exactly the bug this replaces.
+            bool hasTop = top >= clipTop;
+            bool hasBottom = bottom <= clipBottom;
+            bool hasLeft = left >= clipLeft;
+            bool hasRight = right <= clipRight;
+
+            if (left < clipLeft) left = clipLeft;
+            if (top < clipTop) top = clipTop;
+            if (right > clipRight) right = clipRight;
+            if (bottom > clipBottom) bottom = clipBottom;
+
+            if (right <= left || bottom <= top) return;
+
+            // A box thinner than two edges has no interior: one solid rectangle rather than a
+            // guess about which edge wins (see AppendBorderEdges). The clipped box is the visible
+            // part of that rectangle, which is a fill and not a line on the boundary.
+            if (right - left <= thickness * 2f || bottom - top <= thickness * 2f)
+            {
+                into.Add(new Vector4(left, top, right, bottom));
+                return;
+            }
+
+            // A missing horizontal edge leaves its band to the vertical ones, so they reach the
+            // canvas edge itself instead of starting one thickness inside it.
+            float innerTop = hasTop ? top + thickness : top;
+            float innerBottom = hasBottom ? bottom - thickness : bottom;
+
+            if (hasTop) into.Add(new Vector4(left, top, right, innerTop));
+            if (hasBottom) into.Add(new Vector4(left, innerBottom, right, bottom));
+            if (hasLeft) into.Add(new Vector4(left, innerTop, left + thickness, innerBottom));
+            if (hasRight) into.Add(new Vector4(right - thickness, innerTop, right, innerBottom));
+        }
+
         private static int IndexOf(List<GridFrame> frames, long gridEntityId)        {
             for (int i = 0; i < frames.Count; i++)
             {

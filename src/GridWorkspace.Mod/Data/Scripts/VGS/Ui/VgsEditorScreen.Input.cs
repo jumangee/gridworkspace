@@ -447,7 +447,7 @@ namespace Vgs.Ui
         private void HandleCanvasInput(Vector2 mouse)
         {
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
 
             bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
@@ -700,7 +700,7 @@ namespace Vgs.Ui
             }
 
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
             bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
             // Middle-button pan keeps working so the user can reach a target off-screen
@@ -757,7 +757,7 @@ namespace Vgs.Ui
             }
 
             Vector2 canvasTopLeft, canvasSize;
-            GetCanvasRect(out canvasTopLeft, out canvasSize);
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
             bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
             if (PanWithMiddleButton(mouse, canvasTopLeft, canvasSize)) return;

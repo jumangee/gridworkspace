@@ -93,6 +93,10 @@ $sources = @(
     (Join-Path $sourceRoot 'Ui\SearchField.cs'),
     (Join-Path $sourceRoot 'Ui\ViewState.cs'),
     (Join-Path $sourceRoot 'Ui\GridFrames.cs'),
+    # The canvas rectangle and the "is this box on the canvas?" predicate (R-015). Both are pure
+    # arithmetic, and the predicate is where the bottom edge of the canvas was cut one header
+    # height too early — a defect that is invisible in a compile and obvious in the game.
+    (Join-Path $sourceRoot 'Ui\CanvasRect.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.
     (Join-Path $sourceRoot 'Ui\IconPlacement.cs'),

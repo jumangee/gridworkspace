@@ -1,13 +1,10 @@
-# Grid Workspace · [Русский](README.ru.md)
+## ![logo](docs/logo/logo.jpg) · [RU](README.ru.md)
 
 Grid Workspace is an in-game editor for the block logic of a grid in Space Engineers. It draws
 your ship as a **diagram** — cards for blocks, ports and lines — and writes every connection you
 draw into the **real block toolbars**, so what you see on the diagram is what the game runs. The
 conveyor network is drawn on the same diagram, read-only.
 
-> **About the name.** `Grid Workspace` is the full name; **VGS** (`Visual Grid Setup`) is the
-> technical and historical one. It is the same mod: the mod folder, the log prefix `[VGS]` and
-> older documents still use it.
 
 ## Install
 
