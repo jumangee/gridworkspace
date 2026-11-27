@@ -15,9 +15,10 @@ namespace Vgs.Ui
     ///
     /// <b>Why the corners are rounded here and not in the draw path.</b> The screen-space API
     /// has no line primitive at all, let alone an arc: everything is an axis-aligned rectangle
-    /// (see <c>VgsScreenDraw.Segment</c>). A rounded bend is therefore a <em>staircase</em> of
-    /// short axis-aligned pieces following a quarter arc — the same reduction
-    /// <c>VgsScreenDraw.Disc</c> uses to draw a circle out of slabs. Building it here keeps it a
+    /// (see <c>VgsScreenDraw.SegmentPixels</c>). A rounded bend is therefore a <em>staircase</em>
+    /// of short axis-aligned pieces following a quarter arc — the same reduction
+    /// <c>VgsScreenDraw.Disc</c> uses to draw a circle out of slabs, and the same one
+    /// <c>LineRaster</c> uses to draw a connection's bend. Building it here keeps it a
     /// pure function of the route, which is what makes it assertable offline; building it in
     /// the draw path would put a per-frame loop of trigonometry where nothing can check it.
     ///

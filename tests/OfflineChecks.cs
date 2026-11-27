@@ -198,8 +198,8 @@ internal static class OfflineChecks
         Console.WriteLine("=== watch anchor and watch ports (ADR-0017) ===");
         WatchAnchorAndPorts();
 
-        Console.WriteLine("=== dashed watch line (ADR-0017) ===");
-        WatchDashes();
+        Console.WriteLine("=== connection lines: curved, two pixels of ink, dense dots (ADR-0046, ADR-0047) ===");
+        LineRasterChecks();
 
         Console.WriteLine("=== watch list format (ADR-0017) ===");
         WatchListFormat();
@@ -1768,6 +1768,63 @@ internal static class OfflineChecks
               && route[route.Count - 1].Z > route[route.Count - 1].X,
               "the real loop arrives at the input dot moving right");
 
+        // ---- the rounded path a connection is drawn as (ADR-0046) ----
+        //
+        // The owner's rule: a straight run to the middle of the first segment, a bend to the
+        // middle of each following one, a straight into the target. Nothing may be a right angle
+        // any more, and nothing may leave the box the route occupies.
+        var path = new List<Vector2>();
+        var pixelsPerUnit = new Vector2(1600f, 900f);
+
+        EdgeRouting.Build(new Vector2(0.1f, 0.1f), new Vector2(0.6f, 0.3f), 0.014f, route);
+        EdgeRouting.Round(route, pixelsPerUnit, path);
+
+        Check(path.Count > 8,
+              "the rounded path is a polyline, not the three-segment route (got " + path.Count + ")");
+        CheckClose(path[0].X, 0.1f, "the rounded path starts at the source dot (x)");
+        CheckClose(path[0].Y, 0.1f, "the rounded path starts at the source dot (y)");
+        CheckClose(path[path.Count - 1].X, 0.6f, "the rounded path ends at the target dot (x)");
+        CheckClose(path[path.Count - 1].Y, 0.3f, "the rounded path ends at the target dot (y)");
+
+        // The middle of the first segment and the middle of the last one are points of the path:
+        // they are where the bends start and end, which is the whole shape of the rule.
+        var firstMid = new Vector2((route[0].X + route[0].Z) * 0.5f,
+                                   (route[0].Y + route[0].W) * 0.5f);
+        Vector4 tail = route[route.Count - 1];
+        var lastMid = new Vector2((tail.X + tail.Z) * 0.5f, (tail.Y + tail.W) * 0.5f);
+
+        Check(ContainsPoint(path, firstMid), "the path reaches the middle of the first segment");
+        Check(ContainsPoint(path, lastMid), "the path reaches the middle of the last segment");
+
+        float sharpest = SharpestTurn(path, pixelsPerUnit);
+        Check(sharpest < 30f,
+              "the rounded path has no right angles (sharpest turn " + sharpest + " degrees)");
+        Check(InsideBox(path, route), "the rounded path stays inside the route's box");
+
+        // A level route has no corner to round: its two segments are collinear, and the rounded
+        // path is the same straight line — the middles of the two segments and nothing else.
+        EdgeRouting.Build(new Vector2(0.1f, 0.2f), new Vector2(0.5f, 0.2f), 0.014f, route);
+        EdgeRouting.Round(route, pixelsPerUnit, path);
+        Check(path.Count == 4, "a level route is the two middles and the two ends (got "
+                               + path.Count + ")");
+
+        bool level = true;
+        for (int i = 0; i < path.Count; i++)
+        {
+            if (Math.Abs(path[i].Y - 0.2f) > 1e-6f) level = false;
+        }
+        Check(level, "every point of a level route stays on the line");
+
+        // The self-loop is rounded the same way, and it still leaves and arrives where the route
+        // does: a bend must not drag the line into the card it goes around.
+        EdgeRouting.BuildSelfLoop(new Vector2(0.45412f, 0.245f), new Vector2(0.30588f, 0.263f),
+                                  loopCardTopLeft, loopCardSize, 0.014f, route);
+        EdgeRouting.Round(route, pixelsPerUnit, path);
+        Check(path.Count > 8, "the self-loop is rounded too (got " + path.Count + ")");
+        CheckClose(path[0].X, 0.45412f, "the rounded loop starts at the output dot");
+        CheckClose(path[path.Count - 1].X, 0.30588f, "the rounded loop ends at the input dot");
+        Check(SharpestTurn(path, pixelsPerUnit) < 45f, "the rounded loop has no right angles");
+
         // The route buffer is reused, not appended to.
         int before = route.Count;
         EdgeRouting.Build(new Vector2(0.1f, 0.1f), new Vector2(0.2f, 0.2f), 0.014f, route);
@@ -1914,6 +1971,99 @@ internal static class OfflineChecks
             bool vertical = Math.Abs(s.X - s.Z) < 1e-6f;
             Check(horizontal || vertical, what + ": segment " + i + " is axis-aligned");
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> contains a point within a hundredth of a pixel of
+    /// <paramref name="point"/>. The tolerance is in pixels, not in layout units: a path point is
+    /// computed by a Bézier evaluation and lands a rounding error away from the exact middle it
+    /// is supposed to be at, which is not the same thing as being in the wrong place.
+    /// </summary>
+    private static bool ContainsPoint(List<Vector2> path, Vector2 point)
+    {
+        const float tolerance = 0.01f;
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            if (Math.Abs(path[i].X - point.X) <= tolerance
+                && Math.Abs(path[i].Y - point.Y) <= tolerance)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The sharpest turn in a path, in degrees, measured on the screen rather than in layout
+    /// units — the layout's axes do not share a scale, so a turn that is 45° in layout units is
+    /// not 45° on screen (ADR-0009).
+    ///
+    /// A right angle is 90°, and the check that the rounded path has no right angles is the
+    /// check that a connection is drawn as a curve and not as a staircase.
+    /// </summary>
+    private static float SharpestTurn(List<Vector2> path, Vector2 pixelsPerUnit)
+    {
+        float sharpest = 0f;
+
+        for (int i = 1; i < path.Count - 1; i++)
+        {
+            float inX = (path[i].X - path[i - 1].X) * pixelsPerUnit.X;
+            float inY = (path[i].Y - path[i - 1].Y) * pixelsPerUnit.Y;
+            float outX = (path[i + 1].X - path[i].X) * pixelsPerUnit.X;
+            float outY = (path[i + 1].Y - path[i].Y) * pixelsPerUnit.Y;
+
+            float inLength = (float)Math.Sqrt(inX * inX + inY * inY);
+            float outLength = (float)Math.Sqrt(outX * outX + outY * outY);
+            if (inLength <= 1e-6f || outLength <= 1e-6f) continue;
+
+            float cosine = (inX * outX + inY * outY) / (inLength * outLength);
+            if (cosine > 1f) cosine = 1f;
+            if (cosine < -1f) cosine = -1f;
+
+            float turn = (float)(Math.Acos(cosine) * 180.0 / Math.PI);
+            if (turn > sharpest) sharpest = turn;
+        }
+
+        return sharpest;
+    }
+
+    /// <summary>
+    /// True when every point of <paramref name="path"/> lies inside the box the orthogonal
+    /// <paramref name="route"/> occupies.
+    ///
+    /// A quadratic Bézier stays inside the triangle of its two ends and its control point, and
+    /// that control point is a corner of the route, so the rounded path can never overshoot the
+    /// route into a neighbouring card. This is the assertion behind that claim.
+    /// </summary>
+    private static bool InsideBox(List<Vector2> path, List<Vector4> route)
+    {
+        float minX = float.MaxValue, minY = float.MaxValue;
+        float maxX = float.MinValue, maxY = float.MinValue;
+
+        for (int i = 0; i < route.Count; i++)
+        {
+            Vector4 s = route[i];
+            if (s.X < minX) minX = s.X;
+            if (s.Z < minX) minX = s.Z;
+            if (s.X > maxX) maxX = s.X;
+            if (s.Z > maxX) maxX = s.Z;
+            if (s.Y < minY) minY = s.Y;
+            if (s.W < minY) minY = s.W;
+            if (s.Y > maxY) maxY = s.Y;
+            if (s.W > maxY) maxY = s.W;
+        }
+
+        const float tolerance = 1e-5f;
+
+        for (int i = 0; i < path.Count; i++)
+        {
+            if (path[i].X < minX - tolerance || path[i].X > maxX + tolerance) return false;
+            if (path[i].Y < minY - tolerance || path[i].Y > maxY + tolerance) return false;
+        }
+
+        return true;
     }
 
     private static int DrawnOutputs(Node node)
@@ -3463,71 +3613,216 @@ internal static class OfflineChecks
     }
 
     /// <summary>
-    /// The dash pattern of a watch line (ADR-0017). It is pure geometry, so it is checkable
-    /// without the game — and it has to be, because a dash pattern that overruns its segment
-    /// draws a line past the card it is heading for.
+    /// The rasteriser that draws every line in the editor as a row of whole-pixel dots
+    /// (ADR-0046, ADR-0047).
+    ///
+    /// Three of the owner's reports live here, and all three are measurements rather than
+    /// opinions:
+    ///
+    ///  * a horizontal line and a vertical one used to be different weights — the layout's axes do
+    ///    not share a scale (ADR-0009) — so the weight is measured across <b>both</b> axes;
+    ///  * the weight used to follow the zoom, so it is measured at a transform the test chooses;
+    ///  * a solid two-pixel line reads as thicker than two pixels, because the API has no
+    ///    antialiasing — so the checks below assert that the ink is still exactly two pixels tall
+    ///    (the weight is unchanged) and that the gaps are there (the edge is what got softer).
     /// </summary>
-    private static void WatchDashes()
+    private static void LineRasterChecks()
     {
-        var dashes = new List<Vector4>();
+        var pieces = new List<Vector4>();
+        var transform = new PixelTransform(new Vector2(1000f, 1000f), Vector2.Zero);
 
-        // A horizontal segment of known length with a pattern that divides it evenly.
-        const float dash = 0.01f;
-        const float gap = 0.01f;
-        var segment = new Vector4(0.10f, 0.50f, 0.30f, 0.50f);   // 0.20 long
-        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
+        // ---- the pixel grid is the borders' grid, not the window's ----
+        //
+        // This is the one part of the pipeline the draw layer cannot be asked about offline, and
+        // it is also the one that is easy to get wrong by a sign: the safe-GUI rectangle is
+        // centred on the window (ADR-0009), so its pixel origin is 240 px inside a 1080p 16:9
+        // window. A line built on the window's grid instead would be shifted by 480 px while the
+        // frame around it stayed put. The assertion is that the transform the draw layer builds
+        // agrees, pixel for pixel, with the function the grid borders use.
+        const float windowWidth = 1920f;
+        const float windowHeight = 1080f;
+        const float safeWidth = 1440f;                 // min(W, 4H/3)
+        const float safeLeft = (windowWidth - safeWidth) * 0.5f;
 
-        Check(dashes.Count == 10, "a 0.20 segment with a 0.02 period yields ten dashes");
-        CheckClose(dashes[0].X, 0.10f, "the first dash starts at the segment's start");
-        CheckClose(dashes[0].Z, 0.10f + dash, "the first dash is one dash long");
-        CheckClose(dashes[0].Y, 0.50f, "a horizontal dash keeps the segment's Y");
+        float apiScaleX = windowWidth / safeWidth;
+        float apiOffsetX = -safeLeft / safeWidth;
+        float apiScaleY = 1f;
+        float apiOffsetY = 0f;
 
-        // The pattern may end on a gap — that is what a dash pattern does — but it must not end
-        // earlier than one period before the end, or the line would look truncated.
-        Check(dashes[dashes.Count - 1].Z <= segment.Z + 1e-6f,
-              "the last dash does not pass the segment's end");
-        Check(dashes[dashes.Count - 1].Z > segment.Z - dash - gap,
-              "the last dash reaches within one period of the segment's end");
+        PixelTransform borders = PixelTransform.FromClientTransform(
+            apiScaleX, apiOffsetX, windowWidth, apiScaleY, apiOffsetY, windowHeight);
 
-        // No dash overruns its neighbour, and none leaves the segment.
-        for (int i = 0; i < dashes.Count; i++)
+        CheckClose(borders.Offset.X, -safeLeft, "the pixel grid starts at the safe area's left edge");
+
+        float[] probes = { 0f, 0.25f, 0.5f, 1f };
+        for (int i = 0; i < probes.Length; i++)
         {
-            Check(dashes[i].Z >= dashes[i].X, "a dash is not negative");
-            Check(dashes[i].Z <= segment.Z + 1e-6f, "a dash does not leave the segment");
-            if (i > 0) Check(dashes[i].X >= dashes[i - 1].Z, "dashes do not overlap");
+            float expected = GridFrames.CornerToApiPixels(apiScaleX, apiOffsetX, windowWidth,
+                                                          probes[i]);
+            CheckClose(borders.ToPixels(new Vector2(probes[i], 0f)).X, expected,
+                       "the line's pixel grid matches the border's at x = " + probes[i]);
         }
 
-        // A segment shorter than one dash is drawn as one dash, not as nothing.
-        dashes.Clear();
-        EdgeRouting.BuildDashes(new Vector4(0f, 0f, 0.004f, 0f), dash, gap, dashes);
-        Check(dashes.Count == 1, "a segment shorter than a dash is one dash");
-        CheckClose(dashes[0].Z, 0.004f, "the shortened dash ends at the segment's end");
+        CheckClose(borders.ToPixels(new Vector2(0f, 0.5f)).Y,
+                   GridFrames.CornerToApiPixels(apiScaleY, apiOffsetY, windowHeight, 0.5f),
+                   "the line's pixel grid matches the border's vertically");
 
-        // Vertical segments go through the same arithmetic, along Y.
-        dashes.Clear();
-        EdgeRouting.BuildDashes(new Vector4(0.5f, 0.1f, 0.5f, 0.3f), dash, gap, dashes);
-        Check(dashes.Count == 10, "a vertical segment is dashed like a horizontal one");
-        CheckClose(dashes[0].X, 0.5f, "a vertical dash keeps the segment's X");
-        CheckClose(dashes[0].Y, 0.1f, "a vertical dash starts at the segment's start");
+        // ---- a connection line: two pixels of ink every three ----
+        //
+        // The owner's rule for a connection is "2 px through 1 px" (ADR-0047), so the period is
+        // three pixels and a 400-pixel run carries 134 dots.
+        var path = new List<Vector2> { new Vector2(0.1f, 0.5f), new Vector2(0.5f, 0.5f) };
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
 
-        // Degenerate inputs: no length, and a zero dash length (draw it solid rather than drop).
-        dashes.Clear();
-        EdgeRouting.BuildDashes(new Vector4(0.2f, 0.2f, 0.2f, 0.2f), dash, gap, dashes);
-        Check(dashes.Count == 0, "a zero-length segment has no dashes");
+        Check(pieces.Count == 134,
+              "a 400-pixel connection carries 134 dots at a 3-pixel period (got "
+              + pieces.Count + ")");
 
-        // A zero dash length draws the segment solid.
-        dashes.Clear();
-        EdgeRouting.BuildDashes(segment, 0f, gap, dashes);
-        Check(dashes.Count == 1, "a zero dash length draws the segment solid");
+        // Every dot is exactly two pixels tall and two wide, and every gap is one pixel. This is
+        // the whole of the decision: the ink keeps the owner's two pixels, the gaps are what make
+        // the edge read as soft rather than as a hard band.
+        bool inkIsTwoPixels = true;
+        bool gapsAreOnePixel = true;
 
-        // Reusing one buffer must not accumulate: the draw path reuses a single static list for
-        // every watch line of every frame, and appending would redraw every dash ever produced.
-        dashes.Clear();
-        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
-        int first = dashes.Count;
-        EdgeRouting.BuildDashes(segment, dash, gap, dashes);
-        Check(dashes.Count == first, "reusing the dash buffer replaces its contents");
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            if (Math.Abs(pieces[i].W - pieces[i].Y - 2f) > 1e-5f) inkIsTwoPixels = false;
+            if (Math.Abs(pieces[i].Z - pieces[i].X - 2f) > 1e-5f) inkIsTwoPixels = false;
+
+            if (i > 0)
+            {
+                float gap = pieces[i].X - pieces[i - 1].Z;
+                if (Math.Abs(gap - 1f) > 1e-5f) gapsAreOnePixel = false;
+            }
+        }
+
+        Check(inkIsTwoPixels, "every dot of a connection is exactly 2 x 2 pixels");
+        Check(gapsAreOnePixel, "the gap between two dots of a connection is exactly one pixel");
+        CheckClose(pieces[0].X, 100f, "the first dot starts at the path's start");
+        CheckClose(pieces[0].Y, 499f, "the connection is centred on the path");
+
+        // ---- a vertical run: the same weight, measured across the other axis ----
+        //
+        // This is the defect that started it: the same line used to be 2 px one way and 1.1 px the
+        // other. Here both are two pixels of ink, whatever the direction.
+        path.Clear();
+        path.Add(new Vector2(0.5f, 0.1f));
+        path.Add(new Vector2(0.5f, 0.5f));
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
+
+        Check(pieces.Count == 134, "a vertical run carries the same number of dots");
+        CheckClose(pieces[0].Z - pieces[0].X, 2f, "a vertical line's dots are two pixels wide");
+        CheckClose(pieces[0].X, 499f, "the vertical line is centred on the path");
+
+        // ---- a watch line is the same dot with a wider gap ----
+        //
+        // Two pixels of ink every four (ADR-0017). Same weight, different rhythm — that is the
+        // whole difference between the two kinds of line, and the assertion is that it is a
+        // difference of rhythm and not of weight.
+        path.Clear();
+        path.Add(new Vector2(0.1f, 0.5f));
+        path.Add(new Vector2(0.5f, 0.5f));
+        LineRaster.Dotted(path, transform, VgsConstants.WatchDotPixels,
+                          VgsConstants.WatchDotGapPixels, WholeClip, pieces);
+
+        Check(pieces.Count == 100,
+              "a 400-pixel watch line carries 100 dots at a 4-pixel period (got "
+              + pieces.Count + ")");
+        CheckClose(pieces[0].Z - pieces[0].X, 2f, "a watch dot is two pixels wide");
+        CheckClose(pieces[0].W - pieces[0].Y, 2f, "a watch dot is two pixels tall");
+        CheckClose(pieces[1].X - pieces[0].Z, 2f, "the gap between two watch dots is two pixels");
+
+        // The two rhythms must stay distinguishable: a connection is denser than a watch line on
+        // the same path, or the picture would stop saying which line means what.
+        Check(VgsConstants.LineDotGapPixels < VgsConstants.WatchDotGapPixels,
+              "a connection is denser than a watch line");
+        Check(VgsConstants.LineDotPixels == VgsConstants.WatchDotPixels,
+              "both lines carry the same ink — only the rhythm differs");
+
+        // ---- the rhythm is measured along the path ----
+        //
+        // A bend does not restart the pattern: a 200-pixel path with a right angle carries the
+        // same number of dots a straight one would, so the eye reads one line and not two pieces.
+        path.Clear();
+        path.Add(Vector2.Zero);
+        path.Add(new Vector2(0.1f, 0f));
+        path.Add(new Vector2(0.1f, 0.1f));
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
+
+        Check(pieces.Count == 67, "the dot rhythm runs through a bend (got " + pieces.Count + ")");
+
+        // ---- clipping is in the same pixel space ----
+        //
+        // A line that leaves the canvas stops at its edge. It is not moved onto the edge: the part
+        // that is on screen is genuinely there, and the part that is not is dropped.
+        path.Clear();
+        path.Add(new Vector2(0f, 0.5f));
+        path.Add(new Vector2(0.5f, 0.5f));
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, new Vector4(100f, 0f, 300f, 1000f),
+                          pieces);
+
+        Check(pieces.Count > 0, "a clipped run still draws its dots inside the clip");
+
+        bool insideClip = true;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            if (pieces[i].X < 100f || pieces[i].Z > 300f) insideClip = false;
+        }
+        Check(insideClip, "every dot of a clipped run lies inside the clip");
+
+        // ---- the piece buffer is reused, not appended to ----
+        //
+        // The draw path reuses one static list for every line of every frame; appending would make
+        // each frame redraw every dot ever produced.
+        path.Clear();
+        path.Add(new Vector2(0.1f, 0.5f));
+        path.Add(new Vector2(0.2f, 0.5f));
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
+        int first = pieces.Count;
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
+        Check(pieces.Count == first, "reusing the piece buffer replaces its contents");
+
+        // ---- degenerate inputs ----
+        //
+        // A path with no length draws nothing, a zero dot draws nothing, and a zero gap is a
+        // solid line rather than a division by zero: the caller is the draw path, where an
+        // exception would be thrown sixty times a second.
+        path.Clear();
+        path.Add(new Vector2(0.5f, 0.5f));
+        path.Add(new Vector2(0.5f, 0.5f));
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels, WholeClip, pieces);
+        Check(pieces.Count == 0, "a zero-length path draws no dots");
+
+        path.Clear();
+        path.Add(new Vector2(0.1f, 0.5f));
+        path.Add(new Vector2(0.5f, 0.5f));
+        LineRaster.Dotted(path, transform, 0f, VgsConstants.LineDotGapPixels, WholeClip, pieces);
+        Check(pieces.Count == 0, "a zero dot draws nothing");
+
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels, 0f, WholeClip, pieces);
+        Check(pieces.Count == 200,
+              "a zero gap doubles the density instead of dividing by zero (got "
+              + pieces.Count + ")");
+
+        LineRaster.Dotted(path, transform, VgsConstants.LineDotPixels,
+                          VgsConstants.LineDotGapPixels,
+                          new Vector4(0f, 0f, 0f, 0f), pieces);
+        Check(pieces.Count == 0, "an empty clip draws nothing");
     }
+
+    /// <summary>
+    /// A clipping rectangle far outside any check's coordinates, in the rasteriser's own pixel
+    /// space.
+    /// </summary>
+    private static readonly Vector4 WholeClip =
+        new Vector4(-100000f, -100000f, 100000f, 100000f);
 
     /// <summary>
     /// The wire format of an event controller's watch list (ADR-0017, ADR-0044): the id of the

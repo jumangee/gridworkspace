@@ -350,8 +350,26 @@ namespace Vgs.Ui
         /// <summary>
         /// Scratch buffer for wire routes. Reused so that drawing a connection allocates
         /// nothing once the list has grown to its longest route.
+        ///
+        /// This holds the <b>orthogonal</b> route — the corners — because that is what the
+        /// conveyor pipe consumes as well (<c>PipeRouter</c>). The smooth path a connection is
+        /// drawn as is derived from it per line into <see cref="_path"/>.
         /// </summary>
         private readonly List<Vector4> _route = new List<Vector4>(8);
+
+        /// <summary>
+        /// Scratch buffer for the rounded path of one connection (ADR-0046): the route with
+        /// every corner replaced by a bend from the middle of one segment to the middle of the
+        /// next.
+        ///
+        /// Separate from <see cref="_route"/> on purpose: the path is built <em>from</em> the
+        /// route, so the two exist at the same time while a line is being drawn, and one list
+        /// cannot hold both.
+        ///
+        /// The capacity is the worst case a route can produce: two bends of at most
+        /// <c>EdgeRouting.MaxBendSamples</c> each, plus the middles and the ends.
+        /// </summary>
+        private readonly List<Vector2> _path = new List<Vector2>(160);
 
         /// <summary>
         /// Scratch buffers for the conveyor pipes (ADR-0040).
@@ -847,6 +865,7 @@ namespace Vgs.Ui
                 _warningText = null;
                 _mouseValid = false;
                 _route.Clear();
+                _path.Clear();
                 _pipeBuffer.Clear();
                 _removeBuffer.Clear();
                 _searchTerms.Clear();

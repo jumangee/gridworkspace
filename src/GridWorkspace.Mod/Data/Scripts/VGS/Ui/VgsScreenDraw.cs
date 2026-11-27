@@ -777,89 +777,113 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws an axis-aligned segment as a filled rectangle, clipped to the canvas.
+        /// Draws a line along <paramref name="path"/> as dots of <paramref name="dotPixels"/>
+        /// every <paramref name="dotPixels"/> + <paramref name="gapPixels"/> of its length,
+        /// clipped to the canvas (ADR-0046, ADR-0047).
         ///
-        /// The screen-space API has no line primitive: <c>MyScreenSpaceSprite.Draw</c> takes a
-        /// rotation, but its pivot semantics are not documented for mods and a wrong guess
-        /// rotates every connection line around the wrong point. Axis-aligned rectangles need
-        /// no such guess, and the routes drawn here are orthogonal anyway.
+        /// <b>Both kinds of line come through here, and only the rhythm differs.</b> A connection
+        /// passes <see cref="VgsConstants.LineDotPixels"/> and
+        /// <see cref="VgsConstants.LineDotGapPixels"/>; a watch line passes
+        /// <see cref="VgsConstants.WatchDotPixels"/> and
+        /// <see cref="VgsConstants.WatchDotGapPixels"/>. The pattern is an argument rather than a
+        /// mode, so the two styles share one rasteriser and cannot drift apart — the defect that
+        /// produced two different line weights in the first place was exactly two implementations.
+        ///
+        /// <b>The path, not the segments.</b> A connection is not drawn as the orthogonal route it
+        /// is routed by: the route's corners are replaced by bends
+        /// (<see cref="EdgeRouting.Round"/>), and what arrives here is the resulting polyline.
+        /// The screen-space API has no line primitive and no antialiasing, which is why a line is
+        /// a row of dots at all (see <see cref="LineRaster"/>).
+        ///
+        /// <b>Why the rasteriser is not here.</b> A gap between dots, a dot one pixel off and a
+        /// rhythm that jumps at a bend are all invisible in a compile and all decidable from
+        /// numbers, so the arithmetic lives in <see cref="LineRaster"/>, which has no game
+        /// reference and is asserted by <c>tools/offline-check.ps1</c>. This method only builds
+        /// the pixel transform and the colour, and hands the rectangles to the sprite API.
         /// </summary>
-        public static void Segment(Vector2 from, Vector2 to, float thickness, Vector2 clipTopLeft,
-                                   Vector2 clipSize, Color color)
+        public static void PathDots(IList<Vector2> path, float dotPixels, float gapPixels,
+                                    Vector2 clipTopLeft, Vector2 clipSize, Color color)
         {
-            if (thickness <= 0f) return;
+            if (!_solidReady) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
 
-            // Decided by magnitude rather than by exact equality: the router produces segments
-            // that are *meant* to be axis-aligned, and a value that came out a hair off must
-            // still be drawn along its dominant axis instead of being dropped.
-            float dx = Math.Abs(to.X - from.X);
-            float dy = Math.Abs(to.Y - from.Y);
+            LineRaster.Dotted(path, PixelSpace, dotPixels, gapPixels,
+                              ClipPixels(clipTopLeft, clipSize), _linePieces);
 
-            if (dx >= dy)
-            {
-                float x = from.X < to.X ? from.X : to.X;
-                RectClipped(new Vector2(x, (from.Y + to.Y) * 0.5f - thickness * 0.5f),
-                            new Vector2(dx, thickness), clipTopLeft, clipSize, color);
-                return;
-            }
-
-            float y = from.Y < to.Y ? from.Y : to.Y;
-            RectClipped(new Vector2((from.X + to.X) * 0.5f - thickness * 0.5f, y),
-                        new Vector2(thickness, dy), clipTopLeft, clipSize, color);
+            DrawLinePieces(color);
         }
 
         /// <summary>
-        /// Draws a dashed axis-aligned segment: the watch line of an event controller
-        /// (ADR-0017).
+        /// The client-area → pixel transform the line rasteriser works in.
         ///
-        /// The dash pattern is built by <see cref="EdgeRouting.BuildDashes"/> — pure geometry,
-        /// assertable offline — and each dash is drawn with the same rectangle primitive as a
-        /// solid segment. The screen-space API has no line style, so "dashed" has to be "many
-        /// short solid segments", and the only question is where the pattern is computed.
-        /// Doing it here would put a per-frame loop with float arithmetic in the draw path where
-        /// nothing can check it; doing it in the router keeps the pattern a value the offline
-        /// gate can measure.
-        ///
-        /// <paramref name="dashLength"/> and <paramref name="gapLength"/> are in client-area
-        /// units, already scaled by the caller's zoom.
+        /// Built by <see cref="PixelTransform.FromClientTransform"/> from the same four values
+        /// <see cref="GridFrames.CornerToApiPixels"/> takes, which is what puts a line on the
+        /// same pixel grid as the frame around it. The arithmetic lives there rather than here so
+        /// that the offline gate can assert it: the offset term is the safe area's origin, and
+        /// this class is the one place that knows it.
         /// </summary>
-        public static void SegmentDashed(Vector2 from, Vector2 to, float thickness,
-                                         float dashLength, float gapLength,
-                                         Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        public static PixelTransform PixelSpace
         {
-            if (thickness <= 0f) return;
-
-            // BuildDashes replaces the buffer's contents, so nothing accumulates between the
-            // lines of one frame or between frames. That is load-bearing: the buffer is static,
-            // and appending would make every frame redraw every dash ever produced.
-            var segment = new Vector4(from.X, from.Y, to.X, to.Y);
-            EdgeRouting.BuildDashes(segment, dashLength, gapLength, _dashBuffer);
-
-            for (int i = 0; i < _dashBuffer.Count; i++)
+            get
             {
-                Vector4 dash = _dashBuffer[i];
-                Segment(new Vector2(dash.X, dash.Y), new Vector2(dash.Z, dash.W),
-                        thickness, clipTopLeft, clipSize, color);
+                return PixelTransform.FromClientTransform(_apiScaleX, _apiOffsetX,
+                                                          _clientWidthPixels,
+                                                          _apiScaleY, _apiOffsetY,
+                                                          _clientHeightPixels);
             }
         }
 
         /// <summary>
-        /// Scratch list for dash patterns. Shared because this runs per watch line per frame, and
-        /// a list allocated per call would be an allocation in the draw path.
+        /// A client-area clipping rectangle as whole pixels — the space the line rasteriser
+        /// clips in. The corners are snapped with the same function the grid borders use, so a
+        /// line stops exactly where a border would.
         /// </summary>
-        private static readonly List<Vector4> _dashBuffer = new List<Vector4>(64);
+        private static Vector4 ClipPixels(Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            return new Vector4(
+                GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                             clipTopLeft.X),
+                GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                             clipTopLeft.Y),
+                GridFrames.CornerToApiPixels(_apiScaleX, _apiOffsetX, _clientWidthPixels,
+                                             clipTopLeft.X + clipSize.X),
+                GridFrames.CornerToApiPixels(_apiScaleY, _apiOffsetY, _clientHeightPixels,
+                                             clipTopLeft.Y + clipSize.Y));
+        }
+
+        /// <summary>
+        /// Draws the rectangles the last rasteriser call produced. One loop for both line styles,
+        /// so the colour, the pixel snapping and the failure handling cannot drift between them.
+        /// </summary>
+        private static void DrawLinePieces(Color color)
+        {
+            for (int i = 0; i < _linePieces.Count; i++)
+            {
+                Vector4 piece = _linePieces[i];
+                DrawApiPixelRect(piece.X, piece.Y, piece.Z, piece.W, color);
+            }
+        }
+
+        /// <summary>
+        /// Scratch for the rectangles of one line. The draw path must not allocate (R010), and a
+        /// line's rasterisation is a few hundred dots — refilling this list is a memcpy, not a few
+        /// hundred allocations. It grows once, on the first frame, and is reused by every line of
+        /// every frame afterwards.
+        /// </summary>
+        private static readonly List<Vector4> _linePieces = new List<Vector4>(512);
 
         /// <summary>
         /// Draws an axis-aligned segment whose thickness is a <b>device-pixel count</b>, clipped
-        /// to the canvas.
+        /// to the canvas. This is how a conveyor pipe's rails are drawn (ADR-0040).
         ///
-        /// <b>Why this exists beside <see cref="Segment"/>.</b> <see cref="Segment"/> takes its
-        /// thickness in layout units, which is right for a connection line (a hairline that
-        /// should read the same at any resolution) but wrong for a shape made of several
-        /// parallel pieces that have to line up: a wall of a conveyor pipe is one pixel thick at
+        /// <b>Why a pixel count.</b> The thickness has to be right for a shape made of several
+        /// parallel pieces that must line up: a wall of a conveyor pipe is one pixel thick at
         /// every zoom, and the two walls of one pipe are separated by a fixed number of pixels.
         /// In layout units the horizontal piece of that wall would be <c>height/width</c> times
         /// thicker than the vertical one (ADR-0009) and the pipe would not close at its bends.
+        /// A connection line is drawn the same way, through
+        /// <see cref="PathDots"/> — but as a row of dots along a curve, not as segments
+        /// (ADR-0046, ADR-0047).
         ///
         /// The thickness is therefore a pixel count, exactly as it is for
         /// <see cref="HorizontalLinePixels"/> and <see cref="VerticalLinePixels"/>, and the
@@ -872,9 +896,9 @@ namespace Vgs.Ui
             if (thicknessPixels <= 0f) return;
             if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
 
-            // Decided by magnitude, not by equality, for the same reason Segment does: the
-            // router is meant to produce axis-aligned pieces, and one that came out a hair off
-            // must still be drawn along its dominant axis instead of disappearing.
+            // Decided by magnitude, not by equality: the router is meant to produce
+            // axis-aligned pieces, and one that came out a hair off must still be drawn along
+            // its dominant axis instead of disappearing.
             float dx = Math.Abs(to.X - from.X);
             float dy = Math.Abs(to.Y - from.Y);
 

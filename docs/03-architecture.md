@@ -25,7 +25,7 @@
 | [0014](adr/0014-port-remove-button-and-port-look.md) | Кнопка «x» на порте удаляет все связи порта (сначала ячейка тулбара, потом ребро); точка — зеркало кнопки; подпись по центру и пропорционально зуму; рамка порта — цветом карточки |
 | [0015](adr/0015-block-groups.md) | Группы блоков — узлы второго вида: рамка позади карточек, «Show in Grid Workspace» агрегируется по участникам, входы по правилу игры (пересечение действий, а не «общий предок»), связь — элемент `GroupAction` |
 | [0016](adr/0016-group-drag.md) | Перенос группы — одним смещением по всем нарисованным участникам; ручка — полоса имени |
-| [0017](adr/0017-event-controller-watch-ports.md) | Event controller: кнопка отслеживания, порты отслеживания (жёлтые, пунктир в карточку цели), отказ красной линией, описание режима на карточке (кнопка с ADR-0020 — колокольчик в общем ряду) |
+| [0017](adr/0017-event-controller-watch-ports.md) | Event controller: кнопка отслеживания, порты отслеживания (жёлтые, точечная линия в карточку цели — ADR-0046), отказ красной линией, описание режима на карточке (кнопка с ADR-0020 — колокольчик в общем ряду) |
 | [0018](adr/0018-game-is-the-source-of-truth.md) | Список отслеживания читается из игры; хранилище мода — надстройка над игровым списком; игровые записи из редактора не удаляются |
 | [0019](adr/0019-icons-atlas.md) | Иконки: отдельная PNG-текстура на иконку, `DrawPixels` в целых пикселях окна, иконка на любом зуме, откат на геометрию только при отсутствии текстуры |
 | [0020](adr/0020-card-button-row.md) | Ряд кнопок карточки: все контролы карточки справа, в одну строку, одного размера, голые иконки; «T»/«F» → `lightbulb` Solid/Regular, «#» → `bell` Regular; каталог иконок со шлюзом |
@@ -40,6 +40,8 @@
 | [0030](adr/0030-block-category-descriptor.md) | Категория блока — enum + описатель (`ResolveCategory`, `Descriptor`: события + ключи метрик); специфика event controller уходит с `Node` в `ControllerState`, `IsEventController` производный |
 | [0040](adr/0040-conveyor-network.md) | Конвейерная сеть — третье хранилище графа, выводимое из мира: узлы редукции — только блоки с карточкой, скрытые блоки и трубы проходятся насквозь; труба рисуется двумя линиями со скруглёнными изгибами под карточками; режим `Show conveyor network`, по умолчанию вкл |
 | [0045](adr/0045-hotkey-opens-editor-from-cockpit.md) | Клавиша **M** — второй вход в тот же экран (`VgsEditorScreen.OpenFor`), опрос `IsNewKeyPressed` из сессионного компонента; работает только из кокпита и только когда клавиатурой не владеет другой экран (чат, игровой экран, терминал); привязку мод зарегистрировать не может |
+| [0047](adr/0047-dotted-connection-lines.md) | Связь рисуется **плотными точками** 2 px через 1 px, линия отслеживания — 2 px через 2 px: у API нет антиалиасинга, и сплошной край читался как линия толще двух пикселей. Вес не меняется (точка — те же 2 × 2 px), меняется непрерывность; один растеризатор на оба вида (`LineRaster.Dotted` + `VgsScreenDraw.PathDots`), виды различаются ритмом (заменяет §2 ADR-0046) |
+| [0046](adr/0046-curved-connection-lines.md) | Линия связи — плавная кривая толщиной ровно 2 px: маршрут остаётся ортогональным, а рисуется скруглённый путь (`EdgeRouting.Round`), растеризованный в пикселях safe-области (`Ui/LineRaster`); линия отслеживания — точки 2 px через 2 px (отменяет §6 ADR-0010 и пунктир §5 ADR-0017) |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -92,7 +94,8 @@
                            │                       читает только кэш модели
                            ├─ PortGeometry         геометрия карточки, портов и рамки группы
                            ├─ GridFrames           рамка грида и вкладка её имени
-                           ├─ EdgeRouting          маршрут линии
+                           ├─ EdgeRouting          маршрут линии и его скругление
+                           ├─ LineRaster           путь линии в пиксельные точки
                            ├─ PipeRouter          две рельсы трубы и скругление изгибов
                            └─ VgsScreenDraw        единственное место, где
                                                    вызывается API отрисовки
@@ -724,7 +727,24 @@ classDiagram
         <<static>>
         +Build(Vector2 from, Vector2 to, float gutter, List~Vector4~)
         +BuildSelfLoop(Vector2 from, Vector2 to, Vector2 cardTopLeft, Vector2 cardSize, float gutter, List~Vector4~)
-        +BuildDashes(Vector4 segment, float dashLength, float gapLength, List~Vector4~)
+        +Round(IList~Vector4~ route, Vector2 pixelsPerUnit, List~Vector2~)
+        -AddBend(List~Vector2~, Vector2 from, Vector2 to, Vector2 corner, Vector2 pixelsPerUnit)
+    }
+
+    class LineRaster {
+        <<static>>
+        +Dotted(IList~Vector2~ path, PixelTransform, float dotPixels, float gapPixels, Vector4 clipPixels, List~Vector4~)
+        -AddDot(...)
+        -ToPixel(float) int
+    }
+
+    class PixelTransform {
+        <<struct>>
+        +Vector2 Scale
+        +Vector2 Offset
+        +FromClientTransform(...) PixelTransform$
+        +bool IsUsable
+        +ToPixels(Vector2) Vector2
     }
 
     class PipeRouter {
@@ -775,9 +795,9 @@ classDiagram
         +RectClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color)
         +Border(Vector2 pos, Vector2 size, Color c, float t)
         +BorderClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color, float)
-        +Segment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
         +SegmentPixels(Vector2 from, Vector2 to, float thicknessPixels, Vector2 clip, Vector2 clipSize, Color)
-        +SegmentDashed(Vector2 from, Vector2 to, float t, float dash, float gap, Vector2 clip, Vector2 clipSize, Color)
+        +PathDots(IList~Vector2~ path, float dotPixels, float gapPixels, Vector2 clip, Vector2 clipSize, Color)
+        +PixelTransform PixelSpace
         +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
         +ThickSegment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
         +Ring(Vector2 center, float r, float t, int segments, Vector2 clip, Vector2 clipSize, Color)
@@ -1079,7 +1099,7 @@ classDiagram
     VgsEditorScreen --> BlockSearch : правило фильтра карточек
     VgsEditorScreen --> Node
     VgsEditorScreen --> PortGeometry : вся геометрия
-    VgsEditorScreen --> EdgeRouting : маршрут линии
+    VgsEditorScreen --> EdgeRouting : маршрут линии и его скругление (ADR-0046)
     VgsEditorScreen --> PipeRouter : две рельсы трубы (ADR-0040)
     VgsEditorScreen --> IMyCubeGrid
     VgsEditorScreen --> IMyInput : TextInput и клавиши поиска (ADR-0023)
@@ -1174,6 +1194,8 @@ classDiagram
     PortGeometry ..> Node : читает Position, FrameSize и Slot
     PortGeometry ..> Port : читает Slot и Direction
     EdgeRouting ..> VgsConstants
+    LineRaster ..> VgsConstants : размер точки и шаг ритма
+    VgsScreenDraw ..> LineRaster : путь → пиксельные точки (ADR-0046, ADR-0047)
     PipeRouter ..> VgsConstants : радиус изгиба и шаг лесенки
 
     ToolbarWriter --> MyToolbarItemInfo : BlockAction / GroupAction
@@ -1314,7 +1336,7 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
   потому что его нет у игры (`MyEventControllerBlock.ValidateBlock` проверяет только «тот же
   логический конструкт»); рисунок — единственное место с особым случаем: связь обходит
   карточку петлёй (`EdgeRouting.BuildSelfLoop`), а самопросмотр контроллера рисуется одной
-  жёлтой полосой без пунктира;
+  жёлтой полосой без линии;
 - **«дубликат» — это дубликат ячейки, а не связи**: то же действие на том же блоке на другой
   странице — законная отдельная связь, игра её принимает и исполняет. Линия при этом одна:
   `GridGraph.Lines` (пересчитывается в `LayoutPorts`) отдаёт по одному ребру на пару
@@ -1675,8 +1697,9 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
 | `GridFrames.cs` | рамка грида и её вкладка с именем: какие карточки охватывает, где углы в пикселях окна, как из них выводятся четыре края. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0032](adr/0032-construct-graph.md)) |
 | `CanvasRect.cs` | прямоугольник холста (окно минус шапка и нижняя панель) и единственный предикат «этот прямоугольник на холсте?» для отрисовки, прохода состояния, рамок гридов и их вкладок. Координаты внутри — **относительно холста**, а не окна: сравнение абсолютной координаты с *размером* холста резало низ на высоту шапки (R-015). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
-| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли пунктир отслеживания (`ShouldDrawWatchLine` — самопросмотр его не рисует, ADR-0036) |
-| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); разбиение отрезка на штрихи для пунктира |
+| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли линия отслеживания (`ShouldDrawWatchLine` — самопросмотр её не рисует, ADR-0036) |
+| `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); скругление маршрута в путь связи — изгиб от середины отрезка до середины следующего (ADR-0046) |
+| `LineRaster.cs` | путь линии → точки в пикселях safe-области: 2 × 2 px на обеих осях и на любом зуме, ритм отсчитывается по длине пути, поэтому изгиб его не сбивает. Один растеризатор на оба вида линии — связь (зазор 1 px) и наблюдение (зазор 2 px). **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md)) |
 | `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
@@ -2199,8 +2222,9 @@ OnUpdate()    каждые RefreshIntervalFrames кадров:
 
 OnDraw()      SyncScreenSpace(); затем только чтение GridGraph:
                 фон → сетка → рамки гридов (с вкладками имён) → рамки групп → трубы
-                → линии → пунктир отслеживания → карточки → полосы портов групп
-                → нижняя панель → шапка → меню действий → меню режимов
+                → линии (скруглённый путь) → точки отслеживания → карточки
+                → полосы портов групп → нижняя панель → шапка → меню действий
+                → меню режимов
                 Порядок — это вложенность конструкта (ADR-0032): грид содержит группы,
                 группы содержат карточки; обратный порядок закрасил бы рамку грида
                 полупрозрачной заливкой группы.
@@ -2501,7 +2525,7 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
 | События, которых тулбар не умеет | новый `Vgs.Game.EventSources` | Событие тулбара — это факт его активации; порог и значение им не выражаются |
 | Скрытие отдельного грида | `Game`-хранилище на `IMyCubeGrid.Storage` по образцу `GridViewStore` | Остаток Этапа 4 (5.3): две готовые опции режимов действуют на все гриды сразу, а эта — на один ([ADR-0032](adr/0032-construct-graph.md) §4) |
 | Новые виджеты (скроллбар, второе поле ввода) | новые методы `VgsScreenDraw` | Штатных контролов в разрешённом API нет: `Sandbox.Graphics` вне вайтлиста ([ADR-0008](adr/0008-mod-screen-api.md)) |
-| Кривые линии и стиль ребра от состояния концов | `Ui/EdgeRouting.Build` + функция стиля поверх `VgsScreenDraw.Segment` | Слой менять не нужно: маршрут — чистая функция, источник условий — снимок `BlockState` |
+| Стиль ребра от состояния концов (цвет, прозрачность) | функция стиля поверх `VgsScreenDraw.PathDots` | Слой менять не нужно: и маршрут, и путь — чистые функции, а цвет уже приходит из `BlockState` через `Fade`/`MaxAlpha` |
 
 Собственный формат сохранения **связей** намеренно не вводится: их носитель — тулбар. Своё
 хранилище появляется только для того, чего тулбар выразить не может: раскладка карточек, флаг
@@ -2526,7 +2550,7 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
 | Один экран на мод (`_openEditor`) | Нельзя открыть два грида одновременно (осознанно) | [0005](adr/0005-single-editor-screen.md) |
 | Порт рисуется только при связи | Слот — производное состояние: забытый `LayoutPorts()` даёт полосу без линии | [0010](adr/0010-port-presentation-and-binding.md) |
 | Fan-in разрешён | Один вход может иметь несколько источников — вычислитель обязан это учитывать | [0010](adr/0010-port-presentation-and-binding.md) |
-| Линия — ортогональные прямоугольники | Нет скруглений и диагоналей; зато нет угадывания семантики `rotation` | [0010](adr/0010-port-presentation-and-binding.md) |
+| Линия — скруглённый путь, растеризованный в пиксельные точки | Путь считается по длине в пикселях, и на нём ставится точка на каждые три: на кадр уходит больше прямоугольников, чем у трёх отрезков (замерено ~250 против трёх-пяти), зато вес ровно 2 px на обеих осях и на любом зуме, а жёсткого края нет — сглаживания API не даёт | [0046](adr/0046-curved-connection-lines.md), [0047](adr/0047-dotted-connection-lines.md) |
 | Отсечение пересечением, не scissor | Лишние вызовы `Rect` для далёких прямоугольников; зато очередь отрисовки не разбалансируется | [0010](adr/0010-port-presentation-and-binding.md) |
 | Связь — элемент в тулбаре блока | Предел ёмкости стал видимым (90 ячеек у таймера); используются типы `VRage.Game.ModAPI`, привязанные к версии игры; движковые `MyToolbar*` моду запрещены | [0011](adr/0011-toolbar-is-the-connection.md) |
 | «Может управлять» = `IMyToolbarProvider` + `ButtonPanel` | Нужно читать тулбар при обновлении; зато ответ точный для блоков других модов | [0011](adr/0011-toolbar-is-the-connection.md) |

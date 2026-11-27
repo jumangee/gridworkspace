@@ -251,14 +251,22 @@ namespace Vgs.Core
         public const int WatchErrorFrames = 60;
 
         /// <summary>
-        /// Dash and gap of a watch line, in layout units at zoom 1. Multiplied by the zoom at
-        /// draw time like every other screen length, so the pattern shrinks with the canvas
-        /// instead of turning into a solid line at low zoom.
+        /// A dot of a watch line, in <b>device pixels</b> — two, at every zoom (ADR-0046 §3).
+        ///
+        /// A watch line is dotted rather than dashed: at the weight a connection now has, a dash
+        /// long enough to read as a dash reads as a solid piece of wire, and the one thing this
+        /// line must never be mistaken for is a connection. A dot is ink and nothing else, so the
+        /// line reads as a rhythm of points even where it is dense.
         /// </summary>
-        public const float WatchDashLength = 0.010f;
+        public const float WatchDotPixels = 2f;
 
-        /// <summary>Gap between two dashes of a watch line, in layout units at zoom 1.</summary>
-        public const float WatchDashGap = 0.007f;
+        /// <summary>
+        /// The clear space between two dots of a watch line, in device pixels (ADR-0046 §3).
+        ///
+        /// Equal to <see cref="WatchDotPixels"/>, so the period is four pixels: at 1080p that is
+        /// a dotted line the eye reads as a line, not as a row of specks.
+        /// </summary>
+        public const float WatchDotGapPixels = 2f;
 
         // ---- Block group frame (ADR-0015) ----
         //
@@ -826,8 +834,37 @@ namespace Vgs.Core
 
         // ---- Connection lines ----
 
-        /// <summary>Thickness of a connection line.</summary>
-        public const float LineThickness = 0.0016f;
+        /// <summary>
+        /// Size of one dot of a connection line, in <b>device pixels</b> — two, at every zoom
+        /// (ADR-0046, ADR-0047).
+        ///
+        /// <b>Why a pixel count and not a layout length.</b> This used to be
+        /// <c>0.0016f</c>, a fraction of the client height, and that is exactly what made a
+        /// horizontal line and a vertical one different weights: the layout's axes do not share
+        /// a scale (ADR-0009), so one value came out 2 px tall and 1.1 px wide on a 16:9 window,
+        /// and the same value was a different number of pixels at every zoom. The number here is
+        /// what the player measures on screen, so it is expressed in what the player measures on
+        /// screen.
+        /// </summary>
+        public const float LineDotPixels = 2f;
+
+        /// <summary>
+        /// The clear space between two dots of a connection line, in device pixels — one
+        /// (ADR-0047).
+        ///
+        /// <b>Why a connection is dotted at all.</b> The screen-space API has no antialiasing, so
+        /// a solid two-pixel line is a hard-edged rectangle, and the eye reads that edge as
+        /// heavier than the two pixels it is: reported from the game as "lines look thicker than
+        /// 2 px". A one-pixel gap every third pixel keeps the ink exactly two pixels tall — the
+        /// measured weight is unchanged — while the eye averages the gaps in and reads the line as
+        /// lighter, which is the effect antialiasing would have provided.
+        ///
+        /// <b>Why the gap is one and not two.</b> Two is the watch line's gap
+        /// (<see cref="WatchDotGapPixels"/>), and that rhythm reads as "dotted" — a different
+        /// meaning (ADR-0017). At one the connection still reads as a continuous line and the two
+        /// kinds stay distinguishable at a glance: dense rhythm versus open rhythm.
+        /// </summary>
+        public const float LineDotGapPixels = 1f;
 
         /// <summary>
         /// Horizontal clearance between a dot and the vertical run of its route. The dot sits
@@ -836,7 +873,19 @@ namespace Vgs.Core
         /// </summary>
         public const float LineGutter = 0.014f;
 
-        /// <summary>Hard cap on drawn connections; protects the frame budget on a dense graph.</summary>
+        /// <summary>
+        /// Hard cap on drawn connections; protects the frame budget on a dense graph.
+        ///
+        /// <b>The number is unchanged, but what it buys is not.</b> A connection used to be three
+        /// to five rectangles, so 600 of them were a few thousand quads. Since ADR-0046/0047 a
+        /// connection is a rounded path drawn as dots, and the measured cost of one is about 200
+        /// to 300 pieces (<c>tools/line-preview/run.ps1</c> prints the table). The cap is
+        /// therefore now the frame's main guard rather than a formality: it bounds the line pass
+        /// at roughly a hundred and fifty thousand quads. A dense schema that drops frames there is
+        /// answered by the levers named in ADR-0047 — the dot period and the bend's sample count,
+        /// then this cap — not by making the dots smaller, which is a property the owner fixed at
+        /// two pixels of ink.
+        /// </summary>
         public const int MaxRenderedEdges = 600;
 
         // ---- Conveyor network (ADR-0040) ----
@@ -912,15 +961,15 @@ namespace Vgs.Core
         /// almost every container is on one network.
         ///
         /// <b>Lower than <see cref="MaxRenderedEdges"/> on purpose, and the arithmetic is the
-        /// reason.</b> A connection line is three to five rectangles, so its cap of 600 is a few
-        /// thousand quads. A pipe is two rails per straight plus a staircase per bend — about
+        /// reason.</b> A pipe is two rails per straight plus a staircase per bend — about
         /// seventy pieces for a link with one bend and about a hundred and forty for the S-shape
-        /// a backward link takes (measured by <c>tools/offline-check.ps1</c>'s preview and
-        /// printed by the harness that produced
+        /// a backward link takes (measured by the harness that produced
         /// <c>docs/01-research/images/conveyor-pipe.png</c>). A hundred links is therefore about
-        /// seven thousand quads, which sits alongside the connection lines, the cards and their
-        /// controls rather than above them. Links past the cap stay in the graph and are not
-        /// drawn, exactly like connections past <see cref="MaxRenderedEdges"/>.
+        /// seven thousand quads, which sits alongside the cards and their controls rather than
+        /// above them. (A connection line costs about the same per line since ADR-0046, but there
+        /// can be six times as many of them — which is why the two caps differ.) Links past the
+        /// cap stay in the graph and are not drawn, exactly like connections past
+        /// <see cref="MaxRenderedEdges"/>.
         /// </summary>
         public const int MaxRenderedConveyors = 100;
 

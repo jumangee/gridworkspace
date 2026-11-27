@@ -6,13 +6,22 @@ using Vgs.Core;
 namespace Vgs.Ui
 {
     /// <summary>
-    /// Turns two connection dots into an orthogonal route.
+    /// Turns two connection dots into an orthogonal route, and that route into the smooth path
+    /// a connection is actually drawn as.
     ///
     /// A connection always runs from the dot on the right of an output bar to the dot on the
     /// left of an input bar, and the route is built so the last stretch arrives at the target
     /// dot <b>from the left, moving right</b>. That is not decoration: it is what makes the
     /// picture readable. Every line enters a card the same way, so a glance at a card's input
     /// bars tells you which side of the ship the signals come from.
+    ///
+    /// <b>Two representations, and they are both needed.</b> <see cref="Build"/> and
+    /// <see cref="BuildSelfLoop"/> produce the orthogonal route — the corners are the shape of
+    /// the route, and the conveyor pipe still consumes exactly that (<c>PipeRouter</c>). A
+    /// connection, however, is not drawn as the route: <see cref="Round"/> replaces every corner
+    /// with a bend that runs from the middle of one segment to the middle of the next, so the
+    /// line reads as a curve instead of as a staircase of right angles (ADR-0046). The route
+    /// stays the single source of the shape; the rounded path is derived from it.
     ///
     /// Routes are produced as axis-aligned segments into a caller-owned list. The list is
     /// cleared and refilled per edge — no allocation once it has grown to its final size,
@@ -182,66 +191,168 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Turns one orthogonal segment into the dashes it is drawn as, replacing the contents of
-        /// <paramref name="into"/> with <c>(x0, y0, x1, y1)</c> entries — one per dash.
+        /// Longest chord one bend is flattened into, in screen pixels.
         ///
-        /// A watch line is dashed (ADR-0017) and the screen-space API has no dash primitive, so
-        /// the pattern is built here — in the same layer as the route, in the same units, and
-        /// therefore assertable without the game. The caller passes the dash and gap already
-        /// scaled by its zoom, which keeps the pattern a constant length on screen instead of a
-        /// constant fraction of the graph: a dashed line that turns solid at low zoom would stop
-        /// being distinguishable from a real connection, which is the only reason it is dashed.
-        ///
-        /// <b>The list is cleared first</b>, like <see cref="Build"/> does and for the same
-        /// reason: the caller reuses one buffer for every line of every frame, and appending
-        /// would make each frame redraw every dash ever produced.
-        ///
-        /// The pattern starts at the segment's first end and is cut at the last: the final dash
-        /// is shortened rather than allowed to overrun, so a dash never pokes out of the route.
-        /// A segment shorter than one dash is drawn as one dash — an empty line would read as a
-        /// gap in the route.
+        /// The rounded path is a polyline, and how fine that polyline has to be is a question
+        /// about what the eye can resolve, not about the geometry: a chord of length <c>c</c> on
+        /// a bend of radius <c>R</c> leaves the true curve by <c>c² / (8R)</c>, which for the
+        /// bends this route produces — hundreds of pixels across — is a fraction of a pixel even
+        /// for a chord ten pixels long. Two pixels is therefore generous, and it is the value the
+        /// conveyor's bend staircase uses (<c>ConveyorStepPixels</c>), so both kinds of line
+        /// break a curve into pieces of the same size.
         /// </summary>
-        public static void BuildDashes(Vector4 segment, float dashLength, float gapLength,
-                                       List<Vector4> into)
+        private const float BendChordPixels = 2f;
+
+        /// <summary>
+        /// Fewest samples a bend is flattened into. A bend below this is a corner with a chip
+        /// taken out of it rather than a curve; four samples already read as a rounded corner at
+        /// the smallest size a bend can have (a stub of a few pixels).
+        /// </summary>
+        private const int MinBendSamples = 4;
+
+        /// <summary>
+        /// Most samples a bend is flattened into.
+        ///
+        /// <b>A cap, not a smoothness setting.</b> The deviation of a chord from the curve falls
+        /// with the square of the bend's size, so past a few dozen samples the polyline is
+        /// already indistinguishable from the curve at any zoom the editor allows; what keeps
+        /// growing is the number of points the rasteriser has to walk. The cap is what makes the
+        /// cost of a connection bounded by the size of its bends rather than by the size of the
+        /// screen.
+        ///
+        /// <b>The number is measured, in both directions.</b> A quadratic Bézier with control
+        /// arms of 1000 px leaves the true curve by about 0.2 px at a chord of 34 px, which is
+        /// what 48 samples give on a full-screen bend — far below what the pixel grid can show.
+        /// And the cost is not monotone in the sample count: the preview harness
+        /// (<c>tools/line-preview/run.ps1</c>) measures 135 rectangles for a connection to the
+        /// right and below at 48 samples against 174 at 96, because a long chord's per-column
+        /// slope is constant and merges well, while a finely sampled curve changes its extent
+        /// from column to column. Finer is therefore both invisible and more expensive.
+        /// </summary>
+        private const int MaxBendSamples = 48;
+
+        /// <summary>
+        /// Turns an orthogonal route into the smooth path a connection is drawn as (ADR-0046).
+        ///
+        /// <b>The shape, in the owner's words.</b> The route already gives the straight pieces:
+        /// a line to a corner, then the next straight. What a connection should look like is
+        /// that route with the corners taken out — a straight run to the <em>middle</em> of the
+        /// first segment, then a bend to the <em>middle</em> of the next one, then a straight
+        /// from the last middle to the target:
+        ///
+        /// <code>
+        ///   o─────────╮
+        ///              ╰──────╮
+        ///                     ╰─────────o
+        /// </code>
+        ///
+        /// Every pair of neighbouring segments therefore gets exactly one bend, and a route of
+        /// three segments becomes: straight, bend, bend, straight. The bends meet at the middle
+        /// of the shared segment, and both of them leave it in the same direction there, so the
+        /// two joins are smooth — the path has no corners left at all, only curvature.
+        ///
+        /// <b>Why a quadratic Bézier and not an arc.</b> The bend has to be tangent to both
+        /// segments at the points the owner named, and those points are the middles of two
+        /// segments of <em>different</em> lengths. A circular arc can only be tangent at two
+        /// points equidistant from the corner; here the two distances are independent, so the
+        /// arc exists only in the special case. A quadratic Bézier with the corner as its
+        /// control point is tangent to the incoming segment at the start and to the outgoing one
+        /// at the end <b>by construction</b>, for any two distances, and it stays inside the
+        /// triangle of the corner — it cannot overshoot into a neighbouring card.
+        ///
+        /// <b>Sampling is in pixels, not in layout units.</b> One X unit of the layout is the
+        /// window's width and one Y unit its height (ADR-0009), so a sample count derived from
+        /// layout units would draw a bend on a wide window as coarsely as on a square one.
+        /// <paramref name="pixelsPerUnit"/> is the client-area size in pixels, which the draw
+        /// layer already knows (<c>VgsScreenDraw.ClientWidth</c>/<c>ClientHeight</c>); the bend is
+        /// sampled so that its longest chord is about <see cref="BendChordPixels"/> long on
+        /// screen, whatever the zoom.
+        ///
+        /// The list is cleared first, like <see cref="Build"/>: the caller reuses one buffer for
+        /// every line of every frame, and appending would make each frame redraw every path ever
+        /// produced.
+        /// </summary>
+        public static void Round(IList<Vector4> route, Vector2 pixelsPerUnit, List<Vector2> into)
         {
             if (into == null) return;
             into.Clear();
+            if (route == null || route.Count == 0) return;
 
-            float dx = segment.Z - segment.X;
-            float dy = segment.W - segment.Y;
-            float length = (float)Math.Sqrt(dx * dx + dy * dy);
-            if (length <= 0f) return;
+            if (pixelsPerUnit.X <= 0f) pixelsPerUnit.X = 1f;
+            if (pixelsPerUnit.Y <= 0f) pixelsPerUnit.Y = 1f;
 
-            if (dashLength <= 0f || gapLength < 0f)
+            Vector4 first = route[0];
+            into.Add(new Vector2(first.X, first.Y));
+
+            Vector2 previousMid = Vector2.Zero;
+
+            for (int i = 0; i < route.Count; i++)
             {
-                into.Add(segment);
+                Vector4 segment = route[i];
+                Vector2 mid = new Vector2((segment.X + segment.Z) * 0.5f,
+                                          (segment.Y + segment.W) * 0.5f);
+
+                if (i == 0)
+                {
+                    // The straight run out of the dot, up to the middle of the first segment.
+                    into.Add(mid);
+                }
+                else
+                {
+                    // The corner the two segments share is the bend's control point: the route's
+                    // segments meet end to end, so the previous segment's end is this one's start.
+                    Vector4 before = route[i - 1];
+                    AddBend(into, previousMid, mid, new Vector2(before.Z, before.W), pixelsPerUnit);
+                }
+
+                previousMid = mid;
+            }
+
+            Vector4 last = route[route.Count - 1];
+            into.Add(new Vector2(last.Z, last.W));
+        }
+
+        /// <summary>
+        /// Appends the bend from <paramref name="from"/> to <paramref name="to"/> around
+        /// <paramref name="corner"/>, sampled into chords.
+        ///
+        /// The start point is <b>not</b> appended: it is the previous point of the path already,
+        /// and a duplicate would make the rasteriser draw a zero-length chord. The end point is
+        /// appended, because it is the next segment's middle and the next straight starts there.
+        /// </summary>
+        private static void AddBend(List<Vector2> into, Vector2 from, Vector2 to, Vector2 corner,
+                                    Vector2 pixelsPerUnit)
+        {
+            // Collinear ends — the route's zero-length segment was dropped, so two of its
+            // segments lie on one line — are one straight, not a bend. Sampling it would add
+            // dozens of points that all lie on the line the two straights already cover.
+            float inX = corner.X - from.X;
+            float inY = corner.Y - from.Y;
+            float outX = to.X - corner.X;
+            float outY = to.Y - corner.Y;
+
+            if ((inX == 0f && inY == 0f) || (outX == 0f && outY == 0f)
+                || (inX * outY - inY * outX == 0f && inX * outX + inY * outY >= 0f))
+            {
+                into.Add(to);
                 return;
             }
 
-            float ux = dx / length;
-            float uy = dy / length;
-            float step = dashLength + gapLength;
+            float spanX = Math.Abs(to.X - from.X) * pixelsPerUnit.X;
+            float spanY = Math.Abs(to.Y - from.Y) * pixelsPerUnit.Y;
+            float span = spanX > spanY ? spanX : spanY;
 
-            // The dash positions are derived from the index rather than accumulated: `at += step`
-            // drifts in single precision, and the drift shows up as a phantom dash just past the
-            // end of the segment — a dash that pokes out of the line it belongs to.
-            //
-            // The stop is a hair short of the length for the same reason: a dash that *starts*
-            // exactly at the end has nothing left to draw, and whether `n * step` lands just
-            // above or just below the length is an accident of float rounding.
-            float limit = length - step * 1e-4f;
-            if (limit < 0f) limit = 0f;
+            int samples = (int)Math.Ceiling(span / BendChordPixels);
+            if (samples < MinBendSamples) samples = MinBendSamples;
+            if (samples > MaxBendSamples) samples = MaxBendSamples;
 
-            for (int i = 0; ; i++)
+            for (int i = 1; i <= samples; i++)
             {
-                float at = i * step;
-                if (at > limit) break;
+                float t = (float)i / samples;
+                float rest = 1f - t;
 
-                float end = at + dashLength;
-                if (end > length) end = length;
-
-                into.Add(new Vector4(segment.X + ux * at, segment.Y + uy * at,
-                                     segment.X + ux * end, segment.Y + uy * end));
+                into.Add(new Vector2(rest * rest * from.X + 2f * rest * t * corner.X + t * t * to.X,
+                                     rest * rest * from.Y + 2f * rest * t * corner.Y + t * t * to.Y));
             }
         }
     }

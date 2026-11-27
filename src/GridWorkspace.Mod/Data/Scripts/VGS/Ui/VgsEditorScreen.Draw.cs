@@ -237,7 +237,12 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws every connection as an orthogonal route from an output dot to an input dot.
+        /// Draws every connection as a smooth line from an output dot to an input dot.
+        ///
+        /// The shape is still routed orthogonally — that is what makes every line arrive at its
+        /// target from the left, moving right — but what is drawn is the rounded path derived
+        /// from that route, not the route itself (ADR-0046): a straight run to the middle of the
+        /// first segment, a bend to the middle of each following one, a straight into the dot.
         ///
         /// It walks <see cref="GridGraph.Lines"/>, not <see cref="GridGraph.Edges"/>: the same
         /// event may drive the same action several times (one toolbar page each), and those
@@ -323,7 +328,7 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws every watch link: a dashed line from a watch port's dot to the watched block's
+        /// Draws every watch link: a dotted line from a watch port's dot to the watched block's
         /// card (ADR-0017).
         ///
         /// It ends at the card's centre, not at a port: the watched block has no "observe me"
@@ -331,14 +336,15 @@ namespace Vgs.Ui
         /// makes. Cards are drawn after lines, so the visible end of the line is the card's
         /// border — which reads as "the line ends in the block".
         ///
-        /// Dashed, unlike a connection, because the two mean different things: a solid line is
-        /// "this fires that", a dashed one is "this watches that".
+        /// Dotted, unlike a connection, because the two mean different things: a solid line is
+        /// "this fires that", a dotted one is "this watches that". The dots are a fixed number of
+        /// device pixels (ADR-0046 §3), not a fraction of the graph, so the pattern stays the
+        /// same at every zoom — a pattern that thinned out as the player zoomed would stop
+        /// distinguishing a watch from a connection exactly where the schema gets busy.
         /// </summary>
         private void DrawWatchLines(Vector2 topLeft, Vector2 size)
         {
             float aspect = VgsScreenDraw.ClientAspect;
-            float dash = VgsConstants.WatchDashLength * _view.Zoom;
-            float gap = VgsConstants.WatchDashGap * _view.Zoom;
 
             IList<Node> nodes = _graph.Nodes;
             int drawn = 0;
@@ -379,8 +385,8 @@ namespace Vgs.Ui
                         continue;
                     }
 
-                    DrawDashedRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                                    Fade(ColWatchLine, MaxAlpha(controller, target)), dash, gap,
+                    DrawDottedRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
+                                    Fade(ColWatchLine, MaxAlpha(controller, target)),
                                     topLeft, size);
                     drawn++;
                 }
@@ -408,33 +414,30 @@ namespace Vgs.Ui
             Vector2 start = GraphToScreen(from, topLeft);
             Vector2 end = _mouse;
 
-            DrawDashedRoute(start, end, colour,
-                            VgsConstants.WatchDashLength * _view.Zoom,
-                            VgsConstants.WatchDashGap * _view.Zoom,
-                            topLeft, size);
+            DrawDottedRoute(start, end, colour, topLeft, size);
 
             VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _view.Zoom, topLeft, size, colour);
         }
 
         /// <summary>
-        /// Draws an orthogonal route with every segment dashed. The route itself comes from
-        /// <see cref="EdgeRouting.Build"/>, the same router a connection uses, so a watch line
-        /// bends and arrives exactly like a wire.
+        /// Draws a watch line: the same rounded path a connection uses, drawn with the watch
+        /// line's own rhythm — <see cref="VgsConstants.WatchDotPixels"/> of ink every
+        /// <see cref="VgsConstants.WatchDotPixels"/> + <see cref="VgsConstants.WatchDotGapPixels"/>
+        /// of length (ADR-0017, ADR-0047).
+        ///
+        /// The route comes from <see cref="EdgeRouting.Build"/>, the same router a connection
+        /// uses, so a watch line bends and arrives exactly like a wire; the dots are placed along
+        /// the rounded path, so the rhythm runs through a bend instead of restarting at every
+        /// segment.
         /// </summary>
-        private void DrawDashedRoute(Vector2 from, Vector2 to, Color color, float dash, float gap,
+        private void DrawDottedRoute(Vector2 from, Vector2 to, Color color,
                                      Vector2 clipTopLeft, Vector2 clipSize)
         {
             EdgeRouting.Build(from, to, VgsConstants.LineGutter * _view.Zoom, _route);
-
-            for (int i = 0; i < _route.Count; i++)
-            {
-                Vector4 segment = _route[i];
-                VgsScreenDraw.SegmentDashed(
-                    new Vector2(segment.X, segment.Y),
-                    new Vector2(segment.Z, segment.W),
-                    VgsConstants.LineThickness, dash, gap,
-                    clipTopLeft, clipSize, color);
-            }
+            EdgeRouting.Round(_route, PixelsPerUnit, _path);
+            VgsScreenDraw.PathDots(_path, VgsConstants.WatchDotPixels,
+                                   VgsConstants.WatchDotGapPixels,
+                                   clipTopLeft, clipSize, color);
         }
 
         private void DrawRoute(Vector2 from, Vector2 to, Color color, Vector2 clipTopLeft, Vector2 clipSize)
@@ -443,7 +446,7 @@ namespace Vgs.Ui
             // constant scaled by zoom, which keeps the clearance between a dot and its vertical
             // run the same fraction of a card at every zoom level (ADR-0010).
             EdgeRouting.Build(from, to, VgsConstants.LineGutter * _view.Zoom, _route);
-            DrawRouteBuffer(color, clipTopLeft, clipSize);
+            DrawRoundedRoute(color, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -460,24 +463,42 @@ namespace Vgs.Ui
         {
             EdgeRouting.BuildSelfLoop(from, to, cardTopLeftScreen, cardSizeScreen,
                                       VgsConstants.LineGutter * _view.Zoom, _route);
-            DrawRouteBuffer(color, clipTopLeft, clipSize);
+            DrawRoundedRoute(color, clipTopLeft, clipSize);
         }
 
         /// <summary>
-        /// Draws the segments the last route build produced. One loop for both shapes, so the
-        /// thickness, the clipping and the colour cannot drift between them.
+        /// Draws the route the last build produced as the line a connection is drawn as: every
+        /// corner is replaced by a bend from the middle of one segment to the middle of the next
+        /// (<see cref="EdgeRouting.Round"/>), and the result is a dense rhythm of dots —
+        /// <see cref="VgsConstants.LineDotPixels"/> of ink every
+        /// <see cref="VgsConstants.LineDotPixels"/> + <see cref="VgsConstants.LineDotGapPixels"/>
+        /// of length (ADR-0046, ADR-0047).
+        ///
+        /// <b>Why dots and not a solid line.</b> The screen-space API has no antialiasing, so a
+        /// solid two-pixel line has a hard edge that the eye reads as heavier than two pixels; the
+        /// one-pixel gaps are averaged into it and the line reads at its true weight. The ink
+        /// height is unchanged — this is a lighter <em>edge</em>, not a thinner line.
+        ///
+        /// One place for both shapes — the ordinary route and the self-loop — so the bend shape,
+        /// the rhythm and the clipping cannot drift between them.
         /// </summary>
-        private void DrawRouteBuffer(Color color, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawRoundedRoute(Color color, Vector2 clipTopLeft, Vector2 clipSize)
         {
-            for (int i = 0; i < _route.Count; i++)
-            {
-                Vector4 segment = _route[i];
-                VgsScreenDraw.Segment(
-                    new Vector2(segment.X, segment.Y),
-                    new Vector2(segment.Z, segment.W),
-                    VgsConstants.LineThickness,
-                    clipTopLeft, clipSize, color);
-            }
+            EdgeRouting.Round(_route, PixelsPerUnit, _path);
+            VgsScreenDraw.PathDots(_path, VgsConstants.LineDotPixels,
+                                   VgsConstants.LineDotGapPixels,
+                                   clipTopLeft, clipSize, color);
+        }
+
+        /// <summary>
+        /// The client area in pixels, which is what the rounded path has to be sampled in
+        /// (ADR-0009): one X unit of the layout is the window's width and one Y unit its height,
+        /// so a sample count expressed in layout units would flatten a bend on a wide window as
+        /// coarsely as on a square one.
+        /// </summary>
+        private static Vector2 PixelsPerUnit
+        {
+            get { return new Vector2(VgsScreenDraw.ClientWidth, VgsScreenDraw.ClientHeight); }
         }
 
         private void DrawNodes(Vector2 topLeft, Vector2 size)

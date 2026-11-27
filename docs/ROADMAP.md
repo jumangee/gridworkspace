@@ -20,7 +20,7 @@
 | Запись в тулбар | связь пишется **в реальный тулбар** исходного блока и работает в игре без вычислителя; удаление мышью кнопкой «x» на полосе порта | [ADR-0011](adr/0011-toolbar-is-the-connection.md), [ADR-0014](adr/0014-port-remove-button-and-port-look.md) |
 | Раскладка и видимость | позиция карточки и флаг «Show in Grid Workspace» — на блоке, чекбокс у всех терминальных блоков | [ADR-0012](adr/0012-layout-lives-on-the-block.md), [ADR-0013](adr/0013-show-in-vgs-flag.md) |
 | Группы | рамка позади карточек, видимость по участникам, входы по правилу игры, связь — один элемент `GroupAction`, перенос всей группы за полосу имени | [ADR-0015](adr/0015-block-groups.md), [ADR-0016](adr/0016-group-drag.md) |
-| Event controller | колокольчик в ряду кнопок, жёлтые порты отслеживания с пунктиром в карточку цели, отказ красной линией, строка режима на карточке, список в хранилище контроллера с проигрыванием после загрузки | [ADR-0017](adr/0017-event-controller-watch-ports.md), [ADR-0018](adr/0018-game-is-the-source-of-truth.md) |
+| Event controller | колокольчик в ряду кнопок, жёлтые порты отслеживания с точечной линией в карточку цели, отказ красной линией, строка режима на карточке, список в хранилище контроллера с проигрыванием после загрузки | [ADR-0017](adr/0017-event-controller-watch-ports.md), [ADR-0018](adr/0018-game-is-the-source-of-truth.md) |
 | Иконки | все контролы карточки — в одном правом ряду, одного размера, голыми иконками; каталог со шлюзом | [ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md) |
 | Переход в терминал | пятая кнопка карточки (первая в ряду) закрывает схему и открывает терминал игры на этом блоке; маршрут проверен по сборкам до реализации — [`01-research/api-terminal-jump.md`](01-research/api-terminal-jump.md) | [ADR-0021](adr/0021-jump-to-block-terminal.md) |
 | Горячая клавиша | **M** открывает схему из кокпита — тот же экран и тот же `OpenFor`, что у кнопки; работает только когда игрок управляет кокпитом и никакой экран (терминал, чат, меню) не владеет клавиатурой; проверено по сборкам — [`01-research/api-hotkey.md`](01-research/api-hotkey.md) | [ADR-0045](adr/0045-hotkey-opens-editor-from-cockpit.md) |
@@ -270,8 +270,8 @@
 | Порты-стаканы под карточкой, слоты по связям | `Model/GridGraph.LayoutPorts`, `Ui/PortGeometry` |
 | Режим привязки: линия за курсором, ПКМ — отмена | `Ui/VgsEditorScreen.BeginBind/CancelBind/DrawPendingLine` |
 | Меню действий получателя | `Ui/VgsEditorScreen.OpenActionMenu/DrawActionMenu` |
-| Маршрут линии | `Ui/EdgeRouting` |
-| Отрисовка линии из прямоугольников | `Ui/VgsScreenDraw.Segment` |
+| Маршрут линии и его скругление в путь связи | `Ui/EdgeRouting` (`Build`, `BuildSelfLoop`, `Round`) |
+| Отрисовка линии: путь → точки 2 × 2 px, ритм как параметр — у связи 2 через 1, у линии отслеживания 2 через 2 | `Ui/LineRaster` (`Dotted`, `PixelTransform.FromClientTransform`), `Ui/VgsScreenDraw` (`PathDots`, `PixelSpace`); решения — [ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md) |
 | Форма тулбара блока (компонент `IMyToolbarProvider`) | `Game/ToolbarProbe` → `Model/ToolbarLayout` |
 | Правило размещения связи в ячейке | `Model/ToolbarPlanner` |
 | Запись связи в тулбар и чтение обратно | `Game/ToolbarWriter` |
@@ -282,7 +282,7 @@
 | Удаление связи мышью | `Ui/PortGeometry` (кнопка «x» на полосе, hit-test), `Ui/VgsEditorScreen.RemovePortConnections`, `Model/GridGraph.CollectEdgesForPort`; порядок «ячейка тулбара → ребро» — [ADR-0014](adr/0014-port-remove-button-and-port-look.md) |
 | Иконки контролов Font Awesome | `tools/build-icon-atlas.ps1` (SVG → PNG, по файлу на иконку, превью каталога), `Textures/VGS/Icons/*.png`, `docs/icons/*.png`, `Data/GuiTextures.sbc`, `Ui/VgsIconAtlas.g.cs` (сгенерированная таблица), `Ui/VgsIcons.cs` (материалы иконок), `Ui/IconPlacement.cs` (пиксели окна и обрезка), `Ui/VgsScreenDraw.Icon`; точки, кнопки карточки и «x» — [ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md) |
 | Каталог иконок и его шлюз | `docs/07-icon-catalog.md` (таблица «изображение · описание · идентификатор · где используется»), `tools/check-icon-catalog.ps1` (входит в `offline-check.ps1`); правила актуализации — [ADR-0020](adr/0020-card-button-row.md) §7 |
-| Наблюдение event controller за блоками | `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`), `Model/GridGraph` (`TryAddWatch`/`RemoveWatch`/`LayoutPorts`, `IsWatchListStale`), `Model/NodeStateFormat.FormatWatchState/ParseWatchState`, `Ui/PortGeometry` (кнопка отслеживания, полосы отслеживания), `Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen` (режим отслеживания), `Game/EventControllerProbe` (`ReadOverlay`), `Game/EventControllerKeeper`, `Game/NodeStateStore`; решение — [ADR-0017](adr/0017-event-controller-watch-ports.md), [ADR-0018](adr/0018-game-is-the-source-of-truth.md), сброс при смене события — [ADR-0044](adr/0044-event-change-resets-editor-watches.md) |
+| Наблюдение event controller за блоками | `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`), `Model/GridGraph` (`TryAddWatch`/`RemoveWatch`/`LayoutPorts`, `IsWatchListStale`), `Model/NodeStateFormat.FormatWatchState/ParseWatchState`, `Ui/PortGeometry` (кнопка отслеживания, полосы отслеживания), `Ui/LineRaster.Dotted`, `Ui/VgsScreenDraw.PathDots`, `Ui/VgsEditorScreen` (режим отслеживания), `Game/EventControllerProbe` (`ReadOverlay`), `Game/EventControllerKeeper`, `Game/NodeStateStore`; решение — [ADR-0017](adr/0017-event-controller-watch-ports.md), [ADR-0018](adr/0018-game-is-the-source-of-truth.md), сброс при смене события — [ADR-0044](adr/0044-event-change-resets-editor-watches.md) |
 | Источники событий, которые тулбар не умеет (порог, значение) | новый `Vgs.Game/EventSources.cs` |
 | Вычислитель для условий и значений | новый `Vgs.Game/GraphEvaluator.cs` |
 | Защита от лавины (петли, ограничение глубины, кулдаун) | `GraphEvaluator` |
@@ -476,7 +476,7 @@
 `Game/EventControllerKeeper.cs`,
 `Game/NodeStateStore.cs` (`TryReadWatchList`, `SaveWatchList`, `HasStorage`), `Game/GridGraphBuilder`
 (`RefreshControllerState`), `Ui/PortGeometry` (кнопка отслеживания, полосы и точка отслеживания),
-`Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen`
+`Ui/LineRaster.Dotted`, `Ui/VgsScreenDraw.PathDots`, `Ui/VgsEditorScreen`
 (`HandleWatchInput`, `TryAttachWatch`, `RemoveWatchTarget`, `DrawWatchBars`,
 `DrawWatchLines`, `DrawPendingWatchLine`). Источник истины — игра
 ([ADR-0018](adr/0018-game-is-the-source-of-truth.md)); смена события сбрасывает привязки
@@ -487,11 +487,11 @@
       начинается от левого края карточки ([ADR-0020](adr/0020-card-button-row.md)).
 - [ ] У таймера, сенсора, лампы и кокпита кнопки отслеживания нет.
 - [ ] Нажатие колокольчика включает режим отслеживания: от **центра колокольчика** к курсору
-      идёт пунктирная жёлтая линия; ПКМ и Esc отменяют, редактор при этом не закрывается.
+      идёт **точечная** жёлтая линия; ПКМ и Esc отменяют, редактор при этом не закрывается.
 - [ ] Клик по подходящему блоку: появился жёлтый порт с названием этого блока и «x»; от его
-      точки к **карточке** целевого блока идёт пунктир, заканчивающийся на её границе.
+      точки к **карточке** целевого блока идут **точки** (2 px через 2 px, [ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md)), заканчивающиеся на её границе.
 - [ ] Клик по **самому контроллеру** ([ADR-0036](adr/0036-self-connection.md)): порт с его
-      собственным именем появился, пунктира нет, «x» убирает и порт, и запись.
+      собственным именем появился, линии нет, «x» убирает и порт, и запись.
 - [ ] Второй блок: второй жёлтый порт, полосы стакаются вниз вплотную.
 - [ ] Клик по блоку, который событию не подходит: линия краснеет примерно на секунду, порт
       **не** появляется, в нижней панели написано почему.
@@ -770,9 +770,19 @@
 **Что увидят:** линии — кривые вместо ломаных; цвет и прозрачность меняются динамически от
 условий в игре.
 
-**Зависимость:** локальная — `EdgeRouting.Build` (сейчас ортогональные отрезки) и функция
-стиля ребра (цвет/альфа от состояния концов) поверх `VgsScreenDraw.Segment`. Слой менять не
-нужно; источник условий — состояние из `P0`.
+**Сделано (кривые):** линия связи — скруглённый путь, линия отслеживания — точки;
+[ADR-0046](adr/0046-curved-connection-lines.md). Кривая выводится из того же
+ортогонального маршрута (`EdgeRouting.Round`), поэтому форма маршрута, петля и труба не
+менялись.
+
+**Сделано (вид линии):** связь рисуется **плотными точками** — 2 px через 1 px, — а не
+сплошной полосой; линия отслеживания осталась 2 px через 2 px
+([ADR-0047](adr/0047-dotted-connection-lines.md)). Причина: у API нет антиалиасинга, и
+сплошной край читался как линия толще двух пикселей.
+
+**Осталось:** стиль ребра от состояния концов — цвет и альфа от `BlockState`; встаёт в
+`DrawEdges`/`DrawRoundedRoute` (`VgsEditorScreen.Draw`) поверх `VgsScreenDraw.PathDots`, слой
+менять не нужно. Источник условий — состояние из `P0`.
 
 ### 5.4. Выпадающее меню на узле
 

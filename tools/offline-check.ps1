@@ -86,6 +86,12 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\ToolbarPlanner.cs'),
     (Join-Path $sourceRoot 'Ui\PortGeometry.cs'),
     (Join-Path $sourceRoot 'Ui\EdgeRouting.cs'),
+    # The line rasteriser (ADR-0046): the rounded path of a connection turned into whole-pixel
+    # rectangles of exactly two device pixels, and the dotted pattern of a watch line. Gaps, a
+    # thickness that is a pixel off and a dot rhythm that restarts at a bend are all invisible in
+    # a compile and all decidable from numbers, which is why the arithmetic lives outside the
+    # draw layer.
+    (Join-Path $sourceRoot 'Ui\LineRaster.cs'),
     # The pipe's rails (ADR-0040): the same route as a connection, drawn as two walls with a
     # bore between them, with every bend unrolled into an axis-aligned staircase. Geometry the
     # draw path cannot be asked about — hence here.
