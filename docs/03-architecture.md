@@ -39,6 +39,7 @@
 | [0029](adr/0029-editor-does-not-pause.md) | Редактор **не ставит игру на паузу**: пауза останавливала симуляцию, поэтому повреждение нельзя было увидеть растущим; часы экрана — свои кадры, `UpdateOnPause` не включается |
 | [0030](adr/0030-block-category-descriptor.md) | Категория блока — enum + описатель (`ResolveCategory`, `Descriptor`: события + ключи метрик); специфика event controller уходит с `Node` в `ControllerState`, `IsEventController` производный |
 | [0040](adr/0040-conveyor-network.md) | Конвейерная сеть — третье хранилище графа, выводимое из мира: узлы редукции — только блоки с карточкой, скрытые блоки и трубы проходятся насквозь; труба рисуется двумя линиями со скруглёнными изгибами под карточками; режим `Show conveyor network`, по умолчанию вкл |
+| [0045](adr/0045-hotkey-opens-editor-from-cockpit.md) | Клавиша **M** — второй вход в тот же экран (`VgsEditorScreen.OpenFor`), опрос `IsNewKeyPressed` из сессионного компонента; работает только из кокпита и только когда клавиатурой не владеет другой экран (чат, игровой экран, терминал); привязку мод зарегистрировать не может |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -68,6 +69,7 @@
         │                  (без игровой логики; всё логирование идёт сюда)
         │
         ├──► Vgs.Game ──── VgsTerminalControls   регистрирует кнопку в кокпите
+        │                  EditorHotkey          клавиша M: схема из кокпита (ADR-0045)
         │                  GridGraphBuilder      читает грид → GridGraph
         │                  GridViewStore         состояние вида грида (камера, зум, режимы)
         │                  TextClipboard         собственный буфер поля поиска (системный недоступен)
@@ -214,6 +216,12 @@ classDiagram
     class TerminalJump {
         <<static>>
         +TryOpen(entityId, out string failure) bool
+    }
+
+    class EditorHotkey {
+        <<static>>
+        -MyKeys OpenKey$
+        +Poll()
     }
 
     class GridGraphBuilder {
@@ -513,6 +521,7 @@ classDiagram
         -TextEditor _searchEditor
         -List~string~ _searchTerms
         -int _screenFrame
+        +bool IsEditorOpen$
         +OpenFor(IMyCockpit)$
         +CloseIfOpen()$
         #OnOpened()
@@ -1052,6 +1061,15 @@ classDiagram
     VgsTerminalControls --> IMyCockpit
     VgsTerminalControls --> VgsSession
 
+    VgsSessionComponent --> EditorHotkey : опрос клавиши в UpdateAfterSimulation
+    EditorHotkey --> VgsEditorScreen : IsEditorOpen, OpenFor
+    EditorHotkey --> IMyCockpit : игрок сидит в кокпите
+    EditorHotkey --> IMyControllableEntity : ControlledObject
+    EditorHotkey --> IMyGui : ChatEntryVisible, ActiveGamePlayScreen, GetCurrentScreen
+    EditorHotkey --> IMyInput : IsNewKeyPressed, модификаторы
+    EditorHotkey --> VgsSession : есть ли локальный игрок
+    EditorHotkey ..> MyKeys : константа клавиши
+
     VgsEditorScreen --> GridGraph
     VgsEditorScreen --> GridGraphBuilder : Build, Refresh (структура) и RefreshState (2 Гц)
     VgsEditorScreen --> ToolbarWriter : запись и очистка связи
@@ -1173,7 +1191,7 @@ classDiagram
 ```
 Vgs.Core   →  Vgs.Core
 Vgs.Model  →  Vgs.Model            (и VRageMath)
-Vgs.Game   →  Vgs.Model, Vgs.Core
+Vgs.Game   →  Vgs.Model, Vgs.Core, Vgs.Ui (открыть экран и спросить, открыт ли он)
 Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновления, никогда из отрисовки)
 ```
 
@@ -1182,6 +1200,15 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 позиции (`NodeStateStore`), отслеживание (`EventControllerProbe`) и переход в терминал
 (`TerminalJump`) — это вызовы `Game` из `OnHandleInput`, то есть по действию игрока, а не из
 кадрового пути картинки (ADR-0003).
+
+Обратное ребро — **`Game → Ui`** — тоже разрешено, но только как «открыть экран и спросить,
+открыт ли он»: `VgsTerminalControls` (кнопка в терминале) и `EditorHotkey` (клавиша M) зовут
+`VgsEditorScreen.OpenFor`; клавиша ещё и спрашивает `IsEditorOpen`. Мир и состояние экрана по
+этому ребру не читаются: `IsEditorOpen` — статический признак из одного поля и `MyModScreen.IsOpen`,
+без обращения к блокам, без аллокаций и без чтения картинки. Читается он **в тиковом пути**
+(`EditorHotkey.Poll` из `UpdateAfterSimulation`), и это допустимо именно потому, что предмет
+чтения — не мир и не состояние экрана, а «есть ли экран»; кадровый путь (`OnDraw`) по этому
+ребру не ходит вовсе.
 
 Запрещено, и это проверяется шлюзом:
 
@@ -1344,6 +1371,7 @@ public bool IsEventController { get { return Controller != null; } }
 | Файл | Ответственность |
 |---|---|
 | `VgsTerminalControls.cs` | регистрация кнопки «Grid Workspace» и чекбокса «Show in Grid Workspace», проверка прав, открытие экрана |
+| `EditorHotkey.cs` | **второй вход** в тот же экран — клавиша **M** (ADR-0045): опрос `IsNewKeyPressed` раз в тик и все условия допуска (локальный игрок, экран не открыт, без модификаторов, не чат, не другой экран, не терминал, игрок **в кокпите**). Открывает через `VgsEditorScreen.OpenFor`, поэтому всё, что происходит после входа, у кнопки и у клавиши одно и то же |
 | `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами, фильтр скрытых блоков |
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
 | `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
@@ -2109,6 +2137,20 @@ max(ширина иконки тумблера, `0,6` внутренней вы�
         └─ new VgsEditorScreen(graph, grid).Open()
 ```
 
+Второй вход — клавиша **M** (ADR-0045) — идёт в тот же `OpenFor`, поэтому дальше схема
+неотличима от открытой кнопкой:
+
+```
+каждый тик симуляции
+   └─► VgsSessionComponent.UpdateAfterSimulation → EditorHotkey.Poll()
+        ├─ есть локальный игрок? редактор уже открыт? (VgsEditorScreen.IsEditorOpen)
+        ├─ IsNewKeyPressed(M) и не нажат Ctrl/Alt/Shift
+        ├─ не чат (ChatEntryVisible), не экран (ActiveGamePlayScreen == null),
+        │  не терминал (GetCurrentScreen == None)
+        ├─ Session.ControlledObject as IMyCockpit — игрок в кокпите; иначе тихий отказ
+        └─ VgsEditorScreen.OpenFor(cockpit)  ← дальше как у кнопки
+```
+
 ### Сохранение позиции
 
 ```
@@ -2494,6 +2536,7 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
 | Видимость узла — флаг на блоке, чекбокс у всех терминальных блоков | Лишняя строка в терминале каждого блока мира, включая чужие и модовые | [0013](adr/0013-show-in-vgs-flag.md) |
 | Чтение состояния блока не создаёт компонент | Запись в хранилище возможна только из действия пользователя, не из просмотра | [0012](adr/0012-layout-lives-on-the-block.md) |
 | Автоматическая раскладка сортирует по позиции блока | Сортировка на каждом обновлении; зато карточки не перетасовываются между сессиями | [0012](adr/0012-layout-lives-on-the-block.md) |
+| Клавиша **M** открывает схему из кокпита | Клавиша занята модом в полёте: конфликт с игрой или другим модом решается правкой константы `EditorHotkey.OpenKey`, а не настройкой. Проверка «экран не открыт» опирается на поле, которое пишет один обработчик игры, поэтому меню паузы в мультиплеере и экраны других модов ею не покрыты — в одиночной игре вопрос закрыт паузой | [0045](adr/0045-hotkey-opens-editor-from-cockpit.md) |
 
 ---
 

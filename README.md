@@ -25,6 +25,11 @@ links and watch bindings is server-only, and a remote client is refused with a r
 
 The button exists only on cockpits: the editor needs a pilot seat to know which grid to show.
 
+**Or press M.** While you are in a cockpit and no other screen is open — no terminal or
+inventory (they are the same screen), no chat, no menu — **M** opens the editor directly: the
+same screen, the same saved view. The key does nothing on foot: without a pilot seat there is no
+grid to draw.
+
 ## Use
 
 **What you see.** A card is a block: name, subtype and a row of buttons. A strip under the card

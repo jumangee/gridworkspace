@@ -3,6 +3,11 @@
 - Status: accepted
 - Date: 2026-11-18
 - Supersedes: —
+- Amended by: [0045](0045-hotkey-opens-editor-from-cockpit.md) — у указателя `_openEditor`
+  появился **второй читатель**: клавиша **M** спрашивает `VgsEditorScreen.IsEditorOpen`
+  (не «`IsOpened`», а `IsOpen` — тот член, который есть у `MyModScreen`) и по нему решает,
+  открывать ли экран. Правило «один экран» от этого не меняется, но теперь оно проверяется
+  в двух местах, а не в одном.
 
 ## Context
 
@@ -37,7 +42,13 @@
 
 - Легко: повторное нажатие не плодит экраны.
 - Трудно: если экран уничтожен в обход `UnloadData`, указатель станет висячим — поэтому
-  `OpenFor` дополнительно проверяет `IsOpened`.
+  `OpenFor` дополнительно проверяет `IsOpen` (член `MyModScreen`; в первой редакции ADR здесь
+  было написано `IsOpened`, и это исправлено вместе с ADR-0045).
+  Имя `IsOpened` существует, но у **другого** типа — запрещённого моду
+  `Sandbox.Graphics.GUI.MyGuiScreenBase` ([api-surface.md](../01-research/api-surface.md)
+  §`Sandbox.Graphics.GUI.MyGuiScreenBase`); оттуда оно и попало в текст. У
+  `Sandbox.ModAPI.MyModScreen` член называется `IsOpen`
+  ([api-modscreen.md](../01-research/api-modscreen.md) §`Sandbox.ModAPI.MyModScreen`).
 - Запрещено: создавать `VgsEditorScreen` в обход `OpenFor`.
 
 ## Verification

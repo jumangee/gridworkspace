@@ -50,7 +50,8 @@ namespace Vgs.Core
             {
                 // ---- Terminal controls (survive in the world) ----
                 { "BUTTON_TITLE", "Grid Workspace" },
-                { "BUTTON_TOOLTIP", "Open the grid logic editor" },
+                { "BUTTON_TOOLTIP",
+                  "Open the grid logic editor. In a cockpit, M opens it too" },
                 { "SHOW_IN_VGS_TITLE", "Show in Workspace" },
                 { "SHOW_IN_VGS_TOOLTIP",
                   "Draw this block on the grid schema. Turning it off hides the block and its lines; "
@@ -194,7 +195,8 @@ namespace Vgs.Core
             {
                 // ---- Terminal controls ----
                 { "BUTTON_TITLE", "Центр Управления Гридом" },
-                { "BUTTON_TOOLTIP", "Открыть редактор логики грида" },
+                { "BUTTON_TOOLTIP",
+                  "Открыть редактор логики грида. В кокпите схема открывается и клавишей M" },
                 { "SHOW_IN_VGS_TITLE", "Показывать в ЦУГ" },
                 { "SHOW_IN_VGS_TOOLTIP",
                   "Рисовать этот блок на схеме грида. Выключение скрывает блок и его линии; "

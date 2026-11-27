@@ -75,6 +75,10 @@
   `Game/GameLanguage.Translate`, имя в цикле проверки `tests/OfflineChecks.cs`. **Нового
   класса не нужно**: язык — это данные.
 - **«Может ли вот этот блок управлять другими?»** → [06-terminology.md](06-terminology.md) §5.
+- **«Почему схема открывается клавишей M и почему не пешком?»** →
+  [ADR-0045](adr/0045-hotkey-opens-editor-from-cockpit.md): клавиша — второй вход в тот же
+  экран; она работает, только когда игрок управляет кокпитом и клавиатурой не владеет другой
+  экран (терминал, чат, меню). Проверенные признаки — [01-research/api-hotkey.md](01-research/api-hotkey.md).
 
 ## Справочники (сырые данные)
 
@@ -89,6 +93,7 @@
 | [01-research/api-block-state.md](01-research/api-block-state.md) | Состояние живого блока: откуда берётся целостность (повреждение), что ещё моду доступно и почему читается именно это |
 | [01-research/api-event-controller.md](01-research/api-event-controller.md) | Event controller: что из его состояния видно моду, как читается список `selected blocks` и что можно записать обратно |
 | [01-research/api-terminal-jump.md](01-research/api-terminal-jump.md) | Переход из редактора в терминал игры: `ShowTerminalPage` / `ChangeInteractedEntity`, флаг удалённого доступа, `TestConnection` и антенна |
+| [01-research/api-hotkey.md](01-research/api-hotkey.md) | Горячая клавиша: как узнать «игрок в кокпите» (`Session.ControlledObject` → `IMyCockpit`), какие признаки отвечают «экран владеет клавиатурой» (`ActiveGamePlayScreen`, `GetCurrentScreen`, `ChatEntryVisible`), **что терминал в первое поле входит**, а `GetCurrentScreen` спрашивает сам экран (и почему обе проверки оставлены), почему инвентарь — та же вкладка терминала, почему привязку зарегистрировать нельзя и почему опрос из сессионного компонента видит нажатие в том же кадре |
 | [01-research/api-persistence.md](01-research/api-persistence.md) | Хранение данных на блоке (`MyModStorageComponent`, регистрация GUID в SBC), стабильность `EntityId` при save/load, копировании и резке грида, чекбокс на всех `IMyTerminalBlock` через `CustomControlGetter` |
 | [01-research/api-terminal-search.md](01-research/api-terminal-search.md) | Правило фильтрации блоков в терминале (AND по термам, подстрока в имени или типе) и чтение ввода с клавиатуры в моде (`IMyInput.TextInput`, подмена буфера, `MyKeys`, модификаторы); почему движковое поле ввода моду запрещено и почему буфер обмена **недоступен** (вердикт игры, ADR-0027); почему счётчик кадров мода замирает на паузе; состояние вида на гриде — `IMyCubeGrid : IMyEntity` |
 | [01-research/api-conveyor-network.md](01-research/api-conveyor-network.md) | Конвейерная сеть: почему реализация конвейеров (`Sandbox.Game.GameSystems.Conveyors`) моду недоступна, откуда берутся линии (`MyObjectBuilder_CubeGrid.ConveyorLines` через `IMyEntity.GetObjectBuilder`) и что означает конец линии (клетка самого блока, включая многоблочный); труба — ребро, а не узел (ADR-0040) |

@@ -99,6 +99,23 @@ namespace Vgs
 
             try
             {
+                // The M hotkey (ADR-0045). Polled here and not from a screen because the screen it
+                // opens does not exist yet — this is the only code of the mod that runs while the
+                // player is flying with nothing open. It is not gated on the registration below:
+                // a player whose terminal control never registered still gets the key.
+                EditorHotkey.Poll();
+            }
+            catch (Exception e)
+            {
+                // A safety net, not the primary guard: the poll catches everything itself. It
+                // exists because the rule at this boundary is unconditional — a future change
+                // there must not be able to break the session's update. Its own tag, so a broken
+                // poll cannot silence the registration path below.
+                VgsLog.Throttled("hotkey-update", "hotkey poll failed", e, 600);
+            }
+
+            try
+            {
                 // Deferred registration: the terminal control factory is only usable once the
                 // game has created its block definitions. Doing this in Init() silently loses
                 // the control on some load orders, so we retry here until it sticks.

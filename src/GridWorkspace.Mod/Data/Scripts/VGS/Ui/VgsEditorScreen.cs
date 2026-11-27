@@ -698,6 +698,23 @@ namespace Vgs.Ui
             }
         }
 
+        /// <summary>
+        /// True while an editor is on screen. Answers for the whole mod, not for one instance:
+        /// the caller that needs it (<see cref="Vgs.Game.EditorHotkey"/>) has no instance to ask.
+        ///
+        /// Both halves matter. A null pointer means nothing was opened yet; a non-null one that is
+        /// no longer open is the frame between the screen's close and the next open, and reporting
+        /// "open" there would swallow the player's next key press.
+        /// </summary>
+        public static bool IsEditorOpen
+        {
+            get
+            {
+                VgsEditorScreen screen = _openEditor;
+                return screen != null && screen.IsOpen;
+            }
+        }
+
         private void RaiseToTop()
         {
             try
