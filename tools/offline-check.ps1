@@ -118,6 +118,11 @@ $sources = @(
     # rectangle", and the normalisation of a band dragged in any of the four directions. All of
     # them break silently, and none of them needs the game.
     (Join-Path $sourceRoot 'Ui\NodeSelection.cs'),
+    # The pointer's distance to a drawn line (ADR-0049): the hit test behind "the pointer is over
+    # this connection". A tolerance measured in layout units is an ellipse, a distance measured to
+    # the route instead of the drawn path misses every bend, and an unclamped end grows a band past
+    # the port dot — all invisible in a compile and all decidable from numbers.
+    (Join-Path $sourceRoot 'Ui\LineHit.cs'),
     (Join-Path $sourceRoot 'Ui\Marquee.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.

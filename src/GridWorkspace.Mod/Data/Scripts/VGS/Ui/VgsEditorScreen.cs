@@ -393,6 +393,35 @@ namespace Vgs.Ui
         /// </summary>
         private Node _hoverPowerSwitch;
 
+        // ---- the line under the pointer (ADR-0049) ----
+        //
+        // Four fields rather than one "hovered line" object, because the three kinds of line are
+        // three different things in the model and the draw pass already walks them in three
+        // different passes. A shared wrapper would have to be unwrapped at every draw site, and a
+        // wrapper that could describe "an edge or a pipe or a watch link" is exactly the type this
+        // project's model refuses to have (an edge has a cell and a port, a pipe has neither).
+        //
+        // Only one of them is ever non-null: the hit test resolves the topmost line and stops.
+
+        /// <summary>Connection under the pointer, or null. Compared by identity: an edge is immutable.</summary>
+        private Edge _hoverEdge;
+
+        /// <summary>
+        /// Conveyor link under the pointer, or null. Compared by its two ends rather than by
+        /// identity, because the structural pass rebuilds the link list.
+        /// </summary>
+        private ConveyorLink _hoverConveyor;
+
+        /// <summary>Controller whose watch line is under the pointer, or null.</summary>
+        private Node _hoverWatchController;
+
+        /// <summary>
+        /// Watched block of the watch line under the pointer, or null. Paired with
+        /// <see cref="_hoverWatchController"/>: a watch line is identified by both of its ends,
+        /// since one controller has a line per watched block.
+        /// </summary>
+        private WatchTarget _hoverWatchTarget;
+
         /// <summary>
         /// Edges collected for a removal click. Reused so that clicking a remove button does
         /// not allocate: the list is emptied before each collection and after each use.
@@ -457,6 +486,17 @@ namespace Vgs.Ui
         /// one list would overwrite the input halfway through.
         /// </summary>
         private readonly List<Vector4> _pipeBuffer = new List<Vector4>(160);
+
+        /// <summary>
+        /// Scratch buffer for the <b>fill</b> of a highlighted pipe (ADR-0049): the pipe's centre
+        /// line, one piece per straight and per step of every bend, which the draw pass paints at
+        /// the pipe's full width.
+        ///
+        /// A field for the same reason as <see cref="_pipeBuffer"/>: it is refilled per drawn pipe
+        /// and must not allocate. It is only filled while the pipe is highlighted, so the cost of
+        /// the feature is paid by the lines the player is actually looking at.
+        /// </summary>
+        private readonly List<Vector4> _pipeFillBuffer = new List<Vector4>(160);
 
         /// <summary>
         /// The pipe's rail builder, with its own scratch (ADR-0040).
@@ -958,6 +998,7 @@ namespace Vgs.Ui
                 _route.Clear();
                 _path.Clear();
                 _pipeBuffer.Clear();
+                _pipeFillBuffer.Clear();
                 _removeBuffer.Clear();
                 _searchTerms.Clear();
                 _searchField.Clear(_screenFrame);
@@ -1579,11 +1620,11 @@ namespace Vgs.Ui
 
         /// <summary>
         /// Drops the pointer's hover targets: the card, its button row, the power switch, the port
-        /// remove button and the watch remove button.
+        /// remove button, the watch remove button, and the line under the pointer.
         ///
-        /// Seven fields, because they are one fact — what the pointer is over — and every place
+        /// Eleven fields, because they are one fact — what the pointer is over — and every place
         /// that recomputes it or leaves a mode has to forget it first. Keeping them in one method
-        /// is what stops the next mode from clearing four of the seven and leaving a highlight on a
+        /// is what stops the next mode from clearing four of the eleven and leaving a highlight on a
         /// control it does not offer.
         /// </summary>
         private void ClearHoverTargets()
@@ -1595,6 +1636,14 @@ namespace Vgs.Ui
             _hoverWatchRemoveNode = null;
             _hoverWatchRemoveTarget = null;
             _hoverPowerSwitch = null;
+
+            // The line highlight (ADR-0049) is the same fact as the rest of them: a menu that
+            // covers the canvas, a rebuild that replaces every node, or a gesture that owns the
+            // pointer must not leave a wire lit up behind it.
+            _hoverEdge = null;
+            _hoverConveyor = null;
+            _hoverWatchController = null;
+            _hoverWatchTarget = null;
         }
 
         /// <summary>

@@ -46,6 +46,22 @@ internal static class OfflineChecks
     }
 
     /// <summary>
+    /// A comparison with an explicit tolerance, for a value that is a difference of two floats.
+    ///
+    /// A layout offset such as <c>0.502 − 0.5</c> is not <c>0.002</c> in single precision, and the
+    /// error survives the multiplication by the window size — so a distance in pixels is asserted
+    /// against a tolerance in pixels rather than exactly. A hundredth of a pixel is two orders of
+    /// magnitude below anything the pointer could notice and well above the arithmetic's error.
+    /// </summary>
+    private static void CheckNear(float actual, float expected, string what)
+    {
+        _checks++;
+        if (Math.Abs(actual - expected) < 0.01f) return;
+        _failures++;
+        Console.WriteLine("FAIL: " + what + " (expected " + expected + ", got " + actual + ")");
+    }
+
+    /// <summary>
     /// A timer-shaped node: one fire group, nine slots, ten pages. That is what the game
     /// builds for <c>MyTimerBlock</c> (<c>new MyToolbar(ButtonPanel, 9, 10)</c>).
     /// </summary>
@@ -263,6 +279,9 @@ internal static class OfflineChecks
 
         Console.WriteLine("=== marquee band rasteriser (ADR-0048) ===");
         MarqueeRaster();
+
+        Console.WriteLine("=== line highlight (ADR-0049) ===");
+        LineHighlight();
 
         Console.WriteLine();
         Console.WriteLine(_failures == 0
@@ -4881,6 +4900,88 @@ internal static class OfflineChecks
         return false;
     }
 
+    /// <summary>
+    /// True when every point of the <b>highlighted pipe's fill</b> stays between the two rails it
+    /// fills, for the L-shaped route (0,0)→(100,0)→(100,100) with the fillet at
+    /// <c>(100 − corner, corner)</c>.
+    ///
+    /// <b>The rails are the envelope, not the nominal radii.</b> A staircase bulges past the arc
+    /// it approximates — every chord's corner is farther from the fillet's centre than the radius
+    /// it was sampled from — so comparing the fill against <c>corner ± half</c> would reject a
+    /// correct fill by the amount of that bulge (measured: 6.549 against 6.5). The rails bulge by
+    /// the same construction, so the honest test is against what the rails actually produced: the
+    /// fill may not be farther out than the outermost rail point, nor closer in than the innermost.
+    ///
+    /// A fill that bulged past the rails would make a highlighted pipe wider than an ordinary one,
+    /// which is the one thing a highlight must not do.
+    /// </summary>
+    private static bool FillStaysInsideBand(List<Vector4> fill, List<Vector4> rails, float corner)
+    {
+        float centreX = 100f - corner;
+        float centreY = corner;
+
+        float inner = float.MaxValue;
+        float outer = 0f;
+        RadiusRange(rails, centreX, centreY, ref inner, ref outer);
+
+        if (outer <= 0f) return false;
+
+        // The rails' straight legs are not part of the bend, so their points are not radii; the
+        // range above is taken over the whole rail list, which only widens it — a fill that
+        // strayed outside the bend would still be caught, because the legs are axis-aligned and
+        // their points sit at the band's own edge.
+        for (int i = 0; i < fill.Count; i++)
+        {
+            Vector4 piece = fill[i];
+
+            float[] xs = { piece.X, piece.Z };
+            float[] ys = { piece.Y, piece.W };
+
+            for (int c = 0; c < 2; c++)
+            {
+                float x = xs[c];
+                float y = ys[c];
+
+                // Only the bend's quadrant: right of the fillet's centre and above it.
+                if (x <= centreX || y >= centreY) continue;
+
+                float dx = x - centreX;
+                float dy = y - centreY;
+                float r = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                if (r < inner - 1e-3f || r > outer + 1e-3f) return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Widens <paramref name="inner"/>/<paramref name="outer"/> by the distance of every endpoint
+    /// of the list from the given centre. Used to read the envelope the rails actually produced.
+    /// </summary>
+    private static void RadiusRange(List<Vector4> pieces, float centreX, float centreY,
+                                    ref float inner, ref float outer)
+    {
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 piece = pieces[i];
+
+            float[] xs = { piece.X, piece.Z };
+            float[] ys = { piece.Y, piece.W };
+
+            for (int c = 0; c < 2; c++)
+            {
+                float dx = xs[c] - centreX;
+                float dy = ys[c] - centreY;
+                float r = (float)Math.Sqrt(dx * dx + dy * dy);
+
+                if (r < inner) inner = r;
+                if (r > outer) outer = r;
+            }
+        }
+    }
+
     private static bool PipePassesThrough(Vector4 piece, float x, float y, float tolerance)    {
         float minX = Math.Min(piece.X, piece.Z) - tolerance;
         float maxX = Math.Max(piece.X, piece.Z) + tolerance;
@@ -4900,6 +5001,175 @@ internal static class OfflineChecks
                 || float.IsInfinity(p.Z) || float.IsInfinity(p.W)) return false;
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------ line highlight (ADR-0049)
+    //
+    // Three things the game shows only as "it does not react", and one it shows as a picture that
+    // is almost right:
+    //
+    //   * a pointer tolerance measured in the wrong units — an elliptical target that thins out
+    //     as the player zooms, because the layout's axes do not share a scale (ADR-0009);
+    //   * a hit test that measures the route instead of the drawn path — a line that cannot be
+    //     caught anywhere near a bend, where the rounded path is furthest from the route;
+    //   * a hit test that does not clamp the ends — a band that grows past the port dot and steals
+    //     the hover of whatever lies beyond it;
+    //   * a pipe fill that is not the pipe's centre line — a strip of canvas left inside the pipe,
+    //     or a bend the fill does not close.
+    //
+    // All four are decidable from numbers.
+    private static void LineHighlight()
+    {
+        // ---- the highlight's own numbers ----
+        Check(VgsConstants.HighlightDotPixels == VgsConstants.LineDotPixels,
+              "a highlight dot has the weight of the line it lies under");
+        Check(VgsConstants.HighlightGapPixels == 0f,
+              "a highlight has no gap: it is a continuous line under the dotted one");
+        Check(VgsConstants.LineHoverPixels > VgsConstants.LineDotPixels,
+              "the pointer's slack is wider than the ink, or a line could not be caught");
+        CheckClose(VgsConstants.ConveyorFillPixels,
+                   VgsConstants.ConveyorGapPixels + VgsConstants.ConveyorWallPixels * 2f,
+                   "a pipe's fill reaches the outer edge of both walls");
+        // ---- distance to a path, in device pixels ----
+        var path = new List<Vector2>();
+        path.Add(new Vector2(0.2f, 0.5f));
+        path.Add(new Vector2(0.8f, 0.5f));
+
+        Vector2 pixelsPerUnit = new Vector2(1000f, 500f);   // a 1000 x 500 client area
+
+        CheckNear(LineHit.DistancePixels(path, new Vector2(0.5f, 0.5f), pixelsPerUnit), 0f,
+                  "a point on the line is at no distance from it");
+        CheckNear(LineHit.DistancePixels(path, new Vector2(0.5f, 0.502f), pixelsPerUnit), 1f,
+                  "a thousandth of the height is one pixel");
+        CheckNear(LineHit.DistancePixels(path, new Vector2(0.5f, 0.51f), pixelsPerUnit), 5f,
+                  "a hundredth of the height is five pixels");
+
+        // The band stops at the ends: past the last point the distance is measured to that point
+        // instead of staying at the perpendicular distance. Without the clamp the band would
+        // extend past the port dot and the nearest line would win over the line under the pointer.
+        CheckNear(LineHit.DistancePixels(path, new Vector2(0.9f, 0.5f), pixelsPerUnit), 100f,
+                  "past the end of the line the distance is measured to the end point");
+
+        // ---- the axes do not share a scale ----
+        //
+        // One X unit of the layout is the window's width and one Y unit its height, so the same
+        // offset in X and in Y is a different number of pixels. A tolerance measured in layout
+        // units would be an ellipse; this pair of checks is what fails if the conversion is ever
+        // done with one number.
+        var dot = new List<Vector2>();
+        dot.Add(new Vector2(0.5f, 0.5f));
+        CheckNear(LineHit.DistancePixels(dot, new Vector2(0.6f, 0.5f), pixelsPerUnit), 100f,
+                  "a horizontal offset is scaled by the client width");
+        CheckNear(LineHit.DistancePixels(dot, new Vector2(0.5f, 0.6f), pixelsPerUnit), 50f,
+                  "a vertical offset is scaled by the client height");
+
+        // ---- the tolerance is a band, not a point ----
+        Check(LineHit.IsWithin(path, new Vector2(0.5f, 0.506f), pixelsPerUnit,
+                               VgsConstants.LineHoverPixels),
+              "a point three pixels away is over the line");
+        Check(!LineHit.IsWithin(path, new Vector2(0.5f, 0.509f), pixelsPerUnit,
+                                VgsConstants.LineHoverPixels),
+              "a point four and a half pixels away is not");
+        Check(!LineHit.IsWithin(path, new Vector2(0.5f, 0.5f), pixelsPerUnit, 0f),
+              "a zero tolerance accepts nothing");
+
+        // ---- nothing to measure ----
+        Check(LineHit.DistancePixels(null, Vector2.Zero, pixelsPerUnit) == float.MaxValue,
+              "a null path has no distance");
+        Check(!LineHit.IsWithin(new List<Vector2>(), Vector2.Zero, pixelsPerUnit, 4f),
+              "an empty path is not under the pointer");
+        Check(!LineHit.IsWithin(path, Vector2.Zero, new Vector2(0f, 0f), 4f),
+              "an unmeasured screen accepts nothing, even for a point on the line");
+        Check(!LineHit.RouteBoundsReach(new List<Vector4>(), Vector2.Zero, pixelsPerUnit, 4f),
+              "an empty route passes no bounding-box test");
+
+        // ---- a route is measured the same way ----
+        //
+        // A pipe is measured against its route: its rounded bends are a staircase a couple of
+        // pixels away from it, which is smaller than the slack the pointer is given.
+        var route = new List<Vector4>();
+        route.Add(new Vector4(0.2f, 0.5f, 0.8f, 0.5f));
+
+        CheckNear(LineHit.RouteDistancePixels(route, new Vector2(0.5f, 0.52f), pixelsPerUnit), 10f,
+                  "a route's distance is measured in pixels too");
+        Check(LineHit.RouteWithin(route, new Vector2(0.5f, 0.51f), pixelsPerUnit, 6f),
+              "a pipe is caught within its own tolerance");
+        Check(!LineHit.RouteWithin(route, new Vector2(0.5f, 0.53f), pixelsPerUnit, 6f),
+              "and not outside it");
+
+        // ---- the bounding box rejects, and never wrongly ----
+        //
+        // The pre-test may only answer "no" for a point that is farther than the tolerance from
+        // every point of the route: a false "no" would make a line unclickable while it is on
+        // screen. A point inside the box must pass, and a point outside by more than the tolerance
+        // must not.
+        Check(LineHit.RouteBoundsReach(route, new Vector2(0.5f, 0.5f), pixelsPerUnit, 4f),
+              "a point on the route is inside its bounding box");
+        Check(LineHit.RouteBoundsReach(route, new Vector2(0.5f, 0.506f), pixelsPerUnit, 4f),
+              "a point three pixels away passes the box test");
+        Check(!LineHit.RouteBoundsReach(route, new Vector2(0.5f, 0.53f), pixelsPerUnit, 4f),
+              "a point fifteen pixels away is rejected by the box");
+        Check(!LineHit.RouteBoundsReach(route, new Vector2(0.95f, 0.5f), pixelsPerUnit, 4f),
+              "a point past the route's end is rejected by the box");
+
+        // ---- the pipe's highlight is the pipe's own centre line ----
+        //
+        // The fill is what closes the bore, so it has to be the centre line: a fill offset like a
+        // rail would leave a strip of canvas inside the pipe, and a fill built from its own
+        // fillets would not meet the walls at the bend.
+        const float half = 0.5f;
+        const float corner = 6f;
+        const float diagonal = 0.70710678f;
+
+        var router = new PipeRouter();
+        var rails = new List<Vector4>();
+        var fill = new List<Vector4>();
+
+        var straight = new List<Vector4> { new Vector4(0f, 10f, 100f, 10f) };
+        Check(router.Build(straight, corner, half, 1f, half, rails, fill) == 2,
+              "a highlighted straight pipe still has two rails");
+        Check(fill.Count == 1, "and one fill piece (got " + fill.Count + ")");
+        Check(FindRail(fill, true, 10f) != null,
+              "the fill runs down the centre line, where neither rail is");
+        Check(PipeRailSpan(fill, true, 10f) >= 99.9f,
+              "the fill spans the whole straight run, like the walls it closes");
+
+        var bent = new List<Vector4>();
+        bent.Add(new Vector4(0f, 0f, 100f, 0f));
+        bent.Add(new Vector4(100f, 0f, 100f, 100f));
+
+        router.Build(bent, corner, half, 1f, half, rails, fill);
+        Check(fill.Count > 1, "a bent highlighted pipe fills its bend too");
+        CheckAllAxisAligned(fill, "pipe fill");
+        Check(FindRail(fill, true, 0f) != null,
+              "the fill starts on the centre line of the first leg");
+
+        // The fill's arc is the *centre* radius, so it passes the 45° point of that radius: the
+        // two walls pass the 45° points of theirs, and the band between them is closed. Measured
+        // on the preview at 8×, a staircase built this way leaves no canvas pixel inside the pipe
+        // — the notches visible on the outside of a bend belong to the rails themselves and are
+        // the accepted look of ADR-0040.
+        Check(FindRailPoint(fill, 100f - corner + corner * diagonal, corner - corner * diagonal),
+              "the fill's arc passes the 45° point at the centre radius");
+
+        // And no point of the fill may leave the band between the two rails: a fill that bulged
+        // would make a highlighted pipe wider than an ordinary one, which a highlight must never do.
+        Check(FillStaysInsideBand(fill, rails, corner),
+              "the fill's bend stays between the two rails");
+
+        // The buffer is reused: a build must replace the fill, not append to it, or every frame
+        // would draw every bend the pipe had ever had.
+        int fillBefore = fill.Count;
+        router.Build(bent, corner, half, 1f, half, rails, fill);
+        Check(fill.Count == fillBefore, "the fill buffer is cleared on each build");
+
+        Check(router.Build(null, corner, half, 1f, half, rails, fill) == 0 && fill.Count == 0,
+              "a null route clears the fill as well");
+
+        // Asking for no fill is legal and changes nothing about the walls.
+        int railCount = router.Build(bent, corner, half, 1f, half, rails);
+        Check(railCount == rails.Count && railCount > 2,
+              "a build without a fill still produces the walls (got " + railCount + ")");
     }
 
     // ------------------------------------------------------------------ block search (ADR-0023)

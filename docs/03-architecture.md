@@ -43,6 +43,7 @@
 | [0047](adr/0047-dotted-connection-lines.md) | Связь рисуется **плотными точками** 2 px через 1 px, линия отслеживания — 2 px через 2 px: у API нет антиалиасинга, и сплошной край читался как линия толще двух пикселей. Вес не меняется (точка — те же 2 × 2 px), меняется непрерывность; один растеризатор на оба вида (`LineRaster.Dotted` + `VgsScreenDraw.PathDots`), виды различаются ритмом (заменяет §2 ADR-0046) |
 | [0046](adr/0046-curved-connection-lines.md) | Линия связи — плавная кривая толщиной ровно 2 px: маршрут остаётся ортогональным, а рисуется скруглённый путь (`EdgeRouting.Round`), растеризованный в пикселях safe-области (`Ui/LineRaster`); линия отслеживания — точки 2 px через 2 px (отменяет §6 ADR-0010 и пунктир §5 ADR-0017) |
 | [0048](adr/0048-multi-node-selection.md) | Выделение — **набор** узлов (`Ui.NodeSelection`): Shift+клик переключает узел, клик по пустому месту очищает набор и начинает **пунктирную рамку 1 px** (`Ui.Marquee`, штрих и промежуток по 4 px при любом зуме), рамка выделяет накрытые карточки (не группы); перенос набора — одним смещением, как у группы (0016); **действие над набором не выполняется** |
+| [0049](adr/0049-line-highlight.md) | **Подсветка линий** — второй слой, а не другая линия: связь и линия отслеживания получают под собой **белую сплошную линию** той же толщины (2 px, зазор 0) по тому же пути, видимую в зазорах самой линии; труба — **заливку** (третий выход `PipeRouter.Build`, полоса «зазор + две стенки», рельсы поверх). Условия: наведение на линию (одна) или выделение узла (все линии, где он любой из концов, в обе стороны). Допуск наведения — 4 device px, расстояние считается по скруглённому пути (`Ui.LineHit`), для трубы — по маршруту; порядок разрешения обратный порядку рисования (уточняет 0040, 0046, 0047, 0048) |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -506,6 +507,11 @@ classDiagram
         -int _watchErrorUntilFrame
         -Node _hoverButton
         -CardButtonKind _hoverButtonKind
+        -Node _hoverPowerSwitch
+        -Edge _hoverEdge
+        -ConveyorLink _hoverConveyor
+        -Node _hoverWatchController
+        -WatchTarget _hoverWatchTarget
         -Node _hoverWatchRemoveNode
         -WatchTarget _hoverWatchRemoveTarget
         -Node _menuTarget
@@ -516,6 +522,7 @@ classDiagram
         -List~string~ _menuLabels
         -List~Vector4~ _route
         -List~Vector4~ _pipeBuffer
+        -List~Vector4~ _pipeFillBuffer
         -Node _hoverRemoveNode
         -Port _hoverRemovePort
         -List~Edge~ _removeBuffer
@@ -618,14 +625,24 @@ classDiagram
         -DrawWatchBars(Node, Color, float, Vector2, Vector2) void
         -DrawWatchLines(Vector2, Vector2) void
         -DrawPendingWatchLine(Vector2, Vector2) void
-        -DrawDashedRoute(Vector2, Vector2, Color, float, float, Vector2, Vector2) void
-        -DrawPortRemoveButton(Vector2, Color, bool, Vector2, Vector2) void
+        -TryBuildEdgeRoute(Edge, Vector2, out Node, out Node) bool
+        -TryBuildWatchRoute(Node, WatchTarget, Vector2, out Node) bool
+        -TryBuildConveyorRoute(ConveyorLink, Vector2, out Node, out Node) bool
+        -IsEdgeHighlighted(Edge, Node, Node) bool
+        -IsWatchHighlighted(Node, WatchTarget, Node) bool
+        -IsConveyorHighlighted(ConveyorLink, Node, Node) bool
+        -UpdateHoveredLine(Vector2, Vector2) void
+        -TryHitWatchLine(Vector2, Vector2, Vector2, float) bool
+        -TryHitEdge(Vector2, Vector2, Vector2, float) bool
+        -TryHitConveyor(Vector2, Vector2, Vector2, float) bool
+        -RoundedPath() List~Vector2~
+        -DrawDottedRoute(Color, float, bool, Vector2, Vector2) void
+        -DrawPortRemoveButton(Vector2, Color, float, bool, Vector2, Vector2) void
         -PortLabelHeight float
         -DrawEdges(Vector2, Vector2) void
         -DrawConveyors(Vector2, Vector2) void
         -PipeAnchor(Node, bool, out Vector2) bool$
-        -DrawSelfRoute(Vector2, Vector2, Vector2, Vector2, Color, Vector2, Vector2) void
-        -DrawRouteBuffer(Color, Vector2, Vector2) void
+        -DrawRoundedRoute(Color, float, bool, Vector2, Vector2) void
         -DrawPendingLine(Vector2, Vector2) void
         -DrawActionMenu() void
         -DrawModesButton() void
@@ -801,8 +818,8 @@ classDiagram
     }
 
     class PipeRouter {
-        <<static>>
         +Build(IList~Vector4~ route, float cornerRadius, float halfWidth, float aspect, float stepLength, List~Vector4~) int
+        +Build(IList~Vector4~ route, float cornerRadius, float halfWidth, float aspect, float stepLength, List~Vector4~ rails, List~Vector4~ fill) int
         -AddRail(...)
         -AddArc(...)
         -ArcPoint(...)
@@ -810,6 +827,18 @@ classDiagram
         -Offset(...)
         -AxisScale(...)
         -AddSegment(...)
+    }
+
+    class LineHit {
+        <<static>>
+        +DistancePixels(IList~Vector2~ path, Vector2 point, Vector2 pixelsPerUnit) float
+        +IsWithin(IList~Vector2~ path, Vector2 point, Vector2 pixelsPerUnit, float tolerancePixels) bool
+        +RouteDistancePixels(IList~Vector4~ route, Vector2 point, Vector2 pixelsPerUnit) float
+        +RouteWithin(IList~Vector4~ route, Vector2 point, Vector2 pixelsPerUnit, float tolerancePixels) bool
+        +RouteBoundsReach(IList~Vector4~ route, Vector2 point, Vector2 pixelsPerUnit, float tolerancePixels) bool
+        -SegmentDistance(Vector2 a, Vector2 b, Vector2 point) float
+        -ToPixels(Vector2, Vector2) Vector2
+        -HasPixels(Vector2) bool
     }
 
     class ConveyorSegment {
@@ -1251,6 +1280,8 @@ classDiagram
     LineRaster ..> VgsConstants : размер точки и шаг ритма
     VgsScreenDraw ..> LineRaster : путь → пиксельные точки (ADR-0046, ADR-0047)
     PipeRouter ..> VgsConstants : радиус изгиба и шаг лесенки
+    LineHit ..> VgsConstants : допуск наведения (device px, ADR-0049)
+    VgsEditorScreen --> LineHit : расстояние от указателя до линии (ADR-0049)
 
     ToolbarWriter --> MyToolbarItemInfo : BlockAction / GroupAction
 
@@ -1743,8 +1774,8 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `VgsEditorScreen.cs` | **частичный класс**: поля, палитра, конструктор, жизненный цикл (`OnOpened`/`OnClosed`/`OpenFor`), раскладка окна (прямоугольники полос), `OnUpdate` и проходы обновления |
 | `VgsEditorScreen.View.cs` | **частичный класс**: запись вида на грид — когда и куда; сами значения и правило «изменилось ли» живут в `ViewState` |
 | `VgsEditorScreen.Search.cs` | **частичный класс**: что запрос *значит* для картинки — затемнение карточек, видимость линий, переход по Enter; сам ввод поля — `SearchField` |
-| `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test; развод правой кнопки между кликом (ручное действие) и панорамой (ADR-0041) |
-| `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003) |
+| `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test; развод правой кнопки между кликом (ручное действие) и панорамой (ADR-0041); **наведение на линию** — какая линия под указателем ([ADR-0049](adr/0049-line-highlight.md)) |
+| `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003). Здесь же **подсветка линий** — второй слой под связью и линией отслеживания и заливка трубы ([ADR-0049](adr/0049-line-highlight.md)) |
 | `PointerGesture.cs` | единственное правило «это клик или перетаскивание»: порог `ClickSlopPixels` по каждой оси в пикселях окна (ADR-0041). **Без** ссылок на `Sandbox.*` — проверяется офлайн на четырёх формах окна |
 | `NodeSelection.cs` | набор выделенных узлов: клик заменяет, Shift+клик переключает, рамка выделяет накрытые **карточки**, перенос раскрывает набор в список карточек (группа → её участники, карточка один раз). Тождество ссылок, а не равенство. **Действий над набором нет** — это состояние картинки (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `Marquee.cs` | жест рамки выделения: точка нажатия, текущая точка, порог «это уже не клик» в пикселях и нормализация прямоугольника в любом из четырёх направлений (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
@@ -1756,7 +1787,8 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли линия отслеживания (`ShouldDrawWatchLine` — самопросмотр её не рисует, ADR-0036) |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); скругление маршрута в путь связи — изгиб от середины отрезка до середины следующего (ADR-0046) |
 | `LineRaster.cs` | путь линии → точки в пикселях safe-области: 2 × 2 px на обеих осях и на любом зуме, ритм отсчитывается по длине пути, поэтому изгиб его не сбивает. Один растеризатор на оба вида линии — связь (зазор 1 px) и наблюдение (зазор 2 px). Там же пунктирный прямоугольник рамки выделения: четыре ребра, каждое начинается и заканчивается штрихом, шаг считается из длины ребра. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md), [ADR-0048](adr/0048-multi-node-selection.md)) |
-| `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
+| `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040); третьим выходом — **центральная линия** для заливки подсвеченной трубы ([ADR-0049](adr/0049-line-highlight.md)). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
+| `LineHit.cs` | расстояние от указателя до линии **в device pixels**: по скруглённому пути (связь, линия отслеживания) и по маршруту (труба), с зажатой проекцией и габаритным предтестом. Единственное правило «указатель на линии» ([ADR-0049](adr/0049-line-highlight.md)). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
 | `VgsIconAtlas.g.cs` | **сгенерированная** таблица: перечисление `VgsIcon`, имена материалов, размер текстуры, `TextureScale`. Правится только `tools/build-icon-atlas.ps1` |
@@ -1851,6 +1883,40 @@ Esc                     ──► сначала снимает набор, по
 Рамка рисуется в **пикселях**: толщина 1 px, штрих и промежуток по 4 px при любом зуме —
 по той же причине, что и линия связи (ADR-0046 §3): оси раскладки не равны по длине
 (ADR-0009). Размер прямоугольника при этом в единицах графа и масштабируется вместе со схемой.
+
+#### Подсветка линий ([ADR-0049](adr/0049-line-highlight.md))
+
+Подсветка отвечает на вопрос «какие линии относятся к тому, на что я смотрю», поэтому она —
+**второй слой под линией**, а не другая линия: цвет, вес и ритм линии не меняются.
+
+```
+указатель на линии ──► UpdateHoveredLine ──► _hoverEdge / _hoverConveyor / _hoverWatch*
+узел в выделении  ──► NodeSelection.Contains(конец) ──► IsEdgeHighlighted / …
+                                                        │
+                        DrawRoundedRoute / DrawDottedRoute: белая линия (2 px, зазор 0)
+                        по тому же пути — ДО линии; линия ложится поверх, белое видно в зазорах
+                        DrawConveyors: заливка трубы (центральная линия, 6 px) — ДО рельсов
+```
+
+Три правила, которые нельзя нарушить по отдельности:
+
+- **наведение считается по тому, что нарисовано.** Связь и линия отслеживания рисуются по
+  скруглённому пути (`EdgeRouting.Round`), а не по маршруту, и на изгибе они расходятся на
+  полсегмента. Поэтому `LineHit.DistancePixels` меряет путь; по маршруту меряется только труба,
+  у которой изгиб — лесенка в паре пикселей от него.
+- **допуск — в device pixels** (`LineHoverPixels` = 4 px), потому что оси раскладки не равны
+  (ADR-0009): допуск в единицах раскладки был бы эллипсом и «худел» бы с зумом.
+- **одна геометрия на два прохода.** `TryBuildEdgeRoute`, `TryBuildWatchRoute`,
+  `TryBuildConveyorRoute` строят маршрут в `_route` для рисования и для наведения; копия
+  «откуда выходит линия» в hit-test разошлась бы с картинкой при первой же правке петли.
+
+Порядок разрешения обратный порядку рисования — отслеживание, связь, труба, — и линия
+разрешается только когда под указателем нет карточки или контрола: всё это нарисовано поверх
+линий, и подсветка линии под карточкой читалась бы как подсветка карточки.
+
+Подсветка по выделению — **в обе стороны**: у выделенного узла подсвечены и линии, которые он
+запускает, и линии, которые запускают его. Группа участвует на равных (её конец — имя группы),
+конвейерная связь — тоже: она физически принадлежит блоку.
 
 #### Текстовое поле (ADR-0024)
 

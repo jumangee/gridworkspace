@@ -2327,7 +2327,187 @@ namespace Vgs.Ui
             // A card under a control is not "hovered": the control is the thing about to be
             // clicked, and highlighting the card as well would suggest a drag.
             _hoverNode = _hoverButton == null && _hoverPowerSwitch == null ? HitTest(graphPos) : null;
+
+            // ---- the line under the pointer (ADR-0049) ----
+            //
+            // Resolved last, and only when nothing else is under the pointer: a line is drawn
+            // under the cards and under every control, so a pointer that is over a card, a port
+            // bar, a button or a switch is not over a line — even when the line runs underneath
+            // it. The reverse order would make a wire crossing a card steal the card's own hover.
+            if (_hoverNode == null && _hoverButton == null && _hoverPowerSwitch == null)
+            {
+                UpdateHoveredLine(mouse, canvasTopLeft);
+            }
         }
 
+        // ------------------------------------------------------------------ line hover (ADR-0049)
+
+        /// <summary>
+        /// Finds the line under the pointer and remembers it: a connection, a watch link or a
+        /// pipe, whichever is drawn on top at that point.
+        ///
+        /// <b>Topmost wins, in the draw order reversed.</b> The canvas is painted pipes, then
+        /// connections, then watch links (<see cref="OnDraw"/>), so a pointer that lands on a
+        /// crossing is over the watch link. Each test walks its own list and keeps the
+        /// <em>last</em> match, because a later line in a list is painted over an earlier one.
+        ///
+        /// <b>The tolerance is in device pixels</b> (<see cref="VgsConstants.LineHoverPixels"/>):
+        /// the layout's axes do not share a scale (ADR-0009), so a tolerance in layout units would
+        /// be a wider band on one axis than on the other and would thin out as the player zoomed.
+        /// <see cref="LineHit"/> does the per-axis conversion.
+        ///
+        /// Nothing is measured when the client area has not been read yet: every length would be
+        /// zero and every line would be "under the pointer".
+        /// </summary>
+        private void UpdateHoveredLine(Vector2 mouse, Vector2 canvasTopLeft)
+        {
+            Vector2 pixelsPerUnit = new Vector2(VgsScreenDraw.ClientWidth, VgsScreenDraw.ClientHeight);
+            if (pixelsPerUnit.X <= 0f || pixelsPerUnit.Y <= 0f) return;
+
+            float tolerance = VgsConstants.LineHoverPixels;
+
+            if (TryHitWatchLine(mouse, canvasTopLeft, pixelsPerUnit, tolerance)) return;
+            if (TryHitEdge(mouse, canvasTopLeft, pixelsPerUnit, tolerance)) return;
+
+            TryHitConveyor(mouse, canvasTopLeft, pixelsPerUnit, tolerance);
+        }
+
+        /// <summary>
+        /// Looks for a watch link under the pointer. Returns true when one was found, and leaves
+        /// <see cref="_hoverWatchController"/> and <see cref="_hoverWatchTarget"/> naming it.
+        ///
+        /// The walk is the draw pass's walk — the same nodes, the same slots, the same cap — so a
+        /// line the player can see is a line the pointer can catch, and a watch bar without a line
+        /// (a controller watching itself, ADR-0036) is not a target.
+        /// </summary>
+        private bool TryHitWatchLine(Vector2 mouse, Vector2 canvasTopLeft, Vector2 pixelsPerUnit,
+                                     float tolerance)
+        {
+            IList<Node> nodes = _graph.Nodes;
+
+            Node hitController = null;
+            WatchTarget hitTarget = null;
+            int drawn = 0;
+
+            for (int i = 0; i < nodes.Count && drawn < VgsConstants.MaxRenderedEdges; i++)
+            {
+                Node controller = nodes[i];
+                if (controller.Controller == null) continue;
+
+                List<WatchTarget> watched = controller.Controller.Watched;
+                for (int w = 0; w < watched.Count && drawn < VgsConstants.MaxRenderedEdges; w++)
+                {
+                    WatchTarget watch = watched[w];
+                    if (watch.Slot < 0) continue;
+
+                    Node target;
+                    if (!TryBuildWatchRoute(controller, watch, canvasTopLeft, out target)) continue;
+
+                    drawn++;
+
+                    if (!LineHit.RouteBoundsReach(_route, mouse, pixelsPerUnit, tolerance)) continue;
+                    if (!LineHit.IsWithin(RoundedPath(), mouse, pixelsPerUnit, tolerance)) continue;
+
+                    hitController = controller;
+                    hitTarget = watch;
+                }
+            }
+
+            _hoverWatchController = hitController;
+            _hoverWatchTarget = hitTarget;
+            return hitController != null;
+        }
+
+        /// <summary>
+        /// Looks for a connection under the pointer. Returns true when one was found and leaves it
+        /// in <see cref="_hoverEdge"/>.
+        ///
+        /// It walks <see cref="GridGraph.Lines"/> — the de-duplicated list the draw pass walks —
+        /// so the two passes agree about which connections have a line at all.
+        /// </summary>
+        private bool TryHitEdge(Vector2 mouse, Vector2 canvasTopLeft, Vector2 pixelsPerUnit,
+                                float tolerance)
+        {
+            IList<Edge> lines = _graph.Lines;
+
+            Edge hit = null;
+            int drawn = 0;
+
+            for (int i = 0; i < lines.Count && drawn < VgsConstants.MaxRenderedEdges; i++)
+            {
+                Node source, target;
+                if (!TryBuildEdgeRoute(lines[i], canvasTopLeft, out source, out target)) continue;
+
+                drawn++;
+
+                if (!LineHit.RouteBoundsReach(_route, mouse, pixelsPerUnit, tolerance)) continue;
+                if (!LineHit.IsWithin(RoundedPath(), mouse, pixelsPerUnit, tolerance)) continue;
+
+                hit = lines[i];
+            }
+
+            _hoverEdge = hit;
+            return hit != null;
+        }
+
+        /// <summary>
+        /// Looks for a conveyor pipe under the pointer. Returns true when one was found and leaves
+        /// it in <see cref="_hoverConveyor"/>.
+        ///
+        /// <b>The pipe is measured against its route, not against its rails.</b> Its bends are a
+        /// staircase around the route's corner, a couple of pixels away at most, which is smaller
+        /// than the slack the pointer is given — and the route is what both passes already have.
+        ///
+        /// <b>The tolerance is measured from the pipe's edge, not its centre.</b> A pipe is six
+        /// pixels wide, so half of that is added: the pointer gets the same slack around the pipe
+        /// as it gets around a two-pixel line, and the pipe does not become a fatter target for
+        /// being fatter.
+        /// </summary>
+        private bool TryHitConveyor(Vector2 mouse, Vector2 canvasTopLeft, Vector2 pixelsPerUnit,
+                                    float tolerance)
+        {
+            if (!_view.ShowConveyors) return false;
+
+            IList<ConveyorLink> links = _graph.Conveyors;
+            if (links.Count == 0) return false;
+
+            float pipeTolerance = tolerance + VgsConstants.ConveyorFillPixels * 0.5f;
+
+            ConveyorLink hit = null;
+            int drawn = 0;
+
+            for (int i = 0; i < links.Count && drawn < VgsConstants.MaxRenderedConveyors; i++)
+            {
+                Node source, target;
+                if (!TryBuildConveyorRoute(links[i], canvasTopLeft, out source, out target)) continue;
+
+                drawn++;
+
+                if (!LineHit.RouteWithin(_route, mouse, pixelsPerUnit, pipeTolerance)) continue;
+
+                hit = links[i];
+            }
+
+            _hoverConveyor = hit;
+            return hit != null;
+        }
+
+        /// <summary>
+        /// The rounded path of the route in <see cref="_route"/>, as the draw pass draws it.
+        ///
+        /// <b>A hit test on the route would be a hit test on a line nobody sees.</b> A connection
+        /// is drawn as the rounded path — the corners are cut from the middle of one segment to
+        /// the middle of the next (ADR-0046) — so near a bend the route and the line are up to
+        /// half a segment apart. The pointer is measured against what is painted.
+        ///
+        /// The path is left in <see cref="_path"/>; both scratch buffers belong to the screen and
+        /// are rebuilt by every pass that uses them, so the input pass may fill them exactly as the
+        /// draw pass does.
+        /// </summary>
+        private List<Vector2> RoundedPath()
+        {
+            EdgeRouting.Round(_route, PixelsPerUnit, _path);
+            return _path;
+        }
     }
 }

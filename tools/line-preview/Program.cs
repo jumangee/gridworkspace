@@ -37,6 +37,12 @@ namespace Vgs.LinePreview
         private static readonly Color WatchLine = new Color(240, 200, 90, 210);
         private static readonly Color PortBar = new Color(28, 34, 44, 255);
 
+        /// <summary>The highlight of ADR-0049: white, drawn under the line it belongs to.</summary>
+        private static readonly Color Highlight = new Color(255, 255, 255, 255);
+
+        /// <summary>A conveyor pipe's own colour (ADR-0040), for the filled/empty comparison.</summary>
+        private static readonly Color Pipe = new Color(68, 68, 85, 255);
+
         private static byte[] _rgba;
 
         /// <summary>
@@ -138,8 +144,247 @@ namespace Vgs.LinePreview
             // rhythm of a watch line. Same ink height in all three; only the rhythm differs.
             WriteStyleComparison(outPath.Replace(".png", "-styles.png"));
 
+            // ---- 7. the highlight of ADR-0049: with it and without it, at 1:1 and at 8× ----
+            //
+            // The decision this illustrates is "does a white line under a dotted one read as a
+            // brighter line, and does a filled pipe read as a highlighted one". Both are
+            // judgements of the eye, so both are drawn by the code that ships.
+            WriteHighlightComparison(outPath.Replace(".png", "-highlight.png"));
+
+            // ---- 8. the pipe's bend, where the fill and the walls must agree ----
+            WritePipeBend(outPath.Replace(".png", "-pipe.png"));
+
             ReportCost(transform, clip);
             return 0;
+        }
+
+        /// <summary>
+        /// Renders the highlight of ADR-0049: the same connection, the same watch line and the
+        /// same pipe, each with and without the highlight, at 1:1 in the top half and at 8× in
+        /// the bottom half.
+        ///
+        /// <b>Why the pipe is drawn here too.</b> The highlight of a pipe is not a colour change
+        /// and not a wider pipe — it is the bore filled in, and whether that reads as "this pipe"
+        /// rather than as "a different pipe" is exactly the question a picture answers and a
+        /// number cannot. The rails and the fill come from the real <see cref="PipeRouter"/>, with
+        /// the route written in device pixels (the identity transform), which is the same shape
+        /// the game draws at 1:1 on a 1080-tall window.
+        /// </summary>
+        private static void WriteHighlightComparison(string outPath)
+        {
+            const int stripWidth = 420;
+            const int stripHeight = 232;
+            const int zoom = 8;
+
+            var rgba = new byte[stripWidth * stripHeight * 4];
+            FillInto(rgba, stripWidth * stripHeight, Canvas);
+
+            var identity = new PixelTransform(new Vector2(1f, 1f), Vector2.Zero);
+            var clip = new Vector4(0f, 0f, stripWidth, stripHeight);
+
+            var pieces = new List<Vector4>(512);
+            var highlight = new List<Vector4>(512);
+
+            // ---- four lines: connection, connection highlighted, watch, watch highlighted ----
+            var rows = new[] { 18f, 42f, 66f, 90f };
+            for (int i = 0; i < rows.Length; i++)
+            {
+                var run = new Vector4(20f, rows[i], stripWidth - 20f, rows[i]);
+
+                bool watch = i >= 2;
+                bool lit = (i & 1) == 1;
+
+                float dot = watch ? VgsConstants.WatchDotPixels : VgsConstants.LineDotPixels;
+                float gap = watch ? VgsConstants.WatchDotGapPixels : VgsConstants.LineDotGapPixels;
+                Color colour = watch ? WatchLine : Line;
+
+                if (lit)
+                {
+                    Dots(run, VgsConstants.HighlightDotPixels, VgsConstants.HighlightGapPixels,
+                         identity, clip, highlight);
+                    PaintInto(rgba, stripWidth, stripHeight, highlight, Highlight);
+                }
+
+                Dots(run, dot, gap, identity, clip, pieces);
+                PaintInto(rgba, stripWidth, stripHeight, pieces, colour);
+            }
+
+            // ---- two pipes: empty and filled ----
+            //
+            // The pipe's own numbers are device pixels at the reference height (ADR-0040), and
+            // the strip is already in pixels, so they are passed as they are — half the pipe's
+            // width, the bend radius and the staircase step.
+            var pipeRoute = new List<Vector4>(8);
+            var rails = new List<Vector4>(64);
+            var fill = new List<Vector4>(64);
+            var router = new PipeRouter();
+
+            var pipeRows = new[] { 150f, 196f };
+            for (int i = 0; i < pipeRows.Length; i++)
+            {
+                pipeRoute.Clear();
+                pipeRoute.Add(new Vector4(20f, pipeRows[i], stripWidth - 20f, pipeRows[i]));
+
+                bool lit = i == 1;
+
+                router.Build(pipeRoute, VgsConstants.ConveyorCornerPixels,
+                             VgsConstants.ConveyorFillPixels * 0.5f, 1f,
+                             VgsConstants.ConveyorStepPixels, rails, lit ? fill : null);
+
+                if (lit) PaintSegments(rgba, stripWidth, stripHeight, fill,
+                                       VgsConstants.ConveyorFillPixels, Pipe);
+
+                PaintSegments(rgba, stripWidth, stripHeight, rails,
+                              VgsConstants.ConveyorWallPixels, Pipe);
+            }
+
+            int bigWidth = stripWidth * zoom;
+            int bigHeight = stripHeight * zoom;
+            var big = new byte[bigWidth * bigHeight * 4];
+
+            for (int y = 0; y < bigHeight; y++)
+            {
+                for (int x = 0; x < bigWidth; x++)
+                {
+                    int src = ((y / zoom) * stripWidth + (x / zoom)) * 4;
+                    int dst = (y * bigWidth + x) * 4;
+                    big[dst] = rgba[src];
+                    big[dst + 1] = rgba[src + 1];
+                    big[dst + 2] = rgba[src + 2];
+                    big[dst + 3] = rgba[src + 3];
+                }
+            }
+
+            PngWriter.WriteRgba(outPath, big, bigWidth, bigHeight);
+            Console.WriteLine("wrote " + outPath + " (" + bigWidth + "x" + bigHeight + ")");
+        }
+
+        /// <summary>
+        /// Renders a <b>bent</b> pipe twice — empty and highlighted — at 8×.
+        ///
+        /// <b>Why its own picture.</b> A bend is where the fill and the walls can disagree: the
+        /// walls are two staircases at ±half the pipe's width, the fill is a third staircase at
+        /// the centre radius, and if the three do not share the fillet the bore opens at the
+        /// corner or the fill steps outside the pipe. At 1:1 that is a two-pixel seam; at 8× it is
+        /// the difference between a closed pipe and a broken one.
+        /// </summary>
+        private static void WritePipeBend(string outPath)
+        {
+            const int smallWidth = 220;
+            const int smallHeight = 140;
+            const int zoom = 8;
+
+            var rgba = new byte[smallWidth * smallHeight * 4];
+            FillInto(rgba, smallWidth * smallHeight, Canvas);
+
+            var route = new List<Vector4>(8);
+            var rails = new List<Vector4>(64);
+            var fill = new List<Vector4>(64);
+            var router = new PipeRouter();
+
+            // Two bends: right, down, right — an S in one corner, which is the shape a pipe
+            // between two cards at different heights takes.
+            route.Add(new Vector4(20f, 30f, 150f, 30f));
+            route.Add(new Vector4(150f, 30f, 150f, 105f));
+            route.Add(new Vector4(150f, 105f, 205f, 105f));
+
+            router.Build(route, VgsConstants.ConveyorCornerPixels,
+                         VgsConstants.ConveyorFillPixels * 0.5f, 1f,
+                         VgsConstants.ConveyorStepPixels, rails, fill);
+
+            PaintSegments(rgba, smallWidth, smallHeight, fill, VgsConstants.ConveyorFillPixels, Pipe);
+            PaintSegments(rgba, smallWidth, smallHeight, rails, VgsConstants.ConveyorWallPixels, Pipe);
+
+            int bigWidth = smallWidth * zoom;
+            int bigHeight = smallHeight * zoom;
+            var big = new byte[bigWidth * bigHeight * 4];
+
+            for (int y = 0; y < bigHeight; y++)
+            {
+                for (int x = 0; x < bigWidth; x++)
+                {
+                    int src = ((y / zoom) * smallWidth + (x / zoom)) * 4;
+                    int dst = (y * bigWidth + x) * 4;
+                    big[dst] = rgba[src];
+                    big[dst + 1] = rgba[src + 1];
+                    big[dst + 2] = rgba[src + 2];
+                    big[dst + 3] = rgba[src + 3];
+                }
+            }
+
+            PngWriter.WriteRgba(outPath, big, bigWidth, bigHeight);
+            Console.WriteLine("wrote " + outPath + " (" + bigWidth + "x" + bigHeight + ")");
+        }
+
+        /// <summary>
+        /// A dotted run through the real rasteriser along one horizontal segment, in the strip's
+        /// own pixel units.
+        /// </summary>
+        private static void Dots(Vector4 run, float dotPixels, float gapPixels,
+                                 PixelTransform transform, Vector4 clip, List<Vector4> into)
+        {
+            var path = new List<Vector2>
+            {
+                new Vector2(run.X, run.Y),
+                new Vector2(run.Z, run.W)
+            };
+
+            LineRaster.Dotted(path, transform, dotPixels, gapPixels, clip, into);
+        }
+
+        /// <summary>
+        /// Paints axis-aligned segments as bars of a given pixel thickness, the way
+        /// <c>VgsScreenDraw.SegmentPixels</c> does: the thickness is centred on the segment, so
+        /// two rails built at ±half the pipe's width come out as one pipe with a bore between
+        /// them, and the fill at the full width closes that bore.
+        /// </summary>
+        private static void PaintSegments(byte[] rgba, int width, int height, List<Vector4> pieces,
+                                          float thicknessPixels, Color colour)
+        {
+            float half = thicknessPixels * 0.5f;
+
+            for (int i = 0; i < pieces.Count; i++)
+            {
+                Vector4 piece = pieces[i];
+
+                float left, top, right, bottom;
+                if (Math.Abs(piece.Y - piece.W) <= Math.Abs(piece.X - piece.Z))
+                {
+                    float y = (piece.Y + piece.W) * 0.5f;
+                    left = Math.Min(piece.X, piece.Z);
+                    right = Math.Max(piece.X, piece.Z);
+                    top = y - half;
+                    bottom = y + half;
+                }
+                else
+                {
+                    float x = (piece.X + piece.Z) * 0.5f;
+                    top = Math.Min(piece.Y, piece.W);
+                    bottom = Math.Max(piece.Y, piece.W);
+                    left = x - half;
+                    right = x + half;
+                }
+
+                for (int y = (int)Math.Round(top); y < (int)Math.Round(bottom); y++)
+                {
+                    for (int x = (int)Math.Round(left); x < (int)Math.Round(right); x++)
+                    {
+                        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+                        Put(rgba, width, x, y, colour);
+                    }
+                }
+            }
+        }
+
+        private static void FillInto(byte[] rgba, int pixels, Color colour)
+        {
+            for (int i = 0; i < pixels; i++)
+            {
+                rgba[i * 4] = colour.R;
+                rgba[i * 4 + 1] = colour.G;
+                rgba[i * 4 + 2] = colour.B;
+                rgba[i * 4 + 3] = 255;
+            }
         }
 
         /// <summary>
@@ -327,6 +572,20 @@ namespace Vgs.LinePreview
 
                 Console.WriteLine("  " + names[i].PadRight(24) + route.Count + " segment(s), "
                                   + path.Count + " path point(s), " + pieces.Count + " rectangle(s)");
+
+                // The highlight of ADR-0049 is a second pass over the same path with no gap, so
+                // its cost is what the frame pays for every lit line. Measured rather than
+                // estimated: the ratio is what the ADR's frame-budget paragraph is argued from.
+                if (i == 4) continue;
+
+                var lit = new List<Vector4>(512);
+                LineRaster.Dotted(path, transform, VgsConstants.HighlightDotPixels,
+                                  VgsConstants.HighlightGapPixels, clip, lit);
+
+                Console.WriteLine("  " + "".PadRight(24) + "+ highlight: " + lit.Count
+                                  + " rectangle(s) more ("
+                                  + (pieces.Count > 0 ? (100 * lit.Count / pieces.Count) : 0)
+                                  + "% of the line)");
             }
         }
 

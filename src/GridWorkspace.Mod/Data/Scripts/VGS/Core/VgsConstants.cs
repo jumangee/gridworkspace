@@ -873,6 +873,54 @@ namespace Vgs.Core
         /// </summary>
         public const float LineGutter = 0.014f;
 
+        // ---- Line highlight (ADR-0049) ----
+        //
+        // A line is highlighted when the pointer is over it or when one of its ends is selected.
+        // The highlight is not a second colour of the line: it is a second line drawn *under* the
+        // first one, so the highlight never changes the geometry the player is reading, and a
+        // dotted line shows it through its own gaps.
+
+        /// <summary>
+        /// How far from a line's centre the pointer may be and still be "over" it, in device
+        /// pixels.
+        ///
+        /// <b>Measured from the centre, and small on purpose.</b> The ink is two pixels wide, so
+        /// four pixels leave three pixels of slack on each side — enough that a two-pixel line can
+        /// be caught with a mouse, small enough that two lines running close together stay two
+        /// targets. The number is in device pixels for the reason ADR-0046 §3 gives for the dot
+        /// size: the layout's axes do not share a scale (ADR-0009), so a tolerance in layout units
+        /// would be a different physical distance per axis and would thin out as the player zoomed.
+        /// <see cref="Ui.LineHit"/> converts it per axis.
+        /// </summary>
+        public const float LineHoverPixels = 4f;
+
+        /// <summary>
+        /// Ink of one dot of a highlight line, in device pixels — two, exactly the weight of the
+        /// line it is drawn under (ADR-0049).
+        ///
+        /// <b>The same two pixels, not a thicker line.</b> A highlight is not an outline: it lies
+        /// on the same path as the line it belongs to, so it cannot be wider without turning into
+        /// a border that changes the line's apparent weight.
+        /// </summary>
+        public const float HighlightDotPixels = 2f;
+
+        /// <summary>
+        /// Clear space between two dots of a highlight line, in device pixels — zero (ADR-0049).
+        ///
+        /// <b>Zero, and that is the whole effect.</b> The connection line is dotted at two pixels
+        /// of ink every three (ADR-0047), and the watch line every four (ADR-0017). A highlight
+        /// with no gap is a continuous line of the same weight, drawn first: it shows through the
+        /// one- and two-pixel gaps of the line above it and the line therefore reads as brighter
+        /// and whiter without moving, thickening or losing its own rhythm. The requirement calls
+        /// this "dotted with a zero distance" and accepts that it is no longer a dotted pattern.
+        ///
+        /// <b>Why not a solid line drawn over the line.</b> That would replace the line's colour
+        /// with white — the player would lose the connection's own identity (green = "this fires
+        /// that", amber = "this watches that") at exactly the moment the highlight is meant to
+        /// help them follow it.
+        /// </summary>
+        public const float HighlightGapPixels = 0f;
+
         /// <summary>
         /// Hard cap on drawn connections; protects the frame budget on a dense graph.
         ///
@@ -955,6 +1003,22 @@ namespace Vgs.Core
 
         /// <summary><see cref="ConveyorStepPixels"/> in the layout's vertical units.</summary>
         public const float ConveyorStep = ConveyorStepPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Width of a <b>highlighted</b> pipe's fill, in device pixels — the bore plus both walls
+        /// (ADR-0049).
+        ///
+        /// <b>Derived, not chosen.</b> The highlight of a pipe is the same pipe with its bore
+        /// filled in, so the fill has to reach exactly the outer edges of the two rails and no
+        /// further: anything narrower leaves a seam of canvas inside the pipe, anything wider
+        /// grows a fringe outside it. Both are visible at any zoom, because the walls and the bore
+        /// are device-pixel sizes (ADR-0040).
+        ///
+        /// The fill is drawn as the pipe's <em>centre line</em> at this thickness (see
+        /// <c>PipeRouter.Build</c>), which is why the number is the full width rather than half of
+        /// it: the centre line has no offset of its own.
+        /// </summary>
+        public const float ConveyorFillPixels = ConveyorGapPixels + ConveyorWallPixels * 2f;
 
         /// <summary>
         /// Hard cap on drawn conveyor links; protects the frame budget on a cargo ship, where

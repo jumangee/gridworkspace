@@ -46,6 +46,9 @@ $sources = @(
     (Join-Path $sourceRoot 'Core\VgsConstants.cs'),
     (Join-Path $sourceRoot 'Ui\EdgeRouting.cs'),
     (Join-Path $sourceRoot 'Ui\LineRaster.cs'),
+    # The pipe's rails and its fill (ADR-0040, ADR-0049): the highlight of a conveyor is the bore
+    # filled in, so the picture that judges it has to come from the router that builds it.
+    (Join-Path $sourceRoot 'Ui\PipeRouter.cs'),
     (Join-Path $repo 'tools\icon-atlas\PngWriter.cs'),
     (Join-Path $preview 'Program.cs')
 )

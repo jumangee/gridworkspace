@@ -95,6 +95,14 @@ namespace Vgs.Ui
         /// slab per screen pixel. A non-positive value falls back to
         /// <see cref="MinCornerSteps"/>, so a caller that forgets it still gets a bend.
         ///
+        /// <paramref name="fill"/> is the <b>highlight</b> of the pipe (ADR-0049): the same route,
+        /// with the same fillets and the same staircase, but as the pipe's <em>centre line</em>
+        /// instead of its two walls. The caller draws each piece of it at the pipe's full width
+        /// (<c>VgsConstants.ConveyorFillPixels</c>), which fills the bore and stops exactly at the
+        /// outer edge of each rail. It is an output of this call rather than a second pass so that
+        /// the fill cannot disagree with the walls it sits between: one fillet, one radius, one
+        /// step count. Null means "no highlight", and then nothing extra is built.
+        ///
         /// Returns the number of rail segments written. A route with fewer than one segment
         /// produces nothing, which the caller treats as "nothing to draw" — the same answer a
         /// connection gets from <c>PortGeometry.TryPortDot</c> when its port has no slot.
@@ -102,8 +110,21 @@ namespace Vgs.Ui
         public int Build(IList<Vector4> route, float cornerRadius, float halfWidth,
                          float aspect, float stepLength, List<Vector4> into)
         {
+            return Build(route, cornerRadius, halfWidth, aspect, stepLength, into, null);
+        }
+
+        /// <summary>
+        /// The same build, with the pipe's <b>fill</b> as an extra output — see the overload above.
+        /// One implementation, because a highlight that computed its own fillets would be a second
+        /// answer to "where does this pipe bend", and the two would drift apart at the first
+        /// change of radius or step.
+        /// </summary>
+        public int Build(IList<Vector4> route, float cornerRadius, float halfWidth,
+                         float aspect, float stepLength, List<Vector4> into, List<Vector4> fill)
+        {
             if (into == null) return 0;
             into.Clear();
+            if (fill != null) fill.Clear();
 
             if (route == null || route.Count == 0) return 0;
             if (halfWidth <= 0f) return 0;
@@ -177,6 +198,9 @@ namespace Vgs.Ui
 
                 AddRail(into, start, end, d, halfWidth, aspect, 1f);
                 AddRail(into, start, end, d, halfWidth, aspect, -1f);
+
+                // The fill runs down the centre line, so a straight is one piece with no offset.
+                if (fill != null) AddSegment(fill, start, end);
             }
 
             // ---- corners: two quarter arcs, each drawn as a staircase ----
@@ -216,6 +240,11 @@ namespace Vgs.Ui
 
                 AddArc(into, centre, u, w, radiusU + halfU, radiusW + halfW, steps);
                 AddArc(into, centre, u, w, radiusU - halfU, radiusW - halfW, steps);
+
+                // The fill's bend is the same staircase at the centre radius: the two walls stay
+                // parallel to it, so the band the caller draws between them closes the bend
+                // instead of stepping across it.
+                if (fill != null) AddArc(fill, centre, u, w, radiusU, radiusW, steps);
             }
 
             return into.Count;

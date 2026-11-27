@@ -93,6 +93,22 @@ namespace Vgs.Ui
         public static readonly Color ColConveyorPipe = new Color(68, 68, 85, 255);
 
         /// <summary>
+        /// The highlight of a line: white, drawn <b>under</b> the line it belongs to (ADR-0049).
+        ///
+        /// <b>White, and not a brighter version of the line's colour.</b> The highlight has to say
+        /// "this one" without saying what kind of line it is: green means "this fires that" and
+        /// amber means "this watches that" (ADR-0017), and a highlight in either colour would
+        /// claim the line is the other kind. White is the one value in this palette that carries
+        /// no meaning of its own.
+        ///
+        /// It is drawn first, at the same two-pixel weight and on the same path, and the line is
+        /// drawn over it: what the player sees is the line's own rhythm with white in its gaps.
+        /// The constant is opaque — the caller fades it by the line's own alpha, so a line dimmed
+        /// by the search (ADR-0023) is highlighted as faintly as it is drawn.
+        /// </summary>
+        public static readonly Color ColLineHighlight = new Color(255, 255, 255, 255);
+
+        /// <summary>
         /// A watch line is a third kind of line: the controller <em>observes</em> a block instead
         /// of calling it (ADR-0017). It is drawn in a warm yellow, dashed, so it cannot be
         /// confused with a connection at a glance — the fill is the same family as the watch

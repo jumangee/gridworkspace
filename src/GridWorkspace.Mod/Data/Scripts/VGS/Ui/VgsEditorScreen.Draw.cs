@@ -163,6 +163,12 @@ namespace Vgs.Ui
         /// it. The ends of the route lie inside the cards and are hidden by them, which is what
         /// makes the pipe look like it enters the block rather than stopping at its border.
         ///
+        /// <b>The highlight is a filled pipe</b> (ADR-0049): the same route, the same fillets and
+        /// the same staircase, with the bore closed at the pipe's own colour. It is not a second
+        /// colour and not a wider pipe — a pipe is a fact about the ship and its colour is what
+        /// says so, so the highlight can only say "this one" by making it solid. The fill is
+        /// painted before the two walls, so the walls keep their crisp edge over it.
+        ///
         /// The per-frame budget is <see cref="VgsConstants.MaxRenderedConveyors"/>: a pipe with
         /// one bend costs about seventy rectangles (two rails per straight, plus a staircase of
         /// two pieces per step per bend), so the cap is what keeps a fully plumbed cargo deck
@@ -189,25 +195,39 @@ namespace Vgs.Ui
                 ConveyorLink link = links[i];
                 if (link == null) continue;
 
-                Node source = _graph.GetNode(link.SourceEntityId);
-                Node target = _graph.GetNode(link.TargetEntityId);
-
                 // A link whose card is gone is skipped for one refresh: the pass that dropped
                 // the node has already rebuilt the network, and until then the honest answer is
                 // to draw nothing rather than a pipe to nowhere.
-                if (source == null || target == null) continue;
+                Node source, target;
+                if (!TryBuildConveyorRoute(link, topLeft, out source, out target)) continue;
 
-                Color colour = Fade(ColConveyorPipe, MaxAlpha(source, target));
+                float alpha = MaxAlpha(source, target);
+                Color colour = Fade(ColConveyorPipe, alpha);
                 if (colour.A == 0) continue;
 
-                Vector2 from, to;
-                if (!PipeAnchor(source, true, out from)) continue;
-                if (!PipeAnchor(target, false, out to)) continue;
+                bool highlight = IsConveyorHighlighted(link, source, target);
 
-                EdgeRouting.Build(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                                  VgsConstants.LineGutter * _view.Zoom, _route);
+                // The fill is built by the same call as the rails, from the same fillets and the
+                // same step count: a highlight that computed its own bend would be a second
+                // answer to "where does this pipe turn" and would drift at the first change of
+                // radius. Null means "no highlight", and then nothing extra is built at all.
+                if (_pipeRouter.Build(_route, corner, halfWidth, aspect, step, _pipeBuffer,
+                                      highlight ? _pipeFillBuffer : null) == 0)
+                {
+                    continue;
+                }
 
-                if (_pipeRouter.Build(_route, corner, halfWidth, aspect, step, _pipeBuffer) == 0) continue;
+                if (highlight)
+                {
+                    for (int p = 0; p < _pipeFillBuffer.Count; p++)
+                    {
+                        Vector4 piece = _pipeFillBuffer[p];
+                        VgsScreenDraw.SegmentPixels(new Vector2(piece.X, piece.Y),
+                                                    new Vector2(piece.Z, piece.W),
+                                                    VgsConstants.ConveyorFillPixels,
+                                                    topLeft, size, colour);
+                    }
+                }
 
                 for (int p = 0; p < _pipeBuffer.Count; p++)
                 {
@@ -219,6 +239,38 @@ namespace Vgs.Ui
                 }
                 drawn++;
             }
+        }
+
+        /// <summary>
+        /// Builds the route of one conveyor link into <see cref="_route"/>, and resolves the two
+        /// cards it joins.
+        ///
+        /// <b>One place for both passes.</b> The draw pass paints this route and the input pass
+        /// measures the pointer against it (ADR-0049); a second copy of "where does a pipe leave a
+        /// card" would make the pipe and its own hit target disagree by the width of a card the
+        /// first time either changed.
+        ///
+        /// False means the link has no drawn pipe: one of its cards is gone (the network is one
+        /// refresh behind) or the card has no rectangle to attach to.
+        /// </summary>
+        private bool TryBuildConveyorRoute(ConveyorLink link, Vector2 canvasTopLeft,
+                                           out Node source, out Node target)
+        {
+            source = null;
+            target = null;
+            if (link == null) return false;
+
+            source = _graph.GetNode(link.SourceEntityId);
+            target = _graph.GetNode(link.TargetEntityId);
+            if (source == null || target == null) return false;
+
+            Vector2 from, to;
+            if (!PipeAnchor(source, true, out from)) return false;
+            if (!PipeAnchor(target, false, out to)) return false;
+
+            EdgeRouting.Build(GraphToScreen(from, canvasTopLeft), GraphToScreen(to, canvasTopLeft),
+                              VgsConstants.LineGutter * _view.Zoom, _route);
+            return true;
         }
 
         /// <summary>
@@ -241,6 +293,70 @@ namespace Vgs.Ui
             return true;
         }
 
+        // ------------------------------------------------------------------ line highlight (ADR-0049)
+        //
+        // A line is highlighted in two situations and they are one question — "is this line one
+        // of the ones the player is asking about" — asked once per line per frame:
+        //
+        //   * the pointer is on it: the player is pointing at that one line, and the highlight is
+        //     the answer to "which line will this click act on";
+        //   * one of its ends is selected: the selection is a question about a block ("what is
+        //     this wired to?"), and the answer is every line that touches it, in either
+        //     direction — the ones it drives and the ones that drive it.
+        //
+        // The two are separate facts about the same line, so the predicates below are separate
+        // from the hit test in the input pass: the hit test decides *which* line the pointer is
+        // on, and these decide what the picture does about it.
+
+        /// <summary>
+        /// True when a connection is highlighted (ADR-0049): the pointer is on it, or one of its
+        /// ends is in the selection.
+        ///
+        /// <b>Both ends, and the group end too.</b> "All the connections of a selected block"
+        /// means the lines it drives and the lines that drive it — a player who selects a reactor
+        /// to see what talks to it is asking about both directions. The target arrives already
+        /// resolved through <see cref="GridGraph.GetTargetNode"/>, so a selected *group*
+        /// highlights the one line that ends on the group's name (ADR-0015).
+        /// </summary>
+        private bool IsEdgeHighlighted(Edge edge, Node source, Node target)
+        {
+            if (ReferenceEquals(edge, _hoverEdge)) return true;
+            return _selection.Contains(source) || _selection.Contains(target);
+        }
+
+        /// <summary>
+        /// True when a watch link is highlighted (ADR-0049): the pointer is on it, or the
+        /// controller or the watched block is selected.
+        ///
+        /// The hovered link is identified by <b>both</b> of its ends, because one controller has a
+        /// line per watched block: comparing the controller alone would light up its whole fan the
+        /// moment the pointer touched one of them.
+        /// </summary>
+        private bool IsWatchHighlighted(Node controller, WatchTarget watch, Node target)
+        {
+            if (ReferenceEquals(controller, _hoverWatchController) && _hoverWatchTarget != null
+                && watch.EntityId == _hoverWatchTarget.EntityId)
+            {
+                return true;
+            }
+
+            return _selection.Contains(controller) || _selection.Contains(target);
+        }
+
+        /// <summary>
+        /// True when a pipe is highlighted (ADR-0049): the pointer is on it, or one of the two
+        /// cards it joins is selected.
+        ///
+        /// The hovered link is compared by its two ends rather than by reference: the structural
+        /// pass rebuilds the conveyor list, so the object under the pointer is replaced while the
+        /// pointer itself has not moved.
+        /// </summary>
+        private bool IsConveyorHighlighted(ConveyorLink link, Node source, Node target)
+        {
+            if (_hoverConveyor != null && _hoverConveyor.SameAs(link)) return true;
+            return _selection.Contains(source) || _selection.Contains(target);
+        }
+
         /// <summary>
         /// Draws every connection as a smooth line from an output dot to an input dot.
         ///
@@ -258,6 +374,11 @@ namespace Vgs.Ui
         /// A connection whose ports have no drawing slot (the block has more ports than
         /// <see cref="GridGraph.MaxPortsPerSide"/>) is skipped: it exists in the graph but has
         /// no dot to attach to, and drawing it from nowhere would be a lie.
+        ///
+        /// <b>Highlighted lines are drawn twice</b> (ADR-0049): the white line first, the
+        /// connection over it, so the highlight shows through the line's own one-pixel gaps and
+        /// the line keeps its colour, its weight and its rhythm. Which lines are highlighted is
+        /// decided by <see cref="IsEdgeHighlighted"/> — the pointer, or the selection.
         /// </summary>
         private void DrawEdges(Vector2 topLeft, Vector2 size)
         {
@@ -268,43 +389,70 @@ namespace Vgs.Ui
             {
                 Edge edge = lines[i];
 
-                Node source = _graph.GetNode(edge.SourceEntityId);
-                Node target = _graph.GetTargetNode(edge);
-                if (source == null || target == null) continue;
-
-                Port outPort = source.FindEvent(edge.SourcePortKey);
-                Port inPort = target.FindAction(edge.TargetPortKey);
-                if (outPort == null || inPort == null) continue;
-
-                Vector2 from, to;
-                float aspect = VgsScreenDraw.ClientAspect;
-                if (!PortGeometry.TryPortDot(source, outPort, aspect, out from)) continue;
-                if (!PortGeometry.TryPortDot(target, inPort, aspect, out to)) continue;
+                Node source, target;
+                if (!TryBuildEdgeRoute(edge, topLeft, out source, out target)) continue;
 
                 // A line belongs to both of its ends: it is a ghost only when *both* are excluded
                 // by the search, so a matching block keeps its wiring visible — otherwise the
                 // player could not tell what the block they found is connected to (ADR-0023).
-                Color colour = Fade(ColLine, MaxAlpha(source, target));
-                Vector2 start = GraphToScreen(from, topLeft);
-                Vector2 end = GraphToScreen(to, topLeft);
+                float alpha = MaxAlpha(source, target);
+                bool highlight = IsEdgeHighlighted(edge, source, target);
 
-                // A connection whose ends are one card — a block driving itself (ADR-0036) —
-                // cannot use the ordinary route: its middle run would fall on the seam between
-                // the port bars, which are drawn over the lines, and the wire would read as two
-                // disconnected stubs. It loops around the card instead.
-                if (ReferenceEquals(source, target))
-                {
-                    Vector2 cardTopLeft, cardSize;
-                    PortGeometry.CardRect(source, out cardTopLeft, out cardSize);
-                    DrawSelfRoute(start, end, GraphToScreen(cardTopLeft, topLeft),
-                                  cardSize * _view.Zoom, colour, topLeft, size);
-                }
-                else
-                {
-                    DrawRoute(start, end, colour, topLeft, size);
-                }
+                DrawRoundedRoute(Fade(ColLine, alpha), alpha, highlight, topLeft, size);
                 drawn++;
             }
+        }
+
+        /// <summary>
+        /// Builds the route of one connection into <see cref="_route"/>, and resolves its two
+        /// nodes.
+        ///
+        /// <b>One place for both passes.</b> The draw pass paints this route and the input pass
+        /// measures the pointer against the path derived from it (ADR-0049). A second copy of
+        /// "which dot does this line leave, and does it loop around its own card" would make the
+        /// line and its own hit target disagree — and the self-loop in particular is a shape no
+        /// reader could check by eye against a duplicate.
+        ///
+        /// False means the connection has no drawn line: a node is gone, or a port has no
+        /// drawing slot (see <see cref="DrawEdges"/>).
+        /// </summary>
+        private bool TryBuildEdgeRoute(Edge edge, Vector2 canvasTopLeft, out Node source,
+                                       out Node target)
+        {
+            source = _graph.GetNode(edge.SourceEntityId);
+            target = _graph.GetTargetNode(edge);
+            if (source == null || target == null) return false;
+
+            Port outPort = source.FindEvent(edge.SourcePortKey);
+            Port inPort = target.FindAction(edge.TargetPortKey);
+            if (outPort == null || inPort == null) return false;
+
+            float aspect = VgsScreenDraw.ClientAspect;
+            Vector2 from, to;
+            if (!PortGeometry.TryPortDot(source, outPort, aspect, out from)) return false;
+            if (!PortGeometry.TryPortDot(target, inPort, aspect, out to)) return false;
+
+            Vector2 start = GraphToScreen(from, canvasTopLeft);
+            Vector2 end = GraphToScreen(to, canvasTopLeft);
+
+            // A connection whose ends are one card — a block driving itself (ADR-0036) — cannot
+            // use the ordinary route: its middle run would fall on the seam between the port
+            // bars, which are drawn over the lines, and the wire would read as two disconnected
+            // stubs. It loops around the card instead, and the loop's lanes are measured from
+            // the card's rectangle rather than from the dots (ADR-0036).
+            if (ReferenceEquals(source, target))
+            {
+                Vector2 cardTopLeft, cardSize;
+                PortGeometry.CardRect(source, out cardTopLeft, out cardSize);
+
+                EdgeRouting.BuildSelfLoop(start, end, GraphToScreen(cardTopLeft, canvasTopLeft),
+                                          cardSize * _view.Zoom, VgsConstants.LineGutter * _view.Zoom,
+                                          _route);
+                return true;
+            }
+
+            EdgeRouting.Build(start, end, VgsConstants.LineGutter * _view.Zoom, _route);
+            return true;
         }
 
         /// <summary>
@@ -346,11 +494,13 @@ namespace Vgs.Ui
         /// device pixels (ADR-0046 §3), not a fraction of the graph, so the pattern stays the
         /// same at every zoom — a pattern that thinned out as the player zoomed would stop
         /// distinguishing a watch from a connection exactly where the schema gets busy.
+        ///
+        /// <b>A highlighted watch line is drawn twice</b> (ADR-0049), the white line first: the
+        /// watch rhythm is two pixels of ink every four, so the highlight shows through as a
+        /// brighter dotted line and the yellow still says what the line means.
         /// </summary>
         private void DrawWatchLines(Vector2 topLeft, Vector2 size)
         {
-            float aspect = VgsScreenDraw.ClientAspect;
-
             IList<Node> nodes = _graph.Nodes;
             int drawn = 0;
 
@@ -372,30 +522,49 @@ namespace Vgs.Ui
                     WatchTarget watch = watched[w];
                     if (watch.Slot < 0) continue;
 
-                    Vector2 from;
-                    if (!PortGeometry.TryWatchDot(controller, watch, aspect, out from)) continue;
+                    Node target;
+                    if (!TryBuildWatchRoute(controller, watch, topLeft, out target)) continue;
 
-                    // A controller watching itself has a bar but no line (ADR-0036): the rule is
-                    // PortGeometry.ShouldDrawWatchLine's, so the offline gate can assert it.
-                    if (!PortGeometry.ShouldDrawWatchLine(controller, watch)) continue;
-
-                    Node target = _graph.GetNode(watch.EntityId);
-                    Vector2 to;
-
-                    if (target == null || !PortGeometry.TryCardCentre(target, out to))
-                    {
-                        // The watched block is hidden from the schema or gone: the port still
-                        // exists (the list is the player's data), but there is nowhere on the
-                        // canvas to draw its line to.
-                        continue;
-                    }
-
-                    DrawDottedRoute(GraphToScreen(from, topLeft), GraphToScreen(to, topLeft),
-                                    Fade(ColWatchLine, MaxAlpha(controller, target)),
-                                    topLeft, size);
+                    float alpha = MaxAlpha(controller, target);
+                    DrawDottedRoute(Fade(ColWatchLine, alpha), alpha,
+                                    IsWatchHighlighted(controller, watch, target), topLeft, size);
                     drawn++;
                 }
             }
+        }
+
+        /// <summary>
+        /// Builds the route of one watch link into <see cref="_route"/>, and resolves the watched
+        /// node.
+        ///
+        /// <b>One place for both passes</b>, as for a connection: the draw pass paints this route
+        /// and the input pass measures the pointer against the path built from it (ADR-0049).
+        ///
+        /// False in three cases, and all three mean "there is no line to draw or to point at": the
+        /// watch has no drawing slot, the controller watches itself (a bar but no line — ADR-0036,
+        /// the rule is <see cref="PortGeometry.ShouldDrawWatchLine"/>'s so the offline gate can
+        /// assert it), or the watched block is hidden from the schema or gone, so there is nowhere
+        /// on the canvas to draw to.
+        /// </summary>
+        private bool TryBuildWatchRoute(Node controller, WatchTarget watch, Vector2 canvasTopLeft,
+                                        out Node target)
+        {
+            target = null;
+            if (controller == null || watch == null) return false;
+
+            float aspect = VgsScreenDraw.ClientAspect;
+            Vector2 from;
+            if (!PortGeometry.TryWatchDot(controller, watch, aspect, out from)) return false;
+            if (!PortGeometry.ShouldDrawWatchLine(controller, watch)) return false;
+
+            target = _graph.GetNode(watch.EntityId);
+
+            Vector2 to;
+            if (target == null || !PortGeometry.TryCardCentre(target, out to)) return false;
+
+            EdgeRouting.Build(GraphToScreen(from, canvasTopLeft), GraphToScreen(to, canvasTopLeft),
+                              VgsConstants.LineGutter * _view.Zoom, _route);
+            return true;
         }
 
         /// <summary>
@@ -419,27 +588,39 @@ namespace Vgs.Ui
             Vector2 start = GraphToScreen(from, topLeft);
             Vector2 end = _mouse;
 
-            DrawDottedRoute(start, end, colour, topLeft, size);
+            EdgeRouting.Build(start, end, VgsConstants.LineGutter * _view.Zoom, _route);
+            DrawDottedRoute(colour, 1f, false, topLeft, size);
 
             VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _view.Zoom, topLeft, size, colour);
         }
 
         /// <summary>
-        /// Draws a watch line: the same rounded path a connection uses, drawn with the watch
-        /// line's own rhythm — <see cref="VgsConstants.WatchDotPixels"/> of ink every
+        /// Draws the watch link whose route is already in <see cref="_route"/>: the same rounded
+        /// path a connection uses, drawn with the watch line's own rhythm —
+        /// <see cref="VgsConstants.WatchDotPixels"/> of ink every
         /// <see cref="VgsConstants.WatchDotPixels"/> + <see cref="VgsConstants.WatchDotGapPixels"/>
         /// of length (ADR-0017, ADR-0047).
         ///
-        /// The route comes from <see cref="EdgeRouting.Build"/>, the same router a connection
-        /// uses, so a watch line bends and arrives exactly like a wire; the dots are placed along
-        /// the rounded path, so the rhythm runs through a bend instead of restarting at every
-        /// segment.
+        /// The dots are placed along the rounded path, so the rhythm runs through a bend instead
+        /// of restarting at every segment.
+        ///
+        /// <b>Highlight first</b> (ADR-0049): a continuous white line of the same weight, drawn
+        /// under the dotted one, so it shows through the gaps and the line reads as brighter. Both
+        /// are faded by <paramref name="alpha"/>, so a watch line dimmed by the search is
+        /// highlighted exactly as faintly as it is drawn.
         /// </summary>
-        private void DrawDottedRoute(Vector2 from, Vector2 to, Color color,
+        private void DrawDottedRoute(Color color, float alpha, bool highlight,
                                      Vector2 clipTopLeft, Vector2 clipSize)
         {
-            EdgeRouting.Build(from, to, VgsConstants.LineGutter * _view.Zoom, _route);
             EdgeRouting.Round(_route, PixelsPerUnit, _path);
+
+            if (highlight)
+            {
+                VgsScreenDraw.PathDots(_path, VgsConstants.HighlightDotPixels,
+                                       VgsConstants.HighlightGapPixels,
+                                       clipTopLeft, clipSize, Fade(ColLineHighlight, alpha));
+            }
+
             VgsScreenDraw.PathDots(_path, VgsConstants.WatchDotPixels,
                                    VgsConstants.WatchDotGapPixels,
                                    clipTopLeft, clipSize, color);
@@ -451,24 +632,7 @@ namespace Vgs.Ui
             // constant scaled by zoom, which keeps the clearance between a dot and its vertical
             // run the same fraction of a card at every zoom level (ADR-0010).
             EdgeRouting.Build(from, to, VgsConstants.LineGutter * _view.Zoom, _route);
-            DrawRoundedRoute(color, clipTopLeft, clipSize);
-        }
-
-        /// <summary>
-        /// Draws a connection that starts and ends on the same card: the loop of ADR-0036.
-        ///
-        /// The card's rectangle is passed in screen space because that is what the loop goes
-        /// around — its lanes are measured from the card's edges, not from the dots, so they stay
-        /// outside the card at every zoom (<see cref="EdgeRouting.BuildSelfLoop"/>). The route
-        /// itself stays a pure function, so it is asserted offline like every other route.
-        /// </summary>
-        private void DrawSelfRoute(Vector2 from, Vector2 to, Vector2 cardTopLeftScreen,
-                                   Vector2 cardSizeScreen, Color color,
-                                   Vector2 clipTopLeft, Vector2 clipSize)
-        {
-            EdgeRouting.BuildSelfLoop(from, to, cardTopLeftScreen, cardSizeScreen,
-                                      VgsConstants.LineGutter * _view.Zoom, _route);
-            DrawRoundedRoute(color, clipTopLeft, clipSize);
+            DrawRoundedRoute(color, 1f, false, clipTopLeft, clipSize);
         }
 
         /// <summary>
@@ -484,12 +648,29 @@ namespace Vgs.Ui
         /// one-pixel gaps are averaged into it and the line reads at its true weight. The ink
         /// height is unchanged — this is a lighter <em>edge</em>, not a thinner line.
         ///
+        /// <b>Highlight first, and on the same path</b> (ADR-0049). A continuous white line of the
+        /// same two-pixel weight is drawn before the connection, so the connection's own one-pixel
+        /// gaps show white: the line brightens without moving, thickening or changing colour, and
+        /// the player still sees whether they are looking at a connection or a watch link. The
+        /// requirement asks for exactly this — dots of two pixels with no distance between them,
+        /// which is a continuous line that no longer looks dotted, and is deliberately preferred
+        /// to drawing a whole white line over the connection.
+        ///
         /// One place for both shapes — the ordinary route and the self-loop — so the bend shape,
         /// the rhythm and the clipping cannot drift between them.
         /// </summary>
-        private void DrawRoundedRoute(Color color, Vector2 clipTopLeft, Vector2 clipSize)
+        private void DrawRoundedRoute(Color color, float alpha, bool highlight,
+                                      Vector2 clipTopLeft, Vector2 clipSize)
         {
             EdgeRouting.Round(_route, PixelsPerUnit, _path);
+
+            if (highlight)
+            {
+                VgsScreenDraw.PathDots(_path, VgsConstants.HighlightDotPixels,
+                                       VgsConstants.HighlightGapPixels,
+                                       clipTopLeft, clipSize, Fade(ColLineHighlight, alpha));
+            }
+
             VgsScreenDraw.PathDots(_path, VgsConstants.LineDotPixels,
                                    VgsConstants.LineDotGapPixels,
                                    clipTopLeft, clipSize, color);
