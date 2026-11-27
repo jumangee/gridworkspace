@@ -873,6 +873,37 @@ namespace Vgs.Ui
         private static readonly List<Vector4> _linePieces = new List<Vector4>(512);
 
         /// <summary>
+        /// Draws the <b>dashed rectangle of the marquee band</b> — the box the player drags on
+        /// the void to select several cards at once (ADR-0048 §3).
+        ///
+        /// <b>One pixel, at every zoom, and dashed rather than solid.</b> The band is an
+        /// annotation over the picture, not part of it: it must be visible against cards, group
+        /// frames and grid borders without competing with any of them, which is why it is a
+        /// one-pixel dashed outline rather than a filled wash. The dash pattern is a device-pixel
+        /// count for the reason ADR-0046 §3 gives for the connection line — a pattern expressed in
+        /// layout units would come out a different number of pixels per axis (ADR-0009) and would
+        /// thin out as the player zoomed.
+        ///
+        /// The arithmetic lives in <see cref="LineRaster.DashedRect"/>, which has no game
+        /// reference and is asserted by <c>tools/offline-check.ps1</c>: a corner without ink, a
+        /// dash that overhangs an edge or a rectangle with a negative extent are all invisible in a
+        /// compile and all decidable from numbers. This method only builds the pixel transform and
+        /// the colour, exactly as <see cref="PathDots"/> does for a line.
+        /// </summary>
+        public static void DashedRect(Vector2 position, Vector2 size, Vector2 clipTopLeft,
+                                      Vector2 clipSize, Color color, float dashPixels,
+                                      float gapPixels, float thicknessPixels)
+        {
+            if (!_solidReady) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
+
+            LineRaster.DashedRect(position, size, PixelSpace, dashPixels, gapPixels, thicknessPixels,
+                                  ClipPixels(clipTopLeft, clipSize), _linePieces);
+
+            DrawLinePieces(color);
+        }
+
+        /// <summary>
         /// Draws an axis-aligned segment whose thickness is a <b>device-pixel count</b>, clipped
         /// to the canvas. This is how a conveyor pipe's rails are drawn (ADR-0040).
         ///

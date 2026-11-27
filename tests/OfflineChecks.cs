@@ -255,6 +255,15 @@ internal static class OfflineChecks
         Console.WriteLine("=== click versus drag (ADR-0041) ===");
         ClickVersusDrag();
 
+        Console.WriteLine("=== multi-node selection (ADR-0048) ===");
+        MultiNodeSelection();
+
+        Console.WriteLine("=== marquee band gesture (ADR-0048) ===");
+        MarqueeGesture();
+
+        Console.WriteLine("=== marquee band rasteriser (ADR-0048) ===");
+        MarqueeRaster();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -7025,6 +7034,399 @@ internal static class OfflineChecks
               "an unmeasured window treats a small move as a click");
         Check(PointerGesture.ExceedsClickSlop(new Vector2(VgsConstants.ClickSlop * 2f, 0f), 0f, 0f),
               "an unmeasured window still detects a drag");
+    }
+
+    /// <summary>
+    /// The selection set: what a click, a Shift+click and a marquee build, and what a drag of the
+    /// selection moves (ADR-0048).
+    ///
+    /// The rules that break silently: membership by reference rather than by equality (a rebuilt
+    /// node must not be mistaken for the live one), a Shift+click that toggles instead of adding,
+    /// a marquee that selects a group as well as the cards it encloses, and a card that is both
+    /// selected on its own and a member of a selected group — which must move once, not twice.
+    /// </summary>
+    private static void MultiNodeSelection()
+    {
+        var graph = new GridGraph(48);
+
+        Node a = MakeTarget(1, "LargeBlockConveyor");
+        Node b = MakeTarget(2, "LargeBlockConveyor");
+        Node c = MakeTarget(3, "LargeBlockConveyor");
+        Node far = MakeTarget(4, "LargeBlockConveyor");
+
+        graph.AddNode(a);
+        graph.AddNode(b);
+        graph.AddNode(c);
+        graph.AddNode(far);
+
+        // Cards at known places: two side by side, one below, one far to the right.
+        a.Position = new Vector2(0.10f, 0.10f);
+        b.Position = new Vector2(0.30f, 0.10f);
+        c.Position = new Vector2(0.10f, 0.20f);
+        far.Position = new Vector2(0.80f, 0.10f);
+
+        var selection = new NodeSelection();
+        Check(selection.IsEmpty && selection.Count == 0, "a new selection is empty");
+        Check(!selection.Contains(a), "an empty selection contains nothing");
+
+        // ---- a click picks one ----
+        selection.Select(a);
+        Check(selection.Count == 1 && selection.Contains(a), "a click selects exactly one node");
+        selection.Select(b);
+        Check(selection.Count == 1 && !selection.Contains(a) && selection.Contains(b),
+              "a second click replaces the selection rather than adding to it");
+
+        // ---- Shift+click toggles ----
+        Check(selection.Add(a), "Shift+click adds a node that was not selected");
+        Check(selection.Count == 2, "the selection now holds two nodes");
+        Check(!selection.Toggle(a), "Shift+click on a selected node removes it");
+        Check(selection.Count == 1 && !selection.Contains(a), "the removed node is gone");
+        Check(selection.Toggle(a), "Shift+click adds it back");
+        Check(selection.Count == 2, "and the set holds two again");
+
+        // ---- identity, not equality ----
+        //
+        // A rebuild replaces every node object; a stale reference with the same entity id must
+        // not be treated as selected, or the canvas would highlight a card that is not drawn.
+        var rebuilt = MakeTarget(1, "LargeBlockConveyor");
+        Check(!selection.Contains(rebuilt),
+              "a rebuilt node with the same entity id is not the selected node");
+
+        // ---- the marquee ----
+        selection.Clear();
+
+        // A band over the two cards of the top row: a is 0.16 wide and 0.036 tall at (0.10, 0.10),
+        // b at (0.30, 0.10). A box from (0.09, 0.09) to (0.47, 0.14) covers both.
+        selection.SelectInRect(graph, new Vector2(0.09f, 0.09f), new Vector2(0.38f, 0.05f), false);
+        Check(selection.Contains(a) && selection.Contains(b),
+              "a marquee selects every card it covers");
+        Check(!selection.Contains(c) && !selection.Contains(far),
+              "a marquee does not select cards outside it");
+
+        // Touching an edge covers no pixel of the card, so it selects nothing: the same rule the
+        // canvas uses for culling, and the one that makes the band's edge unambiguous.
+        selection.Clear();
+        selection.SelectInRect(graph, new Vector2(0f, 0f), new Vector2(0.10f, 0.036f), false);
+        Check(selection.IsEmpty, "a band that only touches a card's edge selects nothing");
+
+        // A band that covers one card but stops just short of the next: 0.24 is inside a's width
+        // (0.10..0.26) and clear of b (0.30..).
+        selection.SelectInRect(graph, new Vector2(0.05f, 0.05f), new Vector2(0.19f, 0.06f), false);
+        Check(selection.Contains(a) && !selection.Contains(b),
+              "a band selects only the cards it actually overlaps");
+
+        // Additive keeps what was already selected; plain replaces it.
+        selection.SelectInRect(graph, new Vector2(0.75f, 0.05f), new Vector2(0.20f, 0.06f), true);
+        Check(selection.Contains(a) && selection.Contains(far),
+              "a Shift+marquee adds to the selection");
+        selection.SelectInRect(graph, new Vector2(0.05f, 0.15f), new Vector2(0.20f, 0.10f), false);
+        Check(selection.Contains(c) && !selection.Contains(a) && !selection.Contains(far),
+              "a plain marquee replaces the selection");
+
+        // ---- a group is not selected by a rectangle ----
+        //
+        // The frame is a backdrop around the members' cards (ADR-0015), so a band over one card
+        // always touches the frame. Selecting the group too would make every marquee over a
+        // grouped card drag the whole cluster.
+        var members = new List<long> { 1, 2 };
+        var actions = new List<GroupMemberActions> { EnabledMember("MyConveyor", false, "OnOff") };
+        Node group = graph.SyncGroup("Belt", members, actions);
+        graph.LayoutPorts();
+        PortGeometry.LayoutGroupFrames(graph);
+
+        selection.Clear();
+        selection.SelectInRect(graph, new Vector2(0.09f, 0.09f), new Vector2(0.38f, 0.05f), false);
+        Check(selection.Contains(a) && selection.Contains(b),
+              "a marquee over a group's cards selects the cards");
+        Check(!selection.Contains(group),
+              "a marquee does not select the group around the cards it covered");
+
+        // ---- what a drag of the selection moves ----
+        var dragCards = new List<Node>();
+        selection.Clear();
+        selection.CollectDragCards(graph, dragCards);
+        Check(dragCards.Count == 0, "an empty selection moves nothing");
+
+        selection.Select(a);
+        selection.CollectDragCards(graph, dragCards);
+        Check(dragCards.Count == 1 && ReferenceEquals(dragCards[0], a),
+              "a selection of one card moves that card");
+
+        selection.Select(group);
+        selection.CollectDragCards(graph, dragCards);
+        Check(dragCards.Count == 2, "a selected group moves its drawn members");
+        Check(dragCards.Contains(a) && dragCards.Contains(b),
+              "the group's members are the cards that move");
+        Check(!dragCards.Contains(far), "a card outside the group does not move");
+
+        // A card that is both selected on its own and a member of a selected group must appear
+        // once: moving it twice would double its displacement and pull the cluster apart.
+        selection.Add(a);
+        selection.CollectDragCards(graph, dragCards);
+        Check(dragCards.Count == 2, "a card selected twice over is moved once");
+        Check(dragCards[0] == a && dragCards[1] == b,
+              "the drag list follows the graph's order, not the click order");
+
+        // ---- a refresh prunes what it removed ----
+        selection.Clear();
+        selection.Add(a);
+        selection.Add(far);
+        graph.RemoveNode(4);
+        selection.RemoveMissing(graph);
+        Check(selection.Contains(a) && !selection.Contains(far),
+              "a node the refresh removed leaves the selection");
+        Check(selection.Count == 1, "the rest of the selection survives the refresh");
+
+        // A group that disappeared (its last drawn member was hidden) goes the same way.
+        selection.Clear();
+        selection.Add(group);
+        graph.RemoveGroup("Belt");
+        selection.RemoveMissing(graph);
+        Check(selection.IsEmpty, "a group the refresh dissolved leaves the selection");
+    }
+
+    /// <summary>
+    /// The marquee gesture's own state: when the band exists, when it counts as a drag, and the
+    /// rectangle it produces in every direction (ADR-0048).
+    ///
+    /// The failure this exists to rule out is the one that cannot be seen in a compile: a band
+    /// dragged up and to the left produces negative extents, and a rectangle with a negative width
+    /// covers nothing — so the selection would silently find no nodes and the band would draw
+    /// nothing, which reads as "the marquee does not work in that direction".
+    /// </summary>
+    private static void MarqueeGesture()
+    {
+        const float wide = 1920f;
+        const float hd = 1080f;
+        const float zoom = 1f;
+
+        var band = new Marquee();
+        Check(!band.IsArmed && !band.IsActive, "a fresh marquee is idle");
+
+        Vector2 anchor = new Vector2(0.40f, 0.40f);
+        band.Begin(anchor, false);
+        Check(band.IsArmed, "a press on the void arms the band");
+        Check(!band.IsActive, "a band that has not moved is not drawn");
+        CheckClose(band.Anchor.X, anchor.X, "the band remembers where it was armed in X");
+        CheckClose(band.Anchor.Y, anchor.Y, "the band remembers where it was armed in Y");
+
+        // A tremor is still a click: the band must not appear, and the press stays a click on the
+        // void — which is what clears the selection.
+        band.Move(anchor + new Vector2(3f / wide, 3f / hd), zoom, wide, hd);
+        Check(band.IsArmed && !band.IsActive, "a 3-pixel tremor does not start the band");
+
+        // Past the allowance it is a band.
+        band.Move(anchor + new Vector2(20f / wide, 10f / hd), zoom, wide, hd);
+        Check(band.IsActive, "the band starts once the pointer travels past the click allowance");
+        CheckClose(band.Current.X, anchor.X + 20f / wide, "the band follows the pointer in X");
+        CheckClose(band.Current.Y, anchor.Y + 10f / hd, "the band follows the pointer in Y");
+
+        // Once active it stays active even if the pointer comes back — the band is a state, not a
+        // comparison against the current position, or it would blink out mid-gesture.
+        band.Move(anchor, zoom, wide, hd);
+        Check(band.IsActive, "the band stays active once it has started");
+
+        // ---- the rectangle, in all four directions ----
+        Vector2 topLeft, size;
+
+        band.Cancel();
+        band.Begin(new Vector2(0.20f, 0.20f), false);
+        band.Move(new Vector2(0.50f, 0.40f), zoom, wide, hd);
+        band.Normalize(out topLeft, out size);
+        CheckClose(topLeft.X, 0.20f, "a band dragged right starts at the anchor in X");
+        CheckClose(topLeft.Y, 0.20f, "a band dragged down starts at the anchor in Y");
+        CheckClose(size.X, 0.30f, "a band dragged right has a positive width");
+        CheckClose(size.Y, 0.20f, "a band dragged down has a positive height");
+
+        band.Cancel();
+        band.Begin(new Vector2(0.50f, 0.40f), false);
+        band.Move(new Vector2(0.20f, 0.20f), zoom, wide, hd);
+        band.Normalize(out topLeft, out size);
+        CheckClose(topLeft.X, 0.20f, "a band dragged left starts at the pointer in X");
+        CheckClose(topLeft.Y, 0.20f, "a band dragged up starts at the pointer in Y");
+        CheckClose(size.X, 0.30f, "a band dragged left has a positive width");
+        CheckClose(size.Y, 0.20f, "a band dragged up has a positive height");
+
+        band.Cancel();
+        band.Begin(new Vector2(0.50f, 0.20f), false);
+        band.Move(new Vector2(0.20f, 0.40f), zoom, wide, hd);
+        band.Normalize(out topLeft, out size);
+        CheckClose(topLeft.X, 0.20f, "a band dragged left and down starts at the pointer in X");
+        CheckClose(topLeft.Y, 0.20f, "a band dragged left and down starts at the anchor in Y");
+        CheckClose(size.X, 0.30f, "a band dragged left and down has a positive width");
+        CheckClose(size.Y, 0.20f, "a band dragged left and down has a positive height");
+
+        // ---- Shift is captured at the press ----
+        //
+        // The modifier may be released mid-drag, and a band whose meaning changed halfway would
+        // select a set the player never aimed at.
+        band.Cancel();
+        band.Begin(anchor, true);
+        Check(band.Additive, "a Shift+press arms an additive band");
+        band.Move(anchor + new Vector2(0.1f, 0.1f), zoom, wide, hd);
+        Check(band.Additive, "the band keeps the modifier it was armed with");
+
+        band.Cancel();
+        Check(!band.IsArmed && !band.IsActive && !band.Additive, "cancelling drops the whole gesture");
+
+        // A zoom changes how far the pointer has to travel in graph units, because the allowance
+        // is measured on screen: the same graph delta is half as far at 50% zoom.
+        band.Cancel();
+        band.Begin(anchor, false);
+        Vector2 graphDelta = new Vector2(6f / wide, 0f);   // 6 screen pixels at 100% zoom
+        band.Move(anchor + graphDelta, 1f, wide, hd);
+        Check(band.IsActive, "a 6-pixel move starts the band at 100% zoom");
+
+        band.Cancel();
+        band.Begin(anchor, false);
+        band.Move(anchor + graphDelta, 0.5f, wide, hd);
+        Check(!band.IsActive, "the same graph move is only 3 pixels at 50% zoom");
+        band.Move(anchor + graphDelta * 2f, 0.5f, wide, hd);
+        Check(band.IsActive, "and twice the graph move clears the allowance");
+    }
+
+    /// <summary>
+    /// The marquee band's rasteriser: a one-pixel dashed outline with ink in every corner and the
+    /// same rhythm on all four sides (ADR-0048 §3).
+    ///
+    /// Every property asserted here is invisible in a compile and decidable from numbers: a
+    /// corner that no dash covers, a dash that overhangs the box, a pattern that restarts halfway
+    /// along an edge, or a rectangle drawn with a negative extent.
+    /// </summary>
+    private static void MarqueeRaster()
+    {
+        var transform = new PixelTransform(new Vector2(1920f, 1080f), Vector2.Zero);
+        var clip = new Vector4(0f, 0f, 1920f, 1080f);
+        var pieces = new List<Vector4>();
+
+        const float dash = VgsConstants.MarqueeDashPixels;
+        const float gap = VgsConstants.MarqueeGapPixels;
+        const float thickness = VgsConstants.MarqueeThicknessPixels;
+
+        // A box at (0.10, 0.10) sized (0.20, 0.10): 192..576 by 108..216 in pixels.
+        LineRaster.DashedRect(new Vector2(0.10f, 0.10f), new Vector2(0.20f, 0.10f), transform,
+                              dash, gap, thickness, clip, pieces);
+
+        Check(pieces.Count > 0, "the band produces dashes");
+
+        float left = 192f, top = 108f, right = 576f, bottom = 216f;
+
+        // ---- every piece is inside the clip and is a whole-pixel bar ----
+        bool inside = true;
+        bool bars = true;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (p.X < clip.X || p.Y < clip.Y || p.Z > clip.Z || p.W > clip.W) inside = false;
+
+            float w = p.Z - p.X;
+            float h = p.W - p.Y;
+            bool horizontal = w >= h;
+            if (horizontal && Math.Abs(h - thickness) > 1e-4f) bars = false;
+            if (!horizontal && Math.Abs(w - thickness) > 1e-4f) bars = false;
+        }
+
+        Check(inside, "every dash of the band lies inside the clip rectangle");
+        Check(bars, "every dash is one pixel across, whichever edge it belongs to");
+
+        // ---- every corner carries ink ----
+        Check(HasPiece(pieces, left, top), "the top-left corner of the band is inked");
+        Check(HasPiece(pieces, right - 1f, top), "the top-right corner of the band is inked");
+        Check(HasPiece(pieces, left, bottom - 1f), "the bottom-left corner of the band is inked");
+        Check(HasPiece(pieces, right - 1f, bottom - 1f), "the bottom-right corner of the band is inked");
+
+        // ---- the pattern really is dashed, not solid ----
+        //
+        // Without this the assertions above would still pass on a solid rectangle. The rhythm is
+        // spread over the edge (the gap absorbs the leftover fraction of a pixel), so the check
+        // is "the first dash ends before the edge does, and there is clear space right after it"
+        // rather than a comparison against a nominal pitch.
+        float firstEnd = -1f;
+        float inked = 0f;
+        int topDashes = 0;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (Math.Abs(p.Y - top) > 1e-4f) continue;
+            topDashes++;
+            inked += p.Z - p.X;
+            if (firstEnd < 0f || p.X < firstEnd) firstEnd = p.Z;
+        }
+
+        Check(topDashes > 1, "the top edge is made of several dashes");
+        Check(inked < (right - left) * 0.75f, "the top edge is more gap than ink");
+        Check(firstEnd > left && firstEnd < right, "the first dash ends before the edge does");
+        Check(!HasPiece(pieces, firstEnd + 0.5f, top + 0.5f),
+              "the gap after the first dash is clear");
+
+        // ---- no piece leaves the box ----
+        bool overhangs = false;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (p.X < left || p.Y < top || p.Z > right || p.W > bottom) overhangs = true;
+        }
+        Check(!overhangs, "no dash overhangs the band's rectangle");
+
+        // ---- both vertical edges run between the horizontal ones ----
+        //
+        // The verticals are inset by the thickness, so a corner is inked once and a translucent
+        // colour cannot darken it.
+        bool verticalInset = true;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            bool vertical = (p.W - p.Y) > (p.Z - p.X);
+            if (!vertical) continue;
+            if (p.Y < top + thickness - 1e-4f) verticalInset = false;
+            if (p.W > bottom - thickness + 1e-4f) verticalInset = false;
+        }
+        Check(verticalInset, "the vertical edges stop inside the horizontal ones");
+
+        // ---- a box with no extent draws nothing ----
+        //
+        // A press that has not become a band produces exactly this, and drawing it would put a
+        // dot on the canvas for every click on the void.
+        LineRaster.DashedRect(new Vector2(0.10f, 0.10f), Vector2.Zero, transform,
+                              dash, gap, thickness, clip, pieces);
+        Check(pieces.Count == 0, "a band with no extent draws nothing");
+
+        // ---- a box smaller than its own thickness still draws one pixel ----
+        //
+        // The degenerate case a fast drag across a tiny area produces: the outline must not
+        // disappear, and must not produce a rectangle with a negative side either.
+        LineRaster.DashedRect(new Vector2(0.10f, 0.10f), new Vector2(0.0005f, 0.0005f), transform,
+                              dash, gap, thickness, clip, pieces);
+        bool degenerateOk = true;
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (p.Z <= p.X || p.W <= p.Y) degenerateOk = false;
+        }
+        Check(degenerateOk, "a band smaller than its thickness never yields an empty rectangle");
+
+        // ---- an unusable transform draws nothing ----
+        //
+        // Before the first SyncScreenSpace the safe area is unknown and every length collapses to
+        // zero; a rectangle at a wrapped-around coordinate would be worse than no rectangle.
+        LineRaster.DashedRect(new Vector2(0.10f, 0.10f), new Vector2(0.20f, 0.10f),
+                              new PixelTransform(Vector2.Zero, Vector2.Zero),
+                              dash, gap, thickness, clip, pieces);
+        Check(pieces.Count == 0, "an unmeasured screen draws no band");
+    }
+
+    /// <summary>
+    /// True when one of the rectangles covers the given pixel centre. Used by the band's checks:
+    /// "is this corner inked?" is the question the corner defect answers wrongly.
+    /// </summary>
+    private static bool HasPiece(List<Vector4> pieces, float x, float y)
+    {
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            Vector4 p = pieces[i];
+            if (x >= p.X && x < p.Z && y >= p.Y && y < p.W) return true;
+        }
+        return false;
     }
 
     /// <summary>

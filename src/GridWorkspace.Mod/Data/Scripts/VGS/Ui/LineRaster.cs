@@ -196,6 +196,150 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// Upper bound on the dashes of one rectangle, so that a degenerate period cannot queue an
+        /// unbounded number of quads in one frame. A band crosses at most the canvas, which at the
+        /// shipped pattern is a few hundred dashes.
+        /// </summary>
+        private const int MaxDashes = 4096;
+
+        /// <summary>
+        /// Fills <paramref name="into"/> with the dashes of an <b>axis-aligned rectangle</b>, each
+        /// one a whole-pixel bar of <paramref name="thicknessPixels"/> across (ADR-0048 §3).
+        ///
+        /// <b>This is the marquee band, and it is a rectangle rather than four calls of a generic
+        /// dashed line</b> because the corners are the part that goes wrong. A pattern that ran
+        /// continuously around the perimeter would put a dash across a corner, and a dash is a
+        /// rectangle: at a corner it has to turn, so it would either be clipped to a stub or
+        /// drawn twice at two different angles. Each edge is therefore a run of its own that
+        /// starts with a dash at its first pixel and ends with one at its last, so every corner is
+        /// inked; the vertical runs are inset by the thickness at both ends, so a corner is inked
+        /// by the horizontal edge alone and a translucent colour cannot darken it.
+        ///
+        /// <b>The rhythm is the same at every zoom.</b> The dash and the gap are device pixels,
+        /// not layout units, for the reason ADR-0046 §3 gives for the connection line: a band whose
+        /// pattern thinned out as the player zoomed would stop reading as a dashed line exactly
+        /// where the canvas gets busy. The rectangle's <em>size</em> is in client-area units and
+        /// scales with the zoom — it is a box on the schema — while its ink is one pixel wide.
+        ///
+        /// <paramref name="into"/> is cleared first; the caller reuses one buffer for every band of
+        /// every frame. Every emitted rectangle lies inside <paramref name="clipPixels"/>.
+        /// </summary>
+        public static void DashedRect(Vector2 topLeft, Vector2 size, PixelTransform transform,
+                                      float dashPixels, float gapPixels, float thicknessPixels,
+                                      Vector4 clipPixels, List<Vector4> into)
+        {
+            if (into == null) return;
+            into.Clear();
+
+            if (size.X <= 0f || size.Y <= 0f) return;
+            if (dashPixels <= 0f) return;
+            if (gapPixels < 0f) gapPixels = 0f;
+            if (!transform.IsUsable) return;
+            if (clipPixels.Z <= clipPixels.X || clipPixels.W <= clipPixels.Y) return;
+
+            // The box's corners are snapped once, exactly as a border's are (GridFrames), so a
+            // band drawn over a card's frame shares its pixel rows instead of straddling them.
+            Vector2 corner = transform.ToPixels(topLeft);
+            Vector2 far = transform.ToPixels(new Vector2(topLeft.X + size.X, topLeft.Y + size.Y));
+
+            float left = ToPixel(corner.X);
+            float top = ToPixel(corner.Y);
+            float right = ToPixel(far.X);
+            float bottom = ToPixel(far.Y);
+            if (right <= left || bottom <= top) return;
+
+            float thickness = (float)Math.Round(thicknessPixels);
+            if (thickness < 1f) thickness = 1f;
+            if (thickness > right - left) thickness = right - left;
+            if (thickness > bottom - top) thickness = bottom - top;
+
+            float dash = (float)Math.Round(dashPixels);
+            if (dash < 1f) dash = 1f;
+
+            float period = dash + gapPixels;
+            if (period <= 0f) return;
+
+            int budget = MaxDashes;
+
+            // The four edges, in the order a reader would draw them: top, bottom, left, right.
+            // The vertical edges are inset by the thickness at both ends, so the corners are inked
+            // once — by the horizontal edges — and a translucent colour cannot darken them.
+            budget = AddDashRun(left, top, right - left, true, dash, period, thickness,
+                                clipPixels, into, budget);
+            budget = AddDashRun(left, bottom - thickness, right - left, true, dash, period, thickness,
+                                clipPixels, into, budget);
+            budget = AddDashRun(left, top + thickness, bottom - top - thickness * 2f, false,
+                                dash, period, thickness, clipPixels, into, budget);
+            AddDashRun(right - thickness, top + thickness, bottom - top - thickness * 2f, false,
+                       dash, period, thickness, clipPixels, into, budget);
+        }
+
+        /// <summary>
+        /// Emits one edge's dashes and returns how much of the dash budget is left.
+        ///
+        /// <b>Every edge starts and ends with ink, and the rhythm is spread over the edge.</b> A
+        /// dashed outline whose pattern simply ran out would leave the far corner of each edge
+        /// empty — so a band would read as three sides and a half, and the two corners that no
+        /// dash reached would be the ones nearest the pointer when the player drags down and to
+        /// the right. The dashes are therefore laid out with a pitch computed from the edge's
+        /// length rather than accumulated: the nominal period is used as the count, and whatever
+        /// fraction is left over is spread across the gaps, which changes each gap by a fraction
+        /// of a pixel and keeps every dash its stated length.
+        ///
+        /// <b>Two guards.</b> A count is never so large that the dashes would overlap (the pitch
+        /// may not fall below one dash), and an edge shorter than one dash is a single dash of the
+        /// edge's whole length — a one-pixel box must still draw a pixel rather than vanish.
+        ///
+        /// A dash is a bar of <paramref name="thickness"/> across and <paramref name="dash"/>
+        /// along, clipped to the canvas after snapping — the same order <see cref="AddDot"/> uses,
+        /// so a dash that leaves the canvas is cut, never moved.
+        /// </summary>
+        private static int AddDashRun(float x, float y, float length, bool horizontal,
+                                      float dash, float period, float thickness,
+                                      Vector4 clip, List<Vector4> into, int budget)
+        {
+            if (length <= 0f) return budget;
+
+            int count = (int)Math.Floor((length + (period - dash)) / period);
+            if (count < 2 && length > dash) count = 2;
+
+            // Dashes may touch but not overlap: with more of them than the edge can hold at one
+            // dash each, the count is capped rather than the dashes being shortened.
+            int maxCount = (int)Math.Floor(length / dash);
+            if (maxCount < 1) maxCount = 1;
+            if (count > maxCount) count = maxCount;
+            if (count < 1) count = 1;
+
+            float pitch = count > 1 ? (length - dash) / (count - 1) : 0f;
+
+            for (int i = 0; i < count && budget > 0; i++)
+            {
+                float at = i * pitch;
+                float run = count > 1 ? dash : length;
+                if (at + run > length) run = length - at;
+                if (run <= 0f) continue;
+
+                float left = horizontal ? x + at : x;
+                float top = horizontal ? y : y + at;
+                float right = horizontal ? left + run : left + thickness;
+                float bottom = horizontal ? top + thickness : top + run;
+
+                if (left < clip.X) left = clip.X;
+                if (top < clip.Y) top = clip.Y;
+                if (right > clip.Z) right = clip.Z;
+                if (bottom > clip.W) bottom = clip.W;
+
+                if (right > left && bottom > top)
+                {
+                    into.Add(new Vector4(left, top, right, bottom));
+                    budget--;
+                }
+            }
+
+            return budget;
+        }
+
+        /// <summary>
         /// One dot: a square of the dot's size centred on the point, snapped so that its edges
         /// are whole pixels. The size is rounded once and added to the rounded edge, so a dot is
         /// always the same number of pixels wide and tall.

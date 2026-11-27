@@ -29,7 +29,11 @@ namespace Vgs.Ui
     ///    (ADR-0020), except the first one, which leaves the schema for the block's terminal
     ///    (ADR-0021); clicking the "x" on a port deletes that port's connections. A group's
     ///    title strip is a drag handle: grabbing it moves every member card by the same offset,
-    ///    keeping the cluster's internal layout (ADR-0016).
+    ///    keeping the cluster's internal layout (ADR-0016). Shift+click toggles one card in the
+    ///    selection, a left drag that starts on the void draws a marquee and selects what it
+    ///    covers, and a drag that starts on a card of a multi-node selection moves the whole set
+    ///    by one offset (ADR-0048). No control acts on the set: every action still applies to the
+    ///    single card under the pointer.
     ///  * <i>bind</i> — a line follows the pointer from the source card's future output dot.
     ///    The button does not have to be held. Left click on another card opens the action
     ///    menu for it; right click cancels; left click elsewhere cancels.
@@ -140,7 +144,75 @@ namespace Vgs.Ui
         private bool _dragging;
         private bool _panning;
         private Vector2 _panAnchor;
-        private Node _selected;
+
+        /// <summary>
+        /// The nodes the player is working with — what a click, a Shift+click and a marquee build
+        /// (ADR-0048).
+        ///
+        /// <b>One set instead of one reference.</b> The editor used to keep the single
+        /// <see cref="Node"/> a click picked; selecting several cards is the same question asked
+        /// of a collection, and every rule about it — replace, toggle, marquee, "what a drag
+        /// moves" — is a rule about the set, so it lives in <see cref="NodeSelection"/> where the
+        /// offline gate can assert it. The draw path asks it once per visible card per frame,
+        /// which is why membership is a hash lookup.
+        ///
+        /// <b>It is not an action target.</b> No control reads the set: bind, watch, jump, the
+        /// power switch and the manual action menu all act on the one node under the pointer
+        /// (ADR-0048 §Decision). Running an action over the whole selection is deliberately not
+        /// implemented.
+        /// </summary>
+        private readonly NodeSelection _selection = new NodeSelection();
+
+        /// <summary>
+        /// The cards a drag of the selection moves, resolved once when the drag starts.
+        ///
+        /// <b>Resolved once, not per pointer move.</b> A selected group contributes its members
+        /// (ADR-0016), a card can be both selected and a member of a selected group, and the
+        /// expansion must therefore be deduplicated — work that costs a walk of the graph and
+        /// whose answer cannot change while the button is held. Recomputing it on every frame of a
+        /// drag would do that walk sixty times a second for the same list.
+        ///
+        /// Empty when the drag in progress is a single card's or a group's own — those two keep
+        /// their own fields below, because they write to different things.
+        /// </summary>
+        private readonly List<Node> _dragCards = new List<Node>(8);
+
+        /// <summary>
+        /// Pointer positions of a selection drag, in graph units: where it was grabbed (for the
+        /// drag threshold) and where it last was (for this frame's offset).
+        ///
+        /// The same pair of anchors a group drag keeps, and for the same reason (ADR-0016): the
+        /// threshold has to be measured from the grab point or a slow drag never starts, while the
+        /// offset has to be measured from the previous position or the whole displacement would be
+        /// applied again on every frame.
+        /// </summary>
+        private Vector2 _selectionDragAnchor;
+        private Vector2 _selectionDragLast;
+
+        /// <summary>
+        /// Card of a multi-node selection that the left button went down on, or null.
+        ///
+        /// <b>It exists so that a press and a click can mean different things.</b> The press must
+        /// keep the set — otherwise "select three, drag one of them" would collapse the set before
+        /// the drag could start — while a press <em>and release without movement</em> is a click,
+        /// and a click on a card selects exactly that card. Both behaviours are the platform's
+        /// convention, and they are one field apart: the press records the card, the release
+        /// decides by asking whether a drag happened in between.
+        ///
+        /// Cleared by every path that ends or supersedes the gesture: a drag that started, a
+        /// marquee, a dropped selection and a graph rebuild.
+        /// </summary>
+        private Node _pendingSelectNode;
+
+        /// <summary>
+        /// The marquee gesture: the rubber band the player drags on the void to select several
+        /// cards at once (ADR-0048).
+        ///
+        /// A struct field rather than an object, because the gesture exists only while a button is
+        /// held and the input pass must not allocate. While it is armed it owns the pointer
+        /// completely: no hover, no pan, no zoom, no drag.
+        /// </summary>
+        private Marquee _marquee;
 
         /// <summary>
         /// Group being dragged by its title strip, or null (ADR-0016).
@@ -825,6 +897,25 @@ namespace Vgs.Ui
                     return false;
                 }
 
+                // The marquee band is a gesture, not a mode: Esc drops it without selecting
+                // anything, which is the same "cancel what you started" rule the other gestures
+                // follow (ADR-0048).
+                if (_marquee.IsArmed)
+                {
+                    _marquee.Cancel();
+                    return false;
+                }
+
+                // The selection is the last thing Esc drops before it closes the editor. A
+                // marquee is easy to draw by accident, and a click on the void is the only other
+                // way to clear the set — which costs the player their camera position's context
+                // when the card they meant to click was just off-screen (ADR-0048).
+                if (!_selection.IsEmpty)
+                {
+                    _selection.Clear();
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception e)
@@ -1456,7 +1547,11 @@ namespace Vgs.Ui
             CancelBind();
             CancelWatch();
 
-            _selected = null;
+            _selection.Clear();
+            _dragCards.Clear();
+            _marquee.Cancel();
+            _pendingSelectNode = null;
+
             _draggedNode = null;
             _draggedGroup = null;
             _dragging = false;

@@ -520,6 +520,18 @@ namespace Vgs.Ui
 
             bool insideCanvas = PortGeometry.Contains(canvasTopLeft, canvasSize, mouse);
 
+            // ---- marquee band (ADR-0048) ----
+            // While the band is armed it owns the pointer completely. The wheel would change the
+            // zoom under a rectangle that is being drawn in graph units, the right button would
+            // pan the schema out from under it, and the hover highlights would light up the cards
+            // the band is merely passing over — all of them repaint or move the picture in the
+            // middle of the gesture.
+            if (_marquee.IsArmed)
+            {
+                HandleMarqueeInput(mouse);
+                return;
+            }
+
             // ---- zoom ----
             if (insideCanvas)
             {
@@ -631,40 +643,14 @@ namespace Vgs.Ui
                     return;
                 }
 
-                Node hit = HitTest(graphPos);
-                _selected = hit;
-
-                // Only one drag can be in progress: a card drag and a group drag write to
-                // different things (one position versus one offset on every member), and both
-                // running at once would move the same card twice per frame. Clearing the other
-                // field here is cheaper than defending every use site against a stale one.
-                _draggedNode = null;
-                _draggedGroup = null;
-
-                // Two kinds of drag, and which one starts is decided by what was grabbed:
+                // ---- selection and the start of a drag (ADR-0048) ----
                 //
-                //  * a card is dragged by its body, and the node's own position follows the
-                //    pointer;
-                //  * a group is dragged by its title strip only (ADR-0016). The interior of the
-                //    frame belongs to the member cards and the gaps between them stay canvas, so
-                //    a click there still selects nothing and pans — a frame that swallowed those
-                //    clicks would make the cluster impossible to pan across.
-                if (hit != null && hit.IsGroup)
-                {
-                    if (PortGeometry.HitGroupTitle(hit, graphPos))
-                    {
-                        _draggedGroup = hit;
-                        _groupDragAnchor = graphPos;
-                        _groupDragLast = graphPos;
-                        _dragging = false;
-                    }
-                }
-                else if (hit != null)
-                {
-                    _draggedNode = hit;
-                    _dragGrabOffset = graphPos - hit.Position;
-                    _dragging = false;
-                }
+                // Resolved after the controls above, because a click on a control is a click on a
+                // control: it must neither select nor start a marquee, and every one of those
+                // handlers returns before this point.
+                Node hit = HitTest(graphPos);
+                HandleSelectionPress(hit, graphPos);
+                return;
             }
 
             if (leftDown && _draggedNode != null)
@@ -721,19 +707,253 @@ namespace Vgs.Ui
                 }
             }
 
+            if (leftDown && _dragCards.Count > 0)
+            {
+                Vector2 graphPos = ScreenToGraph(mouse, canvasTopLeft);
+
+                // Measured from where the set was grabbed, like a group drag and for the same
+                // reason: a slow drag would otherwise never accumulate enough movement to start.
+                if (!_dragging && (graphPos - _selectionDragAnchor).Length() > VgsConstants.DragThreshold)
+                {
+                    _dragging = true;
+                }
+
+                if (_dragging)
+                {
+                    Vector2 delta = graphPos - _selectionDragLast;
+                    _selectionDragLast = graphPos;
+
+                    if (delta.X != 0f || delta.Y != 0f)
+                    {
+                        // One offset for the whole set, which is the group's rule (ADR-0016)
+                        // applied to what the player selected: the cards keep their positions
+                        // relative to each other, so a cluster does not come apart.
+                        for (int i = 0; i < _dragCards.Count; i++)
+                        {
+                            Node card = _dragCards[i];
+                            card.Position = card.Position + delta;
+                        }
+
+                        // Every frame is derived from the member cards, and a selected card may
+                        // belong to more than one group, so all of them are recomputed — the same
+                        // bounded pass a group drag pays, and only while the pointer moves.
+                        if (_graph.GroupCount > 0) PortGeometry.LayoutGroupFrames(_graph);
+                    }
+                }
+            }
+
             if (leftReleased)
             {
+                // A press and a release without movement is a click even when the press kept the
+                // set: a click on a card selects exactly that card. The set is kept on the press
+                // only so that a drag of the whole selection can start (ADR-0048).
+                if (!_dragging && _pendingSelectNode != null)
+                {
+                    _selection.Select(_pendingSelectNode);
+                    VgsLog.Debug("selection collapsed to " + _pendingSelectNode + " by a click");
+                }
+
                 // Where the user dropped the card is written to the block here, on release.
                 // Not per pointer move (sixty writes a second), and not in OnClosed: closing
                 // can be a session unload, which never reaches OnClosed at all, and that is
                 // exactly when a player would notice the layout was lost (ADR-0012).
                 if (_dragging && _draggedNode != null) NodeStateStore.SavePosition(_draggedNode);
                 if (_dragging && _draggedGroup != null) SaveGroupPositions(_draggedGroup);
+                if (_dragging && _dragCards.Count > 0) SaveCardPositions(_dragCards);
 
                 _draggedNode = null;
                 _draggedGroup = null;
+                _dragCards.Clear();
+                _pendingSelectNode = null;
                 _dragging = false;
             }
+        }
+
+        // ------------------------------------------------------------------ selection (ADR-0048)
+
+        /// <summary>
+        /// Turns a left press on the canvas into a selection edit and, when it is a grab, into the
+        /// start of one of the three drags.
+        ///
+        /// <b>Shift always modifies the set; a plain press replaces it.</b> That is the whole rule,
+        /// and it covers both gestures the player has: a Shift+click toggles the one node under the
+        /// pointer, a Shift+press on the void arms a band that <em>adds</em> what it covers, while
+        /// a plain press selects exactly the node it landed on and a plain press on the void clears
+        /// the set and arms a band that replaces it.
+        ///
+        /// <b>A Shift+press starts no drag.</b> The gesture is an edit of the selection, and a
+        /// press that also armed a drag would move the very card it was deselecting as soon as the
+        /// hand twitched.
+        ///
+        /// <b>A press on a card that is already selected keeps the selection.</b> That is what
+        /// makes "select several, then drag one of them" work: the press is the grab of the set,
+        /// and replacing the set here would leave the drag with a single card — the set would
+        /// visibly fall apart under the pointer on the first frame.
+        ///
+        /// <b>Which drag starts.</b> More than one selected node means the set is dragged by one
+        /// offset (the group's rule, ADR-0016); otherwise it is the card's own drag or, for a
+        /// group, its title-strip drag. A group's port bars remain no handle at all (ADR-0016),
+        /// including in a multi-node selection.
+        /// </summary>
+        private void HandleSelectionPress(Node hit, Vector2 graphPos)
+        {
+            bool shift = MyAPIGateway.Input.IsAnyShiftKeyPressed();
+
+            if (shift)
+            {
+                if (hit != null)
+                {
+                    bool selected = _selection.Toggle(hit);
+                    VgsLog.Debug("selection: " + hit + (selected ? " added" : " removed") + ", "
+                                 + _selection.Count + " node(s) selected");
+                    return;
+                }
+
+                // Shift on the void: a band that adds to the set instead of replacing it.
+                _marquee.Begin(graphPos, true);
+                return;
+            }
+
+            // Only one drag can be in progress: the three kinds write to different things (one
+            // position, one offset on a group's members, one offset on the selected cards), and
+            // two running at once would move the same card twice per frame. Clearing them here is
+            // cheaper than defending every use site against a stale one.
+            _draggedNode = null;
+            _draggedGroup = null;
+            _dragCards.Clear();
+            _pendingSelectNode = null;
+            _dragging = false;
+
+            if (hit == null)
+            {
+                // A press on the void: the set is replaced by whatever the band will cover, which
+                // is nothing at all when the hand does not move.
+                _selection.Clear();
+                _marquee.Begin(graphPos, false);
+                return;
+            }
+
+            if (!_selection.Contains(hit)) _selection.Select(hit);
+            else if (_selection.Count > 1) _pendingSelectNode = hit;
+
+            // A group is dragged by its title strip only (ADR-0016). The interior of the frame
+            // belongs to the member cards and the gaps between them stay canvas, so a click there
+            // still starts a band — a frame that swallowed those clicks would make the cluster
+            // impossible to pan across. The group is selected all the same: the click landed on
+            // its frame, and a set of one group is what the player then sees outlined.
+            if (hit.IsGroup && !PortGeometry.HitGroupTitle(hit, graphPos)) return;
+
+            // A press on a card that is already part of a set keeps the set: the drag that may
+            // follow needs all of it. The collapse back to this one card happens on release, and
+            // only if no drag happened — see the release branch of HandleCanvasInput.
+            if (_selection.Count > 1)
+            {
+                // A selected group contributes its drawn members, and a card may be in two of
+                // them; the list is deduplicated by CollectDragCards, so every card moves once.
+                _selection.CollectDragCards(_graph, _dragCards);
+                _selectionDragAnchor = graphPos;
+                _selectionDragLast = graphPos;
+                return;
+            }
+
+            if (hit.IsGroup)
+            {
+                _draggedGroup = hit;
+                _groupDragAnchor = graphPos;
+                _groupDragLast = graphPos;
+                return;
+            }
+
+            _draggedNode = hit;
+            _dragGrabOffset = graphPos - hit.Position;
+        }
+
+        /// <summary>
+        /// Input while the marquee band is armed: track the pointer, and on release select the
+        /// cards the band covers (ADR-0048).
+        ///
+        /// <b>The release is read as "the button is up", not as "the release event happened".</b>
+        /// A long frame can swallow the event, and a band that stayed on screen because of a missed
+        /// event would keep the canvas frozen until the next click. The press frame itself never
+        /// reaches this method — it arms the band and returns from
+        /// <see cref="HandleSelectionPress"/> — so a button that is already up here means the
+        /// gesture is over.
+        ///
+        /// <b>A right click drops the band</b> without selecting anything, which is the same
+        /// "right click cancels the gesture" rule the bind and the watch follow. The left button
+        /// is still held, so nothing else starts until it is released.
+        /// </summary>
+        private void HandleMarqueeInput(Vector2 mouse)
+        {
+            if (MyAPIGateway.Input.IsNewRightMousePressed())
+            {
+                _marquee.Cancel();
+                return;
+            }
+
+            // Nothing under the pointer is "hovered" while a band is being drawn: the band is
+            // what the player is aiming at, and a card lighting up as the band crosses it would
+            // read as "this one is picked" while the band is still moving.
+            ClearHoverTargets();
+
+            Vector2 canvasTopLeft, canvasSize;
+            CanvasRect.Get(out canvasTopLeft, out canvasSize);
+
+            if (MyAPIGateway.Input.IsLeftMousePressed())
+            {
+                _marquee.Move(ScreenToGraph(mouse, canvasTopLeft), _view.Zoom,
+                              VgsScreenDraw.ClientWidth, VgsScreenDraw.ClientHeight);
+                return;
+            }
+
+            FinishMarquee();
+        }
+
+        /// <summary>
+        /// Ends the marquee: selects what the band covers, or does nothing when the press never
+        /// became a band.
+        ///
+        /// The two cases are not the same gesture and must not be merged: a band that covered
+        /// nothing selects nothing (the player dragged over the void), while a press that never
+        /// moved is a click on the void — and a plain click there has already cleared the set when
+        /// the press was handled. A Shift+click on the void therefore leaves the set alone, which
+        /// is what "Shift modifies, it does not replace" means.
+        /// </summary>
+        private void FinishMarquee()
+        {
+            bool additive = _marquee.Additive;
+            bool active = _marquee.IsActive;
+
+            Vector2 topLeft, size;
+            _marquee.Normalize(out topLeft, out size);
+            _marquee.Cancel();
+
+            if (!active) return;
+
+            _selection.SelectInRect(_graph, topLeft, size, additive);
+
+            VgsLog.Debug("marquee " + (additive ? "added to" : "replaced") + " the selection: "
+                         + _selection.Count + " node(s) selected");
+        }
+
+        /// <summary>
+        /// Writes the new position of every card a selection drag moved (ADR-0012, ADR-0048).
+        ///
+        /// The same contract as <see cref="SaveGroupPositions"/>: the layout lives on the blocks,
+        /// a card has nowhere else to store it, and a block destroyed mid-drag is skipped rather
+        /// than reported as an error.
+        /// </summary>
+        private void SaveCardPositions(List<Node> cards)
+        {
+            if (cards == null) return;
+
+            int saved = 0;
+            for (int i = 0; i < cards.Count; i++)
+            {
+                if (NodeStateStore.SavePosition(cards[i])) saved++;
+            }
+
+            VgsLog.Info("selection moved: " + saved + " card position(s) saved");
         }
 
         /// <summary>
@@ -871,10 +1091,15 @@ namespace Vgs.Ui
 
             _watchSource = controller;
             _watchErrorUntilFrame = 0;
-            _selected = controller;
+
+            // The selection is deliberately left alone. A gesture is a gesture on one card — the
+            // one under the pointer, marked by the hover outline and by the line that leaves it —
+            // while the selection is the player's working set, and a control press that quietly
+            // replaced a set of ten with one would be a side effect nobody asked for (ADR-0048).
             _dragging = false;
             _draggedNode = null;
             _draggedGroup = null;
+            _dragCards.Clear();
             CancelBind();
 
             VgsLog.Debug("watch mode started on controller " + controller.EntityId);
@@ -1400,9 +1625,13 @@ namespace Vgs.Ui
             _bindSource = source;
             _bindPort = port;
             _bindGroup = group;
-            _selected = source;
+
+            // The selection is left alone — see BeginWatch. The source card is marked by the
+            // hover outline and by the pending line that leaves its port dot.
             _dragging = false;
             _draggedNode = null;
+            _draggedGroup = null;
+            _dragCards.Clear();
             _panning = false;
             CloseActionMenu();
 

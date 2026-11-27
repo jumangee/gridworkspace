@@ -59,6 +59,19 @@ namespace Vgs.Ui
         /// </summary>
         public static readonly Color ColDamage = new Color(200, 60, 55, 128);
 
+        /// <summary>
+        /// The marquee band: the one-pixel dashed outline the player drags on the void to select
+        /// several cards at once (ADR-0048).
+        ///
+        /// <b>The selection colour, not a new one.</b> A selected card's border is
+        /// <see cref="ColNodeSelected"/>, and the band is the same promise one step earlier — "this
+        /// is what is about to be selected". Giving it its own hue would add a fourth meaning to a
+        /// palette whose colours already carry the watch yellow, the connection green and the
+        /// damage red. It is slightly translucent so it reads as an annotation drawn over the
+        /// schema rather than as another frame belonging to it.
+        /// </summary>
+        public static readonly Color ColMarquee = new Color(255, 170, 60, 200);
+
         public static readonly Color ColPortIn = new Color(110, 190, 255, 255);
         public static readonly Color ColPortInFill = new Color(28, 44, 62, 255);
         public static readonly Color ColPortOut = new Color(120, 220, 160, 255);

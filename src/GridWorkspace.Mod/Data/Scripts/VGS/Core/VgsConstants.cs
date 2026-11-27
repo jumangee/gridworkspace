@@ -1027,6 +1027,37 @@ namespace Vgs.Core
         /// <summary>Distance in normalized units a pointer must travel before it counts as a drag.</summary>
         public const float DragThreshold = 0.0025f;
 
+        // ---- Multi-node selection and the marquee band (ADR-0048) ----
+        //
+        // The band is drawn with device-pixel sizes for the reason ADR-0046 §3 gives for the
+        // connection line: one X unit of this layout is the window's width and one Y unit its
+        // height (ADR-0009), so a dash expressed in layout units would be a different number of
+        // pixels per axis and would thin out as the player zoomed.
+
+        /// <summary>
+        /// Length of one dash of the marquee band, in <b>device pixels</b> — four, at every zoom.
+        ///
+        /// <b>Equal to the gap, and that is the whole look.</b> A dash noticeably longer than its
+        /// gap reads as a solid line with nicks in it, and a dash shorter than its gap reads as a
+        /// dotted line — which this editor already uses for a watch link (ADR-0017). Four and four
+        /// at one pixel of thickness is the smallest pattern that still reads as "dashed" when the
+        /// band is drawn over a busy schema.
+        /// </summary>
+        public const float MarqueeDashPixels = 4f;
+
+        /// <summary>Clear space between two dashes of the marquee band, in device pixels.</summary>
+        public const float MarqueeGapPixels = 4f;
+
+        /// <summary>
+        /// Thickness of the marquee band, in device pixels — one, at every zoom.
+        ///
+        /// One pixel is the requirement's own number, and it is also the only weight that keeps the
+        /// band from competing with the cards it encloses: it is an annotation, not a frame. A
+        /// layout-unit thickness could not express it — it would be 1 px tall and <c>height/width</c>
+        /// of a pixel wide (ADR-0009) — which is why the rasteriser takes a pixel count.
+        /// </summary>
+        public const float MarqueeThicknessPixels = 1f;
+
         /// <summary>Hard cap on blocks drawn at once; protects the frame budget on huge grids.</summary>
         public const int MaxRenderedBlocks = 400;
 

@@ -42,6 +42,7 @@
 | [0045](adr/0045-hotkey-opens-editor-from-cockpit.md) | Клавиша **M** — второй вход в тот же экран (`VgsEditorScreen.OpenFor`), опрос `IsNewKeyPressed` из сессионного компонента; работает только из кокпита и только когда клавиатурой не владеет другой экран (чат, игровой экран, терминал); привязку мод зарегистрировать не может |
 | [0047](adr/0047-dotted-connection-lines.md) | Связь рисуется **плотными точками** 2 px через 1 px, линия отслеживания — 2 px через 2 px: у API нет антиалиасинга, и сплошной край читался как линия толще двух пикселей. Вес не меняется (точка — те же 2 × 2 px), меняется непрерывность; один растеризатор на оба вида (`LineRaster.Dotted` + `VgsScreenDraw.PathDots`), виды различаются ритмом (заменяет §2 ADR-0046) |
 | [0046](adr/0046-curved-connection-lines.md) | Линия связи — плавная кривая толщиной ровно 2 px: маршрут остаётся ортогональным, а рисуется скруглённый путь (`EdgeRouting.Round`), растеризованный в пикселях safe-области (`Ui/LineRaster`); линия отслеживания — точки 2 px через 2 px (отменяет §6 ADR-0010 и пунктир §5 ADR-0017) |
+| [0048](adr/0048-multi-node-selection.md) | Выделение — **набор** узлов (`Ui.NodeSelection`): Shift+клик переключает узел, клик по пустому месту очищает набор и начинает **пунктирную рамку 1 px** (`Ui.Marquee`, штрих и промежуток по 4 px при любом зуме), рамка выделяет накрытые карточки (не группы); перенос набора — одним смещением, как у группы (0016); **действие над набором не выполняется** |
 | [0027](adr/0027-clipboard-is-own-buffer-only.md) | Буфер обмена моду **недоступен** (вердикт игры), `TextClipboard` — только собственный буфер без ссылок на игру; правило «разрешение типа не выводится из разрешения пространства имён для корневого `VRage`»; самопроверка шлюза на вердиктах игры (заменяет ADR-0025) |
 | [0001](adr/0001-ui-stack.md) | ~~`MyGuiScreenBase`~~ — отменено: игра отклоняет компиляцию |
 | [0002](adr/0002-port-model.md) | Входы — из API, выходы — из курируемой таблицы |
@@ -93,9 +94,11 @@
         └──► Vgs.Ui ────── VgsEditorScreen        экран: ввод, раскладка и режимы,
                            │                       читает только кэш модели
                            ├─ PortGeometry         геометрия карточки, портов и рамки группы
+                           ├─ NodeSelection        набор выделенных узлов (ADR-0048)
+                           ├─ Marquee              жест рамки выделения (ADR-0048)
                            ├─ GridFrames           рамка грида и вкладка её имени
                            ├─ EdgeRouting          маршрут линии и его скругление
-                           ├─ LineRaster           путь линии в пиксельные точки
+                           ├─ LineRaster           путь линии в пиксельные точки, пунктир рамки
                            ├─ PipeRouter          две рельсы трубы и скругление изгибов
                            └─ VgsScreenDraw        единственное место, где
                                                    вызывается API отрисовки
@@ -488,7 +491,11 @@ classDiagram
         -bool _savedShowHidden
         -int _lastViewSaveFrame
         -Node _draggedNode
-        -Node _selected
+        -NodeSelection _selection
+        -List~Node~ _dragCards
+        -Vector2 _selectionDragAnchor
+        -Vector2 _selectionDragLast
+        -Marquee _marquee
         -Node _draggedGroup
         -Vector2 _groupDragAnchor
         -Vector2 _groupDragLast
@@ -534,6 +541,11 @@ classDiagram
         #OnCancelling() bool
         #OnClosed(bool isUnloading)
         -HandleCanvasInput(Vector2) void
+        -HandleSelectionPress(Node, Vector2) void
+        -HandleMarqueeInput(Vector2) void
+        -FinishMarquee() void
+        -SaveCardPositions(List~Node~) void
+        -DrawMarquee(Vector2, Vector2) void
         -PanWhileHeld(bool, Vector2, Vector2, Vector2) bool
         -PanWithMiddleButton(Vector2, Vector2, Vector2) bool
         -ClearHoverTargets() void
@@ -653,6 +665,45 @@ classDiagram
 
     VgsEditorScreen --> PointerGesture : клик или перетаскивание (ADR-0041)
 
+    class NodeSelection {
+        -HashSet~Node~ _nodes
+        -HashSet~long~ _memberIds
+        -List~Node~ _stale
+        +int Count
+        +bool IsEmpty
+        +Contains(Node) bool
+        +Clear()
+        +Select(Node)
+        +Add(Node) bool
+        +Remove(Node) bool
+        +Toggle(Node) bool
+        +SelectInRect(GridGraph, Vector2, Vector2, bool)
+        +CollectDragCards(GridGraph, List~Node~)
+        +RemoveMissing(GridGraph)
+    }
+
+    VgsEditorScreen --> NodeSelection : набор выделенных узлов (ADR-0048)
+
+    class Marquee {
+        <<struct>>
+        -Vector2 _anchor
+        -Vector2 _current
+        -bool _armed
+        -bool _active
+        -bool _additive
+        +bool IsArmed
+        +bool IsActive
+        +bool Additive
+        +Vector2 Anchor
+        +Vector2 Current
+        +Begin(Vector2, bool)
+        +Move(Vector2, float, float, float)
+        +Cancel()
+        +Normalize(out Vector2, out Vector2)
+    }
+
+    VgsEditorScreen --> Marquee : рамка выделения (ADR-0048)
+
     class PortGeometry {
         <<static>>
         +CardRect(Node, out Vector2, out Vector2)
@@ -734,6 +785,8 @@ classDiagram
     class LineRaster {
         <<static>>
         +Dotted(IList~Vector2~ path, PixelTransform, float dotPixels, float gapPixels, Vector4 clipPixels, List~Vector4~)
+        +DashedRect(Vector2 topLeft, Vector2 size, PixelTransform, float dashPixels, float gapPixels, float thicknessPixels, Vector4 clipPixels, List~Vector4~)
+        -AddDashRun(...) int
         -AddDot(...)
         -ToPixel(float) int
     }
@@ -797,6 +850,7 @@ classDiagram
         +BorderClipped(Vector2, Vector2, Vector2 clip, Vector2 clipSize, Color, float)
         +SegmentPixels(Vector2 from, Vector2 to, float thicknessPixels, Vector2 clip, Vector2 clipSize, Color)
         +PathDots(IList~Vector2~ path, float dotPixels, float gapPixels, Vector2 clip, Vector2 clipSize, Color)
+        +DashedRect(Vector2 pos, Vector2 size, Vector2 clip, Vector2 clipSize, Color, float dashPixels, float gapPixels, float thicknessPixels)
         +PixelTransform PixelSpace
         +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
         +ThickSegment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
@@ -1692,6 +1746,8 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `VgsEditorScreen.Input.cs` | **частичный класс**: ввод — четыре режима указателя (обычный, привязка, отслеживание, меню), панорама и зум, перетаскивание, hit-test; развод правой кнопки между кликом (ручное действие) и панорамой (ADR-0041) |
 | `VgsEditorScreen.Draw.cs` | **частичный класс**: отрисовка — холст, карточки, полосы портов, рамки групп, линии, шапка и нижняя панель; ничего не читает из мира (ADR-0003) |
 | `PointerGesture.cs` | единственное правило «это клик или перетаскивание»: порог `ClickSlopPixels` по каждой оси в пикселях окна (ADR-0041). **Без** ссылок на `Sandbox.*` — проверяется офлайн на четырёх формах окна |
+| `NodeSelection.cs` | набор выделенных узлов: клик заменяет, Shift+клик переключает, рамка выделяет накрытые **карточки**, перенос раскрывает набор в список карточек (группа → её участники, карточка один раз). Тождество ссылок, а не равенство. **Действий над набором нет** — это состояние картинки (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
+| `Marquee.cs` | жест рамки выделения: точка нажатия, текущая точка, порог «это уже не клик» в пикселях и нормализация прямоугольника в любом из четырёх направлений (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `SearchField.cs` | поле поиска как самостоятельный тип: запрос, каретка, выделение, прокрутка и кэш позиций; шрифт подаётся делегатом, поэтому арифметика проверяется офлайн |
 | `ViewState.cs` | состояние вида: камера, зум, четыре режима показа (скрытые блоки, субгриды, границы гридов, конвейерная сеть) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
@@ -1699,7 +1755,7 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `CanvasRect.cs` | прямоугольник холста (окно минус шапка и нижняя панель) и единственный предикат «этот прямоугольник на холсте?» для отрисовки, прохода состояния, рамок гридов и их вкладок. Координаты внутри — **относительно холста**, а не окна: сравнение абсолютной координаты с *размером* холста резало низ на высоту шапки (R-015). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли линия отслеживания (`ShouldDrawWatchLine` — самопросмотр её не рисует, ADR-0036) |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); скругление маршрута в путь связи — изгиб от середины отрезка до середины следующего (ADR-0046) |
-| `LineRaster.cs` | путь линии → точки в пикселях safe-области: 2 × 2 px на обеих осях и на любом зуме, ритм отсчитывается по длине пути, поэтому изгиб его не сбивает. Один растеризатор на оба вида линии — связь (зазор 1 px) и наблюдение (зазор 2 px). **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md)) |
+| `LineRaster.cs` | путь линии → точки в пикселях safe-области: 2 × 2 px на обеих осях и на любом зуме, ритм отсчитывается по длине пути, поэтому изгиб его не сбивает. Один растеризатор на оба вида линии — связь (зазор 1 px) и наблюдение (зазор 2 px). Там же пунктирный прямоугольник рамки выделения: четыре ребра, каждое начинается и заканчивается штрихом, шаг считается из длины ребра. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md), [ADR-0048](adr/0048-multi-node-selection.md)) |
 | `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `IconPlacement.cs` | где иконка ляжет в пикселях окна: перевод из единиц раскладки, снап до целых пикселей, обрезка по краю полотна — **без** ссылок на `Sandbox.*`, поэтому проверяется офлайн |
 | `VgsIcons.cs` | разрешение материалов иконок на сессию и решение «иконка или прежняя геометрия»; порога размера нет — форма контрола не зависит от зума |
@@ -1759,6 +1815,42 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
   своё текстовое поле (ADR-0024): каретка с миганием, выделение (якорь + каретка),
   стрелки/Home/End/Shift, Ctrl+A/C/X/V. Раскладка каретки и выделения считается **при
   изменении**, а не каждый кадр: это вызовы метрик шрифта.
+
+#### Выделение узлов ([ADR-0048](adr/0048-multi-node-selection.md))
+
+Выделение — **набор** узлов (`Ui.NodeSelection`), а не одна ссылка. Набор меняется левой
+кнопкой в обычном режиме и никуда не сохраняется: это состояние картинки.
+
+```
+клик по карточке        ──► набор = {эта карточка}
+Shift+клик по узлу      ──► узел переключается в наборе
+клик по пустому месту   ──► набор = {}            + Marquee.Begin(additive: false)
+Shift+клик по пустому   ──► набор не меняется      + Marquee.Begin(additive: true)
+протяжка (порог 4 px)   ──► DrawMarquee: пунктирный прямоугольник 1 px
+отпускание              ──► SelectInRect: в набор попадают накрытые карточки
+Esc                     ──► сначала снимает набор, потом закрывает редактор
+```
+
+Попадание считается по **прямоугольнику карточки** (`PortGeometry.CardRect`), строгим
+пересечением: касание края не выделяет. Группа рамкой не выделяется — её рамка нарисована
+вокруг карточек участников, поэтому накрывается всегда, и выделять её значило бы, что любой
+маркиз над сгруппированной карточкой переносит весь кластер. Группа выделяется Shift+кликом
+по полосе имени — своему единственному адресуемому месту (ADR-0016).
+
+Перенос набора — то же правило, что у группы (ADR-0016): нажатие на **любой** выделенный узел
+при `Count > 1` начинает перенос всего набора одним смещением. Список карточек
+(`NodeSelection.CollectDragCards`) собирается **один раз, в начале переноса**: выделенная
+группа даёт своих нарисованных участников, карточка, выбранная и сама, и как участник
+группы, попадает в список один раз (иначе смещение удвоилось бы). Позиции пишутся на блоки
+при отпускании (ADR-0012).
+
+**Набор — не цель действия.** Bind, watch, jump, переключатель питания и ручное меню
+действий работают с одним узлом под указателем; массового выполнения над набором нет и не
+планируется (ADR-0048 §Decision).
+
+Рамка рисуется в **пикселях**: толщина 1 px, штрих и промежуток по 4 px при любом зуме —
+по той же причине, что и линия связи (ADR-0046 §3): оси раскладки не равны по длине
+(ADR-0009). Размер прямоугольника при этом в единицах графа и масштабируется вместе со схемой.
 
 #### Текстовое поле (ADR-0024)
 

@@ -112,6 +112,13 @@ $sources = @(
     # window size, and wrong in both directions it can be wrong — a menu that never opens, or a
     # pan that never starts — which is exactly what an offline assertion is for.
     (Join-Path $sourceRoot 'Ui\PointerGesture.cs'),
+    # The selection set and the marquee gesture (ADR-0048): what a click, a Shift+click and a
+    # rubber band build, and what a drag of the selection moves. Both are pure data over nodes and
+    # rectangles — membership by identity, the toggle rule, "a group is not selected by a
+    # rectangle", and the normalisation of a band dragged in any of the four directions. All of
+    # them break silently, and none of them needs the game.
+    (Join-Path $sourceRoot 'Ui\NodeSelection.cs'),
+    (Join-Path $sourceRoot 'Ui\Marquee.cs'),
     # Icon geometry (ADR-0019): placement and clipping are pure math, and the generated atlas
     # table is a value the drawing code multiplies by. Neither touches Sandbox.*.
     (Join-Path $sourceRoot 'Ui\IconPlacement.cs'),

@@ -60,6 +60,11 @@ namespace Vgs.Ui
                 DrawNodes(canvasTopLeft, canvasSize);
                 DrawGroupPorts(canvasTopLeft, canvasSize);
 
+                // The marquee band is an annotation over the picture, so it is painted after
+                // everything it is drawn over — cards, port bars and group frames — and before the
+                // chrome, which it is clipped against (ADR-0048).
+                DrawMarquee(canvasTopLeft, canvasSize);
+
                 DrawBottomBar();
                 DrawHeader();
 
@@ -547,7 +552,7 @@ namespace Vgs.Ui
         /// </summary>
         private void DrawNode(Node node, Vector2 screenPos, Vector2 clipTopLeft, Vector2 clipSize)
         {
-            bool selected = ReferenceEquals(node, _selected);
+            bool selected = _selection.Contains(node);
             bool hovered = ReferenceEquals(node, _hoverNode);
 
             // A card the search excludes is still drawn — as a ghost at
@@ -1319,7 +1324,7 @@ namespace Vgs.Ui
                 // off-screen costs one comparison instead of a rectangle and a border.
                 if (!CanvasRect.Overlaps(clipTopLeft, clipSize, screen, screenSize)) continue;
 
-                bool selected = ReferenceEquals(group, _selected);
+                bool selected = _selection.Contains(group);
                 bool hovered = ReferenceEquals(group, _hoverNode);
 
                 // A group follows its members through the search: it is a backdrop for them, so
@@ -1386,7 +1391,7 @@ namespace Vgs.Ui
             for (int i = 0; i < groups.Count; i++)
             {
                 Node group = groups[i];
-                bool selected = ReferenceEquals(group, _selected);
+                bool selected = _selection.Contains(group);
 
                 // One alpha per group: its bars belong to the frame and follow it (ADR-0023).
                 // The border is faded here, not inside DrawPortBar, for the same reason a block's
@@ -1401,6 +1406,35 @@ namespace Vgs.Ui
                     DrawPortBar(group, group.Actions[p], border, alpha, clipTopLeft, clipSize);
                 }
             }
+        }
+
+        /// <summary>
+        /// Draws the marquee band: a one-pixel dashed rectangle from the point the left button went
+        /// down to where the pointer is now (ADR-0048).
+        ///
+        /// <b>Nothing is drawn until the pointer has travelled past the click allowance.</b> A
+        /// press on the void is, most of the time, a click that clears the selection, and a band
+        /// that appeared on the press would flash a zero-sized box on every one of them. The
+        /// decision is <see cref="Marquee.IsActive"/>, which is the same threshold that separates a
+        /// click from a drag everywhere else in this editor (ADR-0041) — so "the band is visible"
+        /// and "this gesture selects" are the same fact, not two rules that can disagree.
+        ///
+        /// <b>The size scales, the ink does not.</b> The rectangle is a box on the schema, so its
+        /// extent is graph units times the zoom; the dash pattern and the thickness are device
+        /// pixels and stay put at every zoom (see <see cref="VgsScreenDraw.DashedRect"/>).
+        /// </summary>
+        private void DrawMarquee(Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (!_marquee.IsActive) return;
+
+            Vector2 topLeft, size;
+            _marquee.Normalize(out topLeft, out size);
+
+            VgsScreenDraw.DashedRect(GraphToScreen(topLeft, clipTopLeft), size * _view.Zoom,
+                                     clipTopLeft, clipSize, ColMarquee,
+                                     VgsConstants.MarqueeDashPixels,
+                                     VgsConstants.MarqueeGapPixels,
+                                     VgsConstants.MarqueeThicknessPixels);
         }
 
         /// <summary>

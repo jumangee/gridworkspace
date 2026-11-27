@@ -244,7 +244,12 @@ namespace Vgs.Ui
                 // screen = (graph - camera) * zoom + canvasTopLeft, and the screen point we want
                 // is the canvas centre, so camera = graph - canvasSize / (2 * zoom).
                 _view.Camera = centre - (canvasSize * 0.5f) / _view.Zoom;
-                _selected = node;
+
+                // Enter picks the one card it jumped to: the query is a way of finding a block,
+                // and the block found is the answer. A set the player had built by hand is
+                // replaced rather than added to, exactly as a plain click on a card would do
+                // (ADR-0048).
+                _selection.Select(node);
 
                 VgsLog.Debug("search '" + SearchText + "' jumped to block " + node.EntityId);
                 return;
@@ -264,8 +269,32 @@ namespace Vgs.Ui
         /// </summary>
         private void ValidateInteractionState()
         {
-            if (_selected != null && !_graph.ContainsNode(_selected)) _selected = null;
+            // The selection is a set of references, and a refresh can drop any of them — a block
+            // destroyed, or a group that lost its last drawn member. Pruned rather than rebuilt:
+            // the player's selection is theirs, and losing all of it because one card disappeared
+            // would be a worse answer than losing that one (ADR-0048).
+            _selection.RemoveMissing(_graph);
+
+            // A dragged card or group that vanished takes its drag with it: the list of cards the
+            // selection drag was moving is the same set of references, so a card that disappeared
+            // mid-drag must not be written back to the world on release.
+            if (_dragCards.Count > 0)
+            {
+                for (int i = _dragCards.Count - 1; i >= 0; i--)
+                {
+                    if (!_graph.ContainsNode(_dragCards[i])) _dragCards.RemoveAt(i);
+                }
+                if (_dragCards.Count == 0) _dragging = false;
+            }
+
             if (_draggedNode != null && !_graph.ContainsNode(_draggedNode)) _draggedNode = null;
+
+            // The card a click is about to collapse the selection to: if it disappeared, the
+            // release must not select a node that is no longer drawn.
+            if (_pendingSelectNode != null && !_graph.ContainsNode(_pendingSelectNode))
+            {
+                _pendingSelectNode = null;
+            }
 
             // A refresh can dissolve the group the user is dragging — its last drawn member was
             // hidden, or the group was renamed in the terminal. The reference stays valid as an
