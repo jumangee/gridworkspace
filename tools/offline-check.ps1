@@ -64,6 +64,10 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\Node.cs'),
     (Join-Path $sourceRoot 'Model\BlockState.cs'),
     (Join-Path $sourceRoot 'Model\BlockPower.cs'),
+    # The state widget (ADR-0042): the shape an enum, its reading a struct, and the two questions
+    # the geometry asks of them. Pure data, which is what lets the gate assert that every category's
+    # key count equals what its shape reads.
+    (Join-Path $sourceRoot 'Model\StateWidget.cs'),
     (Join-Path $sourceRoot 'Model\BlockCategory.cs'),
     (Join-Path $sourceRoot 'Model\ControllerState.cs'),
     (Join-Path $sourceRoot 'Model\NodeStateFormat.cs'),

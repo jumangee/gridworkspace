@@ -1254,11 +1254,11 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Reads the state of the cards on screen — damage today, the category's own readings
-        /// later — and writes it into the graph.
+        /// Reads the state of the cards on screen — damage, the on/off switch and the category's own
+        /// reading — and writes it into the graph.
         ///
         /// <b>The cheap half of the two-pass refresh.</b> It asks
-        /// <see cref="GridGraphBuilder.RefreshState"/> for one value per <em>visible</em> block
+        /// <see cref="GridGraphBuilder.RefreshState"/> for the values of each <em>visible</em> block
         /// and rebuilds nothing: no ports, no groups, no toolbars, no edge reconciliation. The
         /// structural pass (<see cref="RefreshFromGrid"/>) does all of that, on a much slower
         /// timer, because none of it changes between two frames of combat.

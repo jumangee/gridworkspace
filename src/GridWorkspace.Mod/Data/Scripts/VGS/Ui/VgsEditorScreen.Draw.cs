@@ -666,8 +666,179 @@ namespace Vgs.Ui
             // card's state column, on the leading edge, and a port bar of a card drawn later can
             // overlap it — the switch has to win, because a control the player cannot see is a
             // control they cannot use.
+            //
+            // The widget is drawn first, inside the same column: it is a reading rather than a
+            // control, and the switch is the control (ADR-0042).
+            DrawStateWidget(node, alpha, clipTopLeft, clipSize);
             DrawPowerSwitch(node, alpha, clipTopLeft, clipSize);
         }
+
+        /// <summary>
+        /// Draws the block's <b>state widget</b> in the lower band of the card's state column
+        /// (ADR-0042): a bar filled from the bottom up, a pair of narrow bars, or a two-handed clock.
+        ///
+        /// <b>Nothing is drawn when there is nothing to read.</b> Three conditions, and each is a
+        /// different fact:
+        ///
+        ///  * the card has no widget at all — the category publishes no reading, so the column has
+        ///    nothing in its lower band;
+        ///  * the block is switched off — the requirement's own rule, and the reason it is checked
+        ///    rather than left to the geometry: a switched-off block's fill is still whatever is
+        ///    inside it, but showing it would suggest the block is doing something with it. The
+        ///    check asks <see cref="Node.CanBeEnabled"/> first, because a cargo container has no
+        ///    switch and its <see cref="BlockPower"/> is therefore never anything but unknown;
+        ///  * the block reports no reading — not read yet, or (a timer) not counting down.
+        ///
+        /// <b>All three are one function, and it is not here.</b> <see cref="StateWidget.ShowsWidget"/>
+        /// in the model owns the rule, so the offline gate can pin every combination of its inputs;
+        /// a rule that lives only in this file is a rule nothing can check (ADR-0042 §5).
+        ///
+        /// <b>The column keeps its width in all three cases</b>, because the width comes from the
+        /// block's type (<see cref="PortGeometry.StateColumnWidth"/>). Nothing on the card moves when
+        /// the widget appears, disappears or fills up.
+        ///
+        /// <b>One base colour for every element.</b> The shape carries the value, so colouring the
+        /// fill by the number would be a second scale for the same fact. The one exception is the
+        /// battery's bolt, which says a <em>direction</em> rather than an amount and is the only
+        /// accent in the widget (ADR-0042 §2).
+        /// </summary>
+        private void DrawStateWidget(Node node, float alpha, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            // One question, asked once: whether the widget is drawn at all is a model rule with
+            // three conditions that look alike and mean different things, and it lives in
+            // StateWidget.ShowsWidget so that the offline gate can pin every combination of its
+            // inputs (ADR-0042 §5). The draw path only asks it — no second test of the same fact,
+            // which is what the rule was moved out of this file to avoid.
+            if (!StateWidget.ShowsWidget(node.Widget, node.CanBeEnabled, node.State.Power,
+                                         node.State.WidgetActive))
+            {
+                return;
+            }
+
+            Color colour = Fade(ColWidget, alpha);
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            if (!StateWidget.IsBar(node.Widget))
+            {
+                DrawStateClock(node, colour, aspect, clipTopLeft, clipSize);
+                return;
+            }
+
+            int bars = StateWidget.BarCount(node.Widget);
+            for (int i = 0; i < bars; i++)
+            {
+                Vector2 frameTopLeft, frameSize, fillTopLeft, fillSize;
+                if (!PortGeometry.TryStateWidgetBar(node, aspect, i, out frameTopLeft, out frameSize,
+                                                    out fillTopLeft, out fillSize))
+                {
+                    continue;
+                }
+
+                // The frame is a border, not a fill: an empty container has to be a visible empty
+                // rectangle, and that rectangle is what tells the player the reading exists.
+                Vector2 frameScreen = GraphToScreen(frameTopLeft, clipTopLeft);
+                Vector2 frameSizeScreen = frameSize * _view.Zoom;
+
+                VgsScreenDraw.BorderClipped(frameScreen, frameSizeScreen, clipTopLeft, clipSize,
+                                            colour, Hairline);
+
+                if (fillSize.Y <= 0f || fillSize.X <= 0f) continue;
+
+                VgsScreenDraw.RectClipped(GraphToScreen(fillTopLeft, clipTopLeft),
+                                          fillSize * _view.Zoom, clipTopLeft, clipSize, colour);
+            }
+
+            if (node.Widget == StateWidgetKind.Battery)
+            {
+                DrawStateBolt(node, colour, alpha, aspect, clipTopLeft, clipSize);
+            }
+        }
+
+        /// <summary>
+        /// The battery's charge-mode bolt, beside its bar: yellow while recharging, red while
+        /// discharging, nothing in <c>Auto</c> (ADR-0042 §4).
+        ///
+        /// <b>The accent is a second colour on a widget that has exactly one.</b> Every other element
+        /// of every widget is <see cref="ColWidget"/>; this one says which way the charge is going,
+        /// which is the only thing a battery knows that its charge fraction does not. <c>Auto</c>
+        /// draws nothing rather than a third colour: "neither direction" is not a state of the
+        /// battery, it is the absence of one.
+        /// </summary>
+        private void DrawStateBolt(Node node, Color colour, float alpha, float aspect,
+                                   Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            WidgetAccent accent = node.State.Accent;
+            if (accent == WidgetAccent.None) return;
+
+            Vector2 center;
+            float inkHeight;
+            if (!PortGeometry.TryStateWidgetBolt(node, aspect, out center, out inkHeight)) return;
+
+            Color boltColour = accent == WidgetAccent.Recharge
+                ? ColBatteryRecharge
+                : ColBatteryDischarge;
+
+            Vector2 centerScreen = GraphToScreen(center, clipTopLeft);
+            float ink = inkHeight * _view.Zoom;
+
+            if (VgsScreenDraw.Icon(VgsIcon.Bolt, centerScreen, ink, Fade(boltColour, alpha),
+                                   clipTopLeft, clipSize))
+            {
+                return;
+            }
+
+            // The atlas is unavailable: the accent degrades to the glyph it would have carried as a
+            // letter, in the same colour — the rule every icon in this editor follows (ADR-0019 §6).
+            VgsScreenDraw.TextCentered(VgsText.BatteryAccentGlyph, centerScreen,
+                                       VgsConstants.CardButtonGlyphScale * CardTextScale,
+                                       Fade(boltColour, alpha));
+        }
+
+        /// <summary>
+        /// The timer's clock: a face, a hand fixed at twelve and a hand that sweeps clockwise towards
+        /// it (ADR-0042 §4).
+        ///
+        /// <b>The fixed hand is the trigger.</b> It marks where the moving hand will be when the
+        /// timer fires, so the reading is "how far along the circle" rather than "how much of a bar".
+        /// The two hands differ in length on purpose: at the start and at the end they point the same
+        /// way, and the only thing that tells those two moments apart is that the short hand sits
+        /// inside the long one.
+        ///
+        /// <b>Both hands come from one function</b> (<see cref="PortGeometry.StateWidgetHandTip"/>),
+        /// which is what makes "twelve o'clock" mean the same thing for the fixed hand and for the
+        /// moving one. A second angle computation is how a hand ends up pointing at the wrong hour at
+        /// exactly one moment — the moment the timer fires.
+        /// </summary>
+        private void DrawStateClock(Node node, Color colour, float aspect, Vector2 clipTopLeft,
+                                    Vector2 clipSize)
+        {
+            Vector2 center;
+            float radius;
+            if (!PortGeometry.TryStateWidgetClock(node, aspect, out center, out radius)) return;
+
+            Vector2 centerScreen = GraphToScreen(center, clipTopLeft);
+            float radiusScreen = radius * _view.Zoom;
+
+            VgsScreenDraw.Ring(centerScreen, radiusScreen, VgsConstants.WidgetRing * _view.Zoom,
+                               VgsConstants.WidgetRingSegments, clipTopLeft, clipSize, colour);
+
+            // The fixed hand: twelve o'clock, always. It is drawn first so the moving hand, when it
+            // overlaps, is drawn over it — the moving one is the reading.
+            Vector2 fixedTip = PortGeometry.StateWidgetHandTip(center, radius, aspect,
+                                                               VgsConstants.WidgetHourHandRatio, 0f);
+            VgsScreenDraw.ThickSegment(centerScreen, GraphToScreen(fixedTip, clipTopLeft),
+                                       VgsConstants.WidgetHand * _view.Zoom, clipTopLeft, clipSize,
+                                       colour);
+
+            float elapsed = node.State.GetMetric(0);
+            Vector2 movingTip = PortGeometry.StateWidgetHandTip(center, radius, aspect,
+                                                                VgsConstants.WidgetMinuteHandRatio,
+                                                                elapsed);
+            VgsScreenDraw.ThickSegment(centerScreen, GraphToScreen(movingTip, clipTopLeft),
+                                       VgsConstants.WidgetHand * _view.Zoom, clipTopLeft, clipSize,
+                                       colour);
+        }
+
 
         /// <summary>
         /// Draws the power switch in the card's <b>state column</b> (ADR-0035): a Font Awesome

@@ -284,6 +284,23 @@ namespace Vgs.Model
         public readonly BlockCategory Category;
 
         /// <summary>
+        /// The shape this block's <b>state widget</b> draws in the lower band of its card's state
+        /// column, or <see cref="StateWidgetKind.None"/> (ADR-0042).
+        ///
+        /// <b>Passed in by the caller, which reads it from the game.</b> The editor asks
+        /// <c>StateWidgetProbe.KindOf</c>, whose answer comes from the block's interfaces
+        /// (<c>IMyCargoContainer</c>, <c>IMyBatteryBlock</c>, …) rather than from its subtype name:
+        /// no real cargo container subtype contains "cargocontainer", so the category table alone
+        /// left every container without a widget (ADR-0042 §7). The overload that takes no shape
+        /// guesses it from the category, and that guess is only for a caller with no block in hand.
+        ///
+        /// <b>It says what the card would draw, not what it draws now.</b> A block that is switched
+        /// off, not read yet, or reporting "nothing to show" has its kind all the same — that is
+        /// what keeps the column's width from following the state (ADR-0035 §1, ADR-0042 §5).
+        /// </summary>
+        public readonly StateWidgetKind Widget;
+
+        /// <summary>
         /// Everything specific to an event controller — the mode description, the watch list and
         /// the identity of the event those watches belong to — or <b>null for every other block</b>
         /// (ADR-0030).
@@ -341,9 +358,35 @@ namespace Vgs.Model
         /// <summary>
         /// The full form, with the grid the block stands on (ADR-0032). The overloads above pass
         /// 0, which is what a group and an unreadable grid both mean: "no grid frame".
+        ///
+        /// <b>No shape is passed, so the category is asked — through the same overload below, with
+        /// <see cref="StateWidgetKind.None"/> as "ask the table".</b> That is the fallback for a
+        /// caller with no block in hand: the offline checks, and a modded block the game's
+        /// interfaces do not recognise. The editor passes what the game reports, because the subtype
+        /// heuristic knows no real cargo container name (ADR-0042 §7).
         /// </summary>
         public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
                     ToolbarLayout toolbar, bool isEventController, long gridEntityId)
+            : this(entityId, subtypeId, displayName, gridPosition, toolbar, isEventController,
+                   gridEntityId, StateWidgetKind.None)
+        {
+        }
+
+        /// <summary>
+        /// The form the editor uses: the widget's shape is <b>passed in</b>, because the game
+        /// answers it exactly and the subtype cannot (ADR-0042 §7). The caller is
+        /// <c>Vgs.Game.GridGraphBuilder</c>, which asks <c>StateWidgetProbe.KindOf</c>.
+        ///
+        /// <b>Both the shape and the state's size come from this one value.</b> That is why it is a
+        /// constructor argument rather than a settable field like <see cref="CanBeEnabled"/>: the
+        /// state is allocated with room for exactly the numbers this shape reads, and a shape that
+        /// arrived after construction would write into an array of the wrong length — silently, since
+        /// <c>SetWidget</c> ignores an index it has no slot for. That silent drop is what made the
+        /// missing cargo-container widget invisible in the first place.
+        /// </summary>
+        public Node(long entityId, string subtypeId, string displayName, Vector3I gridPosition,
+                    ToolbarLayout toolbar, bool isEventController, long gridEntityId,
+                    StateWidgetKind widget)
         {
             EntityId = entityId;
             Kind = NodeKind.Block;
@@ -358,14 +401,24 @@ namespace Vgs.Model
             // Classified once: a block's subtype never changes, so neither does its category.
             Category = BlockPortCatalog.ResolveCategory(subtypeId);
 
+            // The shape is given by the caller, which read it from the game (ADR-0042 §7). `None`
+            // means "the caller had no block to ask", and then the category table answers — one
+            // rule, written once, so the two paths cannot drift apart. A group never reaches this
+            // constructor: it has its own below, where the shape is None for a different reason.
+            Widget = widget != StateWidgetKind.None
+                ? widget
+                : BlockPortCatalog.Descriptor(Category).Widget;
+
             // The controller state is created only for a controller, and the reference *is* the
             // flag: there is no second field that could disagree with it (ADR-0030).
             Controller = isEventController ? new ControllerState() : null;
 
-            // Sized by the category's descriptor, so a category that publishes readings gets a
-            // state with room for them without any new wiring (ADR-0030). Today every descriptor
-            // publishes none, and the shared empty array is what everyone gets.
-            State = new BlockState(BlockPortCatalog.Descriptor(Category).MetricCount);
+            // Sized by the *resolved* shape, so the state has room for exactly the numbers the
+            // widget reads (ADR-0030, ADR-0042). A block with no widget shares the empty array.
+            // `Widget`, not the argument: when the caller passed None the table answered above, and
+            // sizing by the argument would have given a FillBar node an array of length zero — the
+            // silent drop that made the missing container widget invisible.
+            State = new BlockState(StateWidget.MetricCount(Widget));
 
             // Deliberately not `Position = Vector2.Zero`: the setter would mark the node as
             // placed, and the automatic layout would then never place it. A new node starts
@@ -407,6 +460,10 @@ namespace Vgs.Model
             // null reference is what makes IsEventController false here, without a second flag.
             Category = BlockCategory.Unknown;
             Controller = null;
+
+            // A group has no block, so there is nothing to read and nothing to draw in a state
+            // column it does not have (ADR-0042).
+            Widget = StateWidgetKind.None;
 
             // A group has no block and therefore no state of its own; it carries the default one
             // only so that every node answers the same question the same way.

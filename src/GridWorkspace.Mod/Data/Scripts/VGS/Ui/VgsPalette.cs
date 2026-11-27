@@ -147,6 +147,45 @@ namespace Vgs.Ui
         public static readonly Color ColPowerUnavailable = new Color(119, 0, 0, 255);
 
         /// <summary>
+        /// The base colour of every element of a card's <b>state widget</b> (ADR-0042): the frame and
+        /// the fill of a bar, the face ring and both hands of a clock.
+        ///
+        /// <b>One grey for all of them, because the shape already carries the reading.</b> A bar's
+        /// height says how full a container is; colouring it by value would be a second scale for the
+        /// same number, and would collide with the damage band and the power switch, which are the
+        /// only things on a card whose colour is a state. The value is the requirement's own
+        /// <c>#777777</c>.
+        ///
+        /// It happens to equal <see cref="ColPowerOff"/>. The two are separate constants on purpose:
+        /// one is a reading and the other is "this block is switched off", and a future tuning of
+        /// either must not silently repaint the other.
+        /// </summary>
+        public static readonly Color ColWidget = new Color(119, 119, 119, 255);
+
+        /// <summary>
+        /// The charge-mode bolt of a battery widget while the battery is <b>recharging</b>
+        /// (ADR-0042 §4).
+        ///
+        /// <b>The palette's existing yellow.</b> It is the same value as <see cref="ColWatch"/>, and
+        /// deliberately so: the requirement asked for the schema to have one yellow and one red, not
+        /// a third pair. The constant is separate because this one means "the charge is rising",
+        /// while the watch colour means "this line is an observation" — two meanings that happen to
+        /// share a hue, and a change to one should not silently repaint the other.
+        /// </summary>
+        public static readonly Color ColBatteryRecharge = new Color(240, 200, 90, 255);
+
+        /// <summary>
+        /// The charge-mode bolt while the battery is <b>discharging</b> (ADR-0042 §4). The palette's
+        /// existing red — the same value as <see cref="ColWatchError"/> — for the same reason
+        /// <see cref="ColBatteryRecharge"/> is the existing yellow.
+        ///
+        /// A brighter red than <see cref="ColPowerUnavailable"/>: that one means "you cannot switch
+        /// this on", which is a dead end, while this one is an active, working block that is using up
+        /// its charge. The two must not read as the same complaint.
+        /// </summary>
+        public static readonly Color ColBatteryDischarge = new Color(255, 90, 90, 255);
+
+        /// <summary>
         /// Lightens a colour towards white, keeping its alpha, and returns it.
         ///
         /// It exists for the one control whose colour carries a state rather than an affordance:

@@ -144,12 +144,12 @@ namespace Vgs.Model
     /// What the editor knows about one <see cref="BlockCategory"/> — the single place where
     /// per-category knowledge lives.
     ///
-    /// <b>Two questions, one table.</b> A category answers what fires its toolbar
-    /// (<see cref="Events"/>) and what state readings it publishes (<see cref="MetricKeys"/>).
+    /// <b>Three questions, one table.</b> A category answers what fires its toolbar
+    /// (<see cref="Events"/>), what state readings it publishes (<see cref="MetricKeys"/>) and
+    /// which shape draws those readings (<see cref="Widget"/>).
     /// They used to be two different mechanisms — a dictionary of event names and nothing at all
-    /// for state — and the second one is where the next stage's specificity (charge, fill level)
-    /// is going to land. Keeping them in one row means a new category is one line, not two
-    /// tables that drift apart.
+    /// for state — and the second one is where the specificity (charge, fill level) landed. Keeping
+    /// them in one row means a new category is one line, not three tables that drift apart.
     ///
     /// <b>Immutable.</b> A descriptor is shared by every node of its category and never changes
     /// after start-up, so it can be handed out by reference without copying.
@@ -171,22 +171,48 @@ namespace Vgs.Model
         /// Keys of the category's own state readings — charge, fill level and so on — as the
         /// positions of <c>BlockState.Metrics</c>.
         ///
-        /// <b>Empty for every category today, deliberately.</b> The readers arrive in Stage 5.2
-        /// (the plan's Этап 5.2); declaring keys before a reader exists would create a field that
-        /// is always zero and a document that promises more than the code does. The mechanism is
-        /// live, though: a node's state is allocated with exactly this many slots, so Stage 5.2
-        /// adds keys to this table rather than new wiring.
+        /// <b>The order is the contract</b>: index <c>i</c> of the array is slot <c>i</c> of the
+        /// state, and it must never be reordered once a build has shipped, for the same reason port
+        /// keys are never indices (ADR-0002).
         ///
-        /// The order is the contract: index <c>i</c> of the array is slot <c>i</c> of the state,
-        /// and it must never be reordered once a build has shipped, for the same reason port keys
-        /// are never indices (ADR-0002).
+        /// <b>Populated for the five categories that carry a state widget</b> (ADR-0042): a cargo
+        /// container publishes <c>Fill</c>, a battery <c>Charge</c>, a timer <c>Elapsed</c>, and a
+        /// refinery or an assembler <c>InputFill</c> and <c>OutputFill</c>. The number of keys must
+        /// equal <see cref="StateWidget.MetricCount"/> of the row's <see cref="Widget"/>; the
+        /// offline gate asserts it, because a mismatch would give the reader a slot that does not
+        /// exist or a shape that reads a number nobody writes.
+        ///
+        /// Every key names a <b>fraction 0..1</b>. That is what lets one bar draw any of them, and
+        /// it is clamped at <c>BlockState.SetMetric</c> so a reader may pass what the game reported.
         /// </summary>
         public readonly string[] MetricKeys;
 
+        /// <summary>
+        /// The shape this category's <b>state widget</b> draws in the lower band of the card's
+        /// state column, or <see cref="StateWidgetKind.None"/> (ADR-0042).
+        ///
+        /// <b>Data about the category, in the descriptor</b> — the rule ADR-0030 set and ADR-0031
+        /// restated: a shape that every block of a category shows identically is a table row, not a
+        /// type and not a field on the node. The node copies it once, when it is built, because a
+        /// subtype never changes.
+        ///
+        /// <b>It says what to draw, not whether to draw it.</b> Whether the widget is visible right
+        /// now is a fact about the block — switched off, not read yet, nothing to show — and lives
+        /// in <c>BlockState</c>. A category that publishes a shape still shows nothing on a block
+        /// that is switched off (ADR-0042 §5).
+        /// </summary>
+        public readonly StateWidgetKind Widget;
+
         public CategoryDescriptor(string[] events, string[] metricKeys)
+            : this(events, metricKeys, StateWidgetKind.None)
+        {
+        }
+
+        public CategoryDescriptor(string[] events, string[] metricKeys, StateWidgetKind widget)
         {
             Events = events ?? NoStrings;
             MetricKeys = metricKeys ?? NoStrings;
+            Widget = widget;
         }
 
         private static readonly string[] NoStrings = new string[0];

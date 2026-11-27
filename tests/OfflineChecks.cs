@@ -225,6 +225,9 @@ internal static class OfflineChecks
         Console.WriteLine("=== card power switch (ADR-0035) ===");
         PowerSwitch();
 
+        Console.WriteLine("=== state widget (ADR-0042) ===");
+        StateWidgetChecks();
+
         Console.WriteLine("=== block category and descriptor (ADR-0030) ===");
         BlockCategories();
 
@@ -1180,9 +1183,26 @@ internal static class OfflineChecks
                   + node.SubtypeId + ")");
             CheckClose(spanRight, rowTopLeft.X - VgsConstants.CardButtonTextGap * aspect,
                        "the text span ends one gap left of the row");
-            CheckClose(spanLeft, node.Position.X + VgsConstants.NodeWidth
-                                 * PortGeometry.CardTextPaddingRatio,
-                       "the text span starts at the card's inner padding");
+
+            // The left end is the card's inner padding, or the state column when the card has one
+            // (ADR-0035, ADR-0042). A timer has a clock widget and a switch, a conveyor has neither,
+            // so this loop covers both cases — and it was the timer's new widget that made the
+            // unconditional form of this assertion wrong.
+            Vector2 columnTopLeft, columnSize;
+            if (PortGeometry.TryStateColumnRect(node, aspect, out columnTopLeft, out columnSize))
+            {
+                CheckClose(spanLeft, columnTopLeft.X + columnSize.X
+                                     + VgsConstants.CardButtonTextGap * aspect,
+                           "the text span starts one gap right of the state column ("
+                           + node.SubtypeId + ")");
+            }
+            else
+            {
+                CheckClose(spanLeft, node.Position.X + VgsConstants.NodeWidth
+                                     * PortGeometry.CardTextPaddingRatio,
+                           "the text span starts at the card's inner padding ("
+                           + node.SubtypeId + ")");
+            }
         }
 
         // ---- the budget for the fourth button (ADR-0021) ----
@@ -5199,6 +5219,621 @@ internal static class OfflineChecks
               "the column exists before the first reading as well");
         CheckClose(onSize.X, offSize.X, "the column's width does not depend on the reading");
         CheckClose(onTopLeft.X, offTopLeft.X, "the column's position does not depend on the reading");
+    }
+
+    /// <summary>
+    /// The state widget (ADR-0042): which cards have one, where it sits, how a reading becomes a
+    /// fill, and the clock's hands.
+    ///
+    /// Every assertion here is arithmetic that a game launch would only show as "that looks wrong":
+    /// a bar whose fill grows downwards, a widget that leaves the column, a clock hand that starts
+    /// at six o'clock, or a battery bolt that takes width from the bar without the bar knowing.
+    /// </summary>
+    private static void StateWidgetChecks()
+    {
+        const float aspect = 0.5625f;   // 16:9, the shape the editor is normally used in
+
+        // ---- the shape comes from the category, and only the five categories have one ----
+        // The real subtype, not a plausible one: "LargeBlockCargoContainer" does not exist in the
+        // game, and a fixture built on an invented name is what let the classifier's gap stay
+        // invisible (ADR-0042 §7).
+        Node cargo = MakeTarget(300, "LargeBlockLargeContainer", "OnOff");
+
+        cargo.Position = new Vector2(0.30f, 0.10f);
+        Check(cargo.Category == BlockCategory.CargoContainer, "a cargo container is classified");
+        Check(cargo.Widget == StateWidgetKind.FillBar, "a cargo container's widget is the fill bar");
+        Check(PortGeometry.HasStateWidget(cargo), "a cargo container carries a state widget");
+
+        Node battery = MakeTarget(301, "LargeBlockBatteryBlock", "OnOff");
+        battery.Position = new Vector2(0.30f, 0.20f);
+        Check(battery.Widget == StateWidgetKind.Battery, "a battery's widget is the battery shape");
+
+        Node timer = MakeTarget(302, "LargeBlockTimerBlock", "Triggered");
+        timer.Position = new Vector2(0.30f, 0.30f);
+        Check(timer.Widget == StateWidgetKind.Clock, "a timer's widget is the clock");
+
+        Node refinery = MakeTarget(303, "LargeBlockRefinery", "OnOff");
+        refinery.Position = new Vector2(0.30f, 0.40f);
+        Node assembler = MakeTarget(304, "LargeBlockAssembler", "OnOff");
+        assembler.Position = new Vector2(0.30f, 0.50f);
+        Check(refinery.Widget == StateWidgetKind.Production, "a refinery's widget is the production pair");
+        Check(assembler.Widget == StateWidgetKind.Production, "an assembler's widget is the production pair");
+
+        // A conveyor has no reading at all, and a group has no block.
+        Node conveyor = MakeTarget(305, "LargeBlockConveyor", "OnOff");
+        Check(conveyor.Widget == StateWidgetKind.None, "a block whose category publishes nothing has no widget");
+        Check(!PortGeometry.HasStateWidget(conveyor), "no widget means no widget rectangle");
+        Check(!PortGeometry.HasStateWidget(null), "a null node has no widget");
+        var group = new Node("group W", "group W");
+        Check(!PortGeometry.HasStateWidget(group), "a group frame has no state widget");
+
+        Vector2 unusedTopLeft, unusedSize;
+        Check(!PortGeometry.TryStateWidgetArea(conveyor, aspect, out unusedTopLeft, out unusedSize),
+              "a card without a widget has no widget area");
+
+        // ---- the descriptor and the shape agree on how many readings there are ----
+        //
+        // The pair is what makes the reader and the geometry safe: the state is allocated with the
+        // descriptor's key count, and the shape reads exactly that many indices. A mismatch is a bar
+        // drawn from a number nobody writes.
+        foreach (BlockCategory category in Enum.GetValues(typeof(BlockCategory)))
+        {
+            CategoryDescriptor d = BlockPortCatalog.Descriptor(category);
+            Check(d.MetricKeys.Length == StateWidget.MetricCount(d.Widget),
+                  "the descriptor of " + category + " publishes exactly as many keys as its shape reads");
+        }
+
+        Check(StateWidget.MetricCount(StateWidgetKind.None) == 0, "no shape reads nothing");
+        Check(StateWidget.BarCount(StateWidgetKind.None) == 0, "no shape draws no bars");
+        Check(StateWidget.BarCount(StateWidgetKind.Clock) == 0, "a clock draws no bars");
+        Check(StateWidget.MetricCount(StateWidgetKind.Clock) == 1, "a clock still reads one number");
+        Check(StateWidget.BarCount(StateWidgetKind.Production) == 2, "the production shape draws two bars");
+        Check(!StateWidget.IsBar(StateWidgetKind.Clock), "a clock is not a bar");
+        Check(StateWidget.IsBar(StateWidgetKind.Battery), "a battery is drawn as a bar");
+
+        // ---- every shape is wired, and the gate is what says so ----
+        //
+        // The two switches in StateWidget end in `default: return 0`, so a member added to the enum
+        // and to neither switch compiles silently and draws nothing. The count-versus-keys check
+        // above cannot catch it either (0 == 0). These two loops are what catch it: a shape that is
+        // not None must read something, and a shape that is not None must be used by a category.
+        foreach (StateWidgetKind kind in Enum.GetValues(typeof(StateWidgetKind)))
+        {
+            if (kind == StateWidgetKind.None)
+            {
+                Check(StateWidget.MetricCount(kind) == 0 && StateWidget.BarCount(kind) == 0,
+                      "the None shape reads and draws nothing");
+                continue;
+            }
+
+            Check(StateWidget.MetricCount(kind) > 0,
+                  "the shape " + kind + " reads at least one number");
+            Check(StateWidget.BarCount(kind) > 0 || kind == StateWidgetKind.Clock,
+                  "the shape " + kind + " either draws a bar or is the clock");
+
+            bool used = false;
+            foreach (BlockCategory category in Enum.GetValues(typeof(BlockCategory)))
+            {
+                if (BlockPortCatalog.Descriptor(category).Widget == kind) { used = true; break; }
+            }
+            Check(used, "the shape " + kind + " is used by at least one category");
+        }
+
+        // ---- the column exists for a widget without a switch ----
+        //
+        // This is the case that separated "has a switch" from "has a column" (ADR-0042 §1): a cargo
+        // container is not a functional block, so it has no switch, and before this change its card
+        // had no column at all and its name started at the inner padding.
+        Check(!cargo.CanBeEnabled, "a cargo container has no power switch");
+        Check(PortGeometry.HasStateColumn(cargo), "a cargo container still has a state column");
+
+        Vector2 columnTopLeft, columnSize;
+        Check(PortGeometry.TryStateColumnRect(cargo, aspect, out columnTopLeft, out columnSize),
+              "the column rectangle exists for a card with a widget and no switch");
+
+        Vector2 cardTopLeft, cardSize;
+        PortGeometry.CardRect(cargo, out cardTopLeft, out cardSize);
+
+        CheckClose(columnTopLeft.Y - cardTopLeft.Y, VgsConstants.PowerSwitchPadding,
+                   "the column starts below the card's top edge by the same padding as before");
+        CheckClose(columnSize.Y, cardSize.Y - 2f * VgsConstants.PowerSwitchPadding,
+                   "the column is the card's height less the padding at both ends");
+        CheckClose(columnSize.X / aspect, columnSize.Y * (1f - VgsConstants.PowerSwitchBandRatio),
+                   "the column is as wide as the switch's band is tall");
+
+        // ---- the widget area is the lower band, less the gap under the switch ----
+        Vector2 areaTopLeft, areaSize;
+        Check(PortGeometry.TryStateWidgetArea(cargo, aspect, out areaTopLeft, out areaSize),
+              "the widget area exists for a cargo container");
+
+        // The gap between the switch and the widget (ADR-0042 §3a): the two used to meet exactly, and
+        // the switch's ink — which fills its whole band — lay on the widget's top edge.
+        CheckClose(VgsConstants.WidgetTopGapPixels, 2f,
+                   "the gap under the switch is the same two conditional pixels as the column's padding");
+        Check(areaTopLeft.Y > columnTopLeft.Y + columnSize.Y * VgsConstants.PowerSwitchBandRatio,
+              "the widget does not touch the switch's band — there is clear space between them");
+        CheckClose(areaTopLeft.Y - columnTopLeft.Y,
+                   columnSize.Y * VgsConstants.PowerSwitchBandRatio + VgsConstants.WidgetTopGap,
+                   "the widget starts one gap below where the switch's band ends");
+        CheckClose(areaTopLeft.Y + areaSize.Y, columnTopLeft.Y + columnSize.Y,
+                   "the widget area still ends at the column's bottom edge — the gap is taken from the top");
+
+        // The area is no longer an exact square: it lost the gap in height and kept the column's
+        // width. That is deliberate — the switch keeps its size (ADR-0035) and the reading gives up
+        // the difference — and the shapes are inscribed in the rectangle rather than stretched.
+        CheckClose(areaSize.X / aspect, areaSize.Y + VgsConstants.WidgetTopGap,
+                   "the widget area is as tall as it is wide, less the gap under the switch");
+        Check(areaSize.X / aspect > areaSize.Y,
+              "the widget area is slightly wider than it is tall, because of that gap");
+
+        // The band is a share of the card's own inner height, so it follows a taller card. No card
+        // that carries a widget is taller today — the extra line belongs to an event controller, and
+        // a controller publishes no reading — so the rule is asserted through the formula rather
+        // than through a card that does not exist.
+        CheckClose(areaSize.Y,
+                   (PortGeometry.CardHeight(cargo) - 2f * VgsConstants.PowerSwitchPadding)
+                   * (1f - VgsConstants.PowerSwitchBandRatio) - VgsConstants.WidgetTopGap,
+                   "the widget's height is the lower band of the card's inner height, less the gap");
+
+        // ---- when the widget is drawn at all: six combinations, and one of them is a trap ----
+        //
+        // This is the requirement's own rule ("если блок выключен, виджет не отображается вовсе"),
+        // and it used to live only in the draw path, where no offline check can reach it. It is
+        // StateWidget.ShowsWidget now, so it is pinned here — including the trap that made the rule
+        // worth a function: a block WITHOUT a switch reports Power == Unknown forever, and that is
+        // not "off". A cargo container's fill must stay visible.
+        Check(StateWidget.ShowsWidget(StateWidgetKind.FillBar, false, BlockPower.Unknown, true),
+              "a block with no switch shows its widget even though its power is unknown");
+        Check(!StateWidget.ShowsWidget(StateWidgetKind.None, false, BlockPower.On, true),
+              "a category with no shape draws nothing, whatever its power says");
+        Check(!StateWidget.ShowsWidget(StateWidgetKind.FillBar, false, BlockPower.On, false),
+              "a block with nothing to show draws nothing");
+
+        Check(StateWidget.ShowsWidget(StateWidgetKind.Battery, true, BlockPower.On, true),
+              "a switched-on block with a reading shows its widget");
+        Check(!StateWidget.ShowsWidget(StateWidgetKind.Battery, true, BlockPower.Off, true),
+              "a switched-off block shows no widget");
+        Check(!StateWidget.ShowsWidget(StateWidgetKind.Battery, true, BlockPower.Unavailable, true),
+              "a block too damaged to run shows no widget either — the switch's red state");
+        Check(!StateWidget.ShowsWidget(StateWidgetKind.Battery, true, BlockPower.Unknown, true),
+              "a block nobody has read yet shows no widget");
+
+        // The widget's own kind decides whether there is a shape, and the node's kind decides
+        // whether it has a column — two different questions since ADR-0042 §1.
+        Check(!PortGeometry.HasStateWidget(group), "a group has no shape to draw");
+
+        // ---- the fill bar: the padding the requirement named, the inset, and the direction ----
+        CheckClose(VgsConstants.WidgetPaddingFillWidth, 0.15f,
+                   "a cargo container's bar gives up 15% of the area's width, both sides together");
+        CheckClose(VgsConstants.WidgetPaddingFillHeight, 0.05f,
+                   "and 5% of its height");
+        CheckClose(VgsConstants.WidgetInsetPixels, 2f,
+                   "the fill sits two conditional pixels inside the frame");
+
+        // Other shapes are padded less, because they are already split inside themselves — but the
+        // requirement names a floor and a ceiling for them (3..5%), and "less than the container"
+        // alone would let both drift to 2% without a failure. The band is asserted, not just the
+        // ordering.
+        Check(VgsConstants.WidgetPaddingWidth < VgsConstants.WidgetPaddingFillWidth,
+              "a split widget is padded less than the plain bar");
+        Check(VgsConstants.WidgetPaddingClock < VgsConstants.WidgetPaddingWidth,
+              "the clock is padded least of all, because a circle already leaves its corners empty");
+        Check(VgsConstants.WidgetPaddingWidth >= 0.03f && VgsConstants.WidgetPaddingWidth <= 0.05f,
+              "the split widgets' width padding is inside the 3..5% the requirement names");
+        Check(VgsConstants.WidgetPaddingHeight >= 0.03f && VgsConstants.WidgetPaddingHeight <= 0.05f,
+              "the split widgets' height padding is inside the same 3..5%");
+        Check(VgsConstants.WidgetPaddingClock >= 0.03f && VgsConstants.WidgetPaddingClock <= 0.05f,
+              "the clock's padding is inside the same 3..5%");
+
+        float padX, padY;
+        PortGeometry.StateWidgetPadding(StateWidgetKind.FillBar, out padX, out padY);
+        CheckClose(padX, 0.15f, "the plain bar's width padding is the requirement's 15%");
+        CheckClose(padY, 0.05f, "the plain bar's height padding is the requirement's 5%");
+
+        PortGeometry.StateWidgetPadding(StateWidgetKind.Clock, out padX, out padY);
+        CheckClose(padX, padY, "the clock is padded the same on both axes, so its face stays round");
+
+        Vector2 frameTopLeft, frameSize, fillTopLeft, fillSize;
+        Check(PortGeometry.TryStateWidgetBar(cargo, aspect, 0, out frameTopLeft, out frameSize,
+                                             out fillTopLeft, out fillSize),
+              "the plain bar exists at index 0");
+        Check(!PortGeometry.TryStateWidgetBar(cargo, aspect, 1, out frameTopLeft, out frameSize,
+                                              out fillTopLeft, out fillSize),
+              "a one-bar widget has no second bar");
+
+        Check(PortGeometry.TryStateWidgetBar(cargo, aspect, 0, out frameTopLeft, out frameSize,
+                                             out fillTopLeft, out fillSize),
+              "the bar rectangle is available again");
+        CheckClose(frameTopLeft.X - areaTopLeft.X, areaSize.X * 0.15f * 0.5f,
+                   "the bar's frame keeps half of the width padding on its leading side");
+        CheckClose(frameSize.X, areaSize.X * 0.85f, "the frame is the area less the width padding");
+        CheckClose(frameSize.Y, areaSize.Y * 0.95f, "the frame is the area less the height padding");
+        Check(frameTopLeft.X >= areaTopLeft.X - 1e-6f, "the frame never starts left of its area");
+        Check(frameTopLeft.X + frameSize.X <= areaTopLeft.X + areaSize.X + 1e-6f,
+              "the frame never leaves its area on the trailing side");
+
+        // The inset is the distance between the two rectangles the requirement asked for.
+        CheckClose(fillTopLeft.X - frameTopLeft.X, VgsConstants.WidgetInset * aspect,
+                   "the fill is inset from the frame's leading edge by the conditional pixels");
+        CheckClose(frameTopLeft.X + frameSize.X - (fillTopLeft.X + fillSize.X),
+                   VgsConstants.WidgetInset * aspect,
+                   "and by the same amount on the trailing edge");
+        CheckClose(frameTopLeft.Y + frameSize.Y - (fillTopLeft.Y + fillSize.Y),
+                   VgsConstants.WidgetInset,
+                   "and from the frame's bottom edge");
+
+        // ---- the fill grows upwards, and its height is the reading ----
+        CheckClose(fillSize.Y, 0f, "an unread widget has an empty fill");
+        CheckClose(fillTopLeft.Y + fillSize.Y, frameTopLeft.Y + frameSize.Y - VgsConstants.WidgetInset,
+                   "an empty fill sits on the frame's inner bottom edge");
+
+        float innerHeight = frameSize.Y - 2f * VgsConstants.WidgetInset;
+        float[] readings = { 0.25f, 0.5f, 1f };
+        for (int i = 0; i < readings.Length; i++)
+        {
+            cargo.State.SetMetric(0, readings[i]);
+            Check(PortGeometry.TryStateWidgetBar(cargo, aspect, 0, out frameTopLeft, out frameSize,
+                                                 out fillTopLeft, out fillSize),
+                  "the bar rectangle is available at reading " + readings[i]);
+            CheckClose(fillSize.Y, innerHeight * readings[i],
+                       "the fill's height is the reading at " + readings[i]);
+            CheckClose(fillTopLeft.Y + fillSize.Y,
+                       frameTopLeft.Y + frameSize.Y - VgsConstants.WidgetInset,
+                       "the fill stays anchored to the bottom edge at " + readings[i]);
+        }
+
+        // A full bar is the frame less the inset on every side — and still a different picture from
+        // a solid block, because the frame's border is visible around it.
+        Check(fillTopLeft.Y > frameTopLeft.Y,
+              "a full fill does not reach the frame's top edge — the inset is what separates them");
+
+        // Out-of-range readings are clamped by the state, not by the geometry.
+        cargo.State.SetMetric(0, 4f);
+        CheckClose(cargo.State.GetMetric(0), 1f, "a reading above one is clamped at the write");
+        cargo.State.SetMetric(0, -3f);
+        CheckClose(cargo.State.GetMetric(0), 0f, "a negative reading is clamped at the write");
+
+        // ---- the production pair: two narrow bars, input on the leading side ----
+        refinery.State.SetMetric(0, 0.30f);
+        refinery.State.SetMetric(1, 0.80f);
+
+        Vector2 inTopLeft, inSize, inFillTopLeft, inFillSize;
+        Vector2 outTopLeft, outSize, outFillTopLeft, outFillSize;
+        Check(PortGeometry.TryStateWidgetBar(refinery, aspect, 0, out inTopLeft, out inSize,
+                                             out inFillTopLeft, out inFillSize),
+              "the production widget has its first bar");
+        Check(PortGeometry.TryStateWidgetBar(refinery, aspect, 1, out outTopLeft, out outSize,
+                                             out outFillTopLeft, out outFillSize),
+              "the production widget has its second bar");
+
+        // A third bar does not exist, and the call that says so must not be given the rectangles
+        // the checks below read: a refused call zeroes its out parameters.
+        Vector2 noBarTopLeft, noBarSize, noBarFillTopLeft, noBarFillSize;
+        Check(!PortGeometry.TryStateWidgetBar(refinery, aspect, 2, out noBarTopLeft, out noBarSize,
+                                              out noBarFillTopLeft, out noBarFillSize),
+              "and no third one");
+
+        Check(inTopLeft.X < outTopLeft.X, "the input bar is the leading one, as the requirement asks");
+        CheckClose(inSize.X, outSize.X, "the two bars are the same width");
+        CheckClose(inTopLeft.Y, outTopLeft.Y, "the two bars share a top edge");
+        CheckClose(inSize.Y, outSize.Y, "and a height");
+        CheckClose(outTopLeft.X - (inTopLeft.X + inSize.X), VgsConstants.WidgetBarGap * aspect,
+                   "they are separated by the widget's own gap, not by a share of the width");
+
+        // Two bars are narrower than one would be: the pair pays for the gap out of the same area.
+        // The comparison is against the refinery's *own* padded area — borrowing the container's
+        // rectangle was the first version, and it would silently compare two different widgets the
+        // day a category gets a taller card.
+        Vector2 refineryAreaTopLeft, refineryAreaSize;
+        Check(PortGeometry.TryStateWidgetArea(refinery, aspect, out refineryAreaTopLeft,
+                                              out refineryAreaSize),
+              "the refinery has a widget area of its own");
+        Check(inSize.X < refineryAreaSize.X * (1f - VgsConstants.WidgetPaddingWidth),
+              "each of two bars is narrower than the widget's own padded area");
+
+        // ---- the battery: the bar yields width to the bolt ----
+        battery.State.SetMetric(0, 0.5f);
+
+        Vector2 batteryFrameTopLeft, batteryFrameSize, batteryFillTopLeft, batteryFillSize;
+        Check(PortGeometry.TryStateWidgetBar(battery, aspect, 0, out batteryFrameTopLeft,
+                                             out batteryFrameSize, out batteryFillTopLeft,
+                                             out batteryFillSize),
+              "the battery draws one bar");
+        Check(batteryFrameSize.X < areaSize.X * (1f - VgsConstants.WidgetPaddingWidth),
+              "the battery's bar is narrower than its padded area, because the bolt takes a column");
+
+        // The column is reserved even when the accent is absent: the mode is a fact about the block,
+        // not about its charge, so switching `Auto` -> `Recharge` must not move the bar's edge.
+        float barWithAccent = batteryFrameSize.X;
+        battery.State.Accent = WidgetAccent.None;
+        Vector2 noAccentTopLeft, noAccentSize, noAccentFillTopLeft, noAccentFillSize;
+        Check(PortGeometry.TryStateWidgetBar(battery, aspect, 0, out noAccentTopLeft,
+                                             out noAccentSize, out noAccentFillTopLeft,
+                                             out noAccentFillSize),
+              "the battery's bar exists with no accent as well");
+        CheckClose(noAccentSize.X, barWithAccent,
+                   "the bar keeps its width when the mode draws no bolt");
+
+        Vector2 boltCenter;
+        float boltInk;
+        Check(PortGeometry.TryStateWidgetBolt(battery, aspect, out boltCenter, out boltInk),
+              "the battery has a bolt rectangle");
+        // The bolt's own area, re-derived for the battery rather than borrowed from the cargo
+        // container: the two cards are the same shape today, and a check that depends on that
+        // would start comparing two different widgets the day one of them grows.
+        Vector2 batteryAreaTopLeft, batteryAreaSize;
+        Check(PortGeometry.TryStateWidgetArea(battery, aspect, out batteryAreaTopLeft,
+                                              out batteryAreaSize),
+              "the battery has a widget area of its own");
+        Check(boltCenter.X > batteryFrameTopLeft.X + batteryFrameSize.X,
+              "the bolt sits beside the bar, not on top of it");
+        Check(boltCenter.X < batteryAreaTopLeft.X + batteryAreaSize.X,
+              "the bolt stays inside the widget's area");
+
+        // The bolt is sized by the icon, not by the area: its ink width is the column it was given,
+        // and its height follows from the atlas's own aspect. That is what makes a redrawn bolt
+        // change nothing else — the same rule the power switch follows (ADR-0035 §1).
+        //
+        // The height is a *vertical* length while the column is a horizontal one, so the check goes
+        // through the aspect: `inkHeight × aspect × inkAspect` is the column in horizontal units.
+        float paddedWidth = batteryAreaSize.X * (1f - VgsConstants.WidgetPaddingWidth);
+        CheckClose(boltInk * aspect * PortGeometry.BoltInkAspect,
+                   paddedWidth * VgsConstants.WidgetBoltShare,
+                   "the bolt's ink width is exactly the column the bar left for it");
+        Check(PortGeometry.BoltInkAspect > 0f, "the bolt's ink aspect is known");
+        Check(PortGeometry.BoltInkAspect < 1f,
+              "the bolt is taller than it is wide, as a lightning bolt is");
+
+        // No bolt rectangle on a widget that is not a battery.
+        Check(!PortGeometry.TryStateWidgetBolt(cargo, aspect, out boltCenter, out boltInk),
+              "a cargo container has no charge-mode bolt");
+        Check(!PortGeometry.TryStateWidgetBolt(timer, aspect, out boltCenter, out boltInk),
+              "a timer has no charge-mode bolt");
+
+        // ---- the clock: twelve o'clock is zero, and the hand comes back to it ----
+        Vector2 clockCenter;
+        float clockRadius;
+        Check(PortGeometry.TryStateWidgetClock(timer, aspect, out clockCenter, out clockRadius),
+              "the timer has a clock face");
+        Check(clockRadius > 0f, "the clock face has a radius");
+        Check(!PortGeometry.TryStateWidgetClock(cargo, aspect, out clockCenter, out clockRadius),
+              "a cargo container has no clock");
+
+        Check(PortGeometry.TryStateWidgetClock(timer, aspect, out clockCenter, out clockRadius),
+              "the clock face is available again");
+
+        // The face is inscribed in the padded area: its diameter is the smaller side, both measured
+        // in vertical units, so the face can never be an ellipse. The area is the timer's own, not
+        // the cargo container's: the two cards are the same shape today, and a check that leans on
+        // that would compare two different widgets the day one of them grows.
+        Vector2 clockAreaTopLeft, clockAreaSize;
+        Check(PortGeometry.TryStateWidgetArea(timer, aspect, out clockAreaTopLeft, out clockAreaSize),
+              "the timer has a widget area of its own");
+        CheckClose(clockRadius * 2f, clockAreaSize.Y * (1f - VgsConstants.WidgetPaddingClock),
+                   "the face's diameter is the padded area's height");
+
+        Vector2 tip;
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect, 1f, 0f);
+        CheckClose(tip.X, clockCenter.X, "a hand at zero points straight up");
+        Check(tip.Y < clockCenter.Y, "and it points above the centre, because screen Y grows down");
+
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect, 1f, 0.25f);
+        Check(tip.X > clockCenter.X, "a quarter of the way round is to the right — clockwise");
+        CheckClose(tip.Y, clockCenter.Y, "and level with the centre");
+
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect, 1f, 0.5f);
+        Check(tip.Y > clockCenter.Y, "half way round is below the centre");
+
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect, 1f, 1f);
+        CheckClose(tip.X, clockCenter.X, "a full turn comes back to twelve, which is the trigger");
+        CheckClose(tip.Y, clockCenter.Y - clockRadius, "and it is the same point as zero");
+
+        // The hands differ in length, so "just started" and "about to fire" are different pictures.
+        Check(VgsConstants.WidgetHourHandRatio > VgsConstants.WidgetMinuteHandRatio,
+              "the fixed hand is longer than the moving one, so the two never merge");
+
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect,
+                                              VgsConstants.WidgetMinuteHandRatio, 0f);
+        CheckClose(tip.Y, clockCenter.Y - clockRadius * VgsConstants.WidgetMinuteHandRatio,
+                   "the moving hand's length is its own ratio of the radius");
+
+        // The circle is round on screen: the horizontal reach is the vertical one times the aspect.
+        tip = PortGeometry.StateWidgetHandTip(clockCenter, clockRadius, aspect, 1f, 0.25f);
+        CheckClose((tip.X - clockCenter.X) / aspect, clockRadius,
+                   "the hand's reach is a radius on screen in both axes, not an ellipse");
+
+        // ---- the state carries one reading, and writes it whole ----
+        var state = new BlockState(2);
+        Check(!state.WidgetActive, "a widget starts with nothing to show");
+        Check(state.Accent == WidgetAccent.None, "and with no accent");
+
+        state.SetWidget(new WidgetReading(true, 0.4f, 0.7f, WidgetAccent.Discharge));
+        Check(state.WidgetActive, "a reading makes the widget active");
+        CheckClose(state.GetMetric(0), 0.4f, "the first number lands in slot 0");
+        CheckClose(state.GetMetric(1), 0.7f, "the second number lands in slot 1");
+        Check(state.Accent == WidgetAccent.Discharge, "the accent is carried with the reading");
+
+        state.SetWidget(WidgetReading.None);
+        Check(!state.WidgetActive, "an inactive reading clears the widget");
+        Check(state.Accent == WidgetAccent.None, "and its accent");
+
+        // A reading with more numbers than the state has slots does not throw: the extra one is
+        // dropped, which is the same rule the metric array itself follows.
+        var narrow = new BlockState(1);
+        narrow.SetWidget(new WidgetReading(true, 0.2f, 0.9f, WidgetAccent.Recharge));
+        CheckClose(narrow.GetMetric(0), 0.2f, "a narrow state takes the number it has a slot for");
+        Check(narrow.Accent == WidgetAccent.Recharge, "and still carries the accent");
+
+        // ---- the graph writes a widget only where a card can draw one ----
+        var graph = new GridGraph(9);
+        graph.AddNode(cargo);
+        Check(graph.ApplyWidget(cargo.EntityId, new WidgetReading(true, 0.6f, 0f, WidgetAccent.None)),
+              "the widget is written to a node that has one");
+        CheckClose(cargo.State.GetMetric(0), 0.6f, "and the node's state holds it");
+
+        Node plain = MakeTarget(311, "LargeBlockConveyor", "OnOff");
+        graph.AddNode(plain);
+        Check(!graph.ApplyWidget(plain.EntityId, new WidgetReading(true, 0.6f, 0f, WidgetAccent.None)),
+              "a block with no widget is not written to");
+        CheckClose(plain.State.GetMetric(0), 0f, "and its state is untouched");
+
+        Check(!graph.ApplyWidget(999999, new WidgetReading(true, 0.6f, 0f, WidgetAccent.None)),
+              "a destroyed block's widget is not written");
+
+        // ---- the column's width is a property of the block, not of the reading ----
+        //
+        // The switch's icon and the widget's band give the same number today (1.5 × 0.4 = 0.6), so
+        // a card with both has one width either way; a card with only the widget gets the band's.
+        CheckClose(PortGeometry.StateColumnWidth(cargo) / PortGeometry.PowerSwitchContentHeight(cargo),
+                   1f - VgsConstants.PowerSwitchBandRatio,
+                   "a widget-only column is as wide as its band is tall");
+
+        var controller = new Node(310, "EventControllerLarge", "controller", Vector3I.Zero,
+                                  SensorToolbar(), true);
+        BlockPortCatalog.FillEvents(controller);
+        controller.CanBeEnabled = true;
+        controller.Position = new Vector2(0.30f, 0.60f);
+        CheckClose(PortGeometry.StateColumnWidth(controller),
+                   PortGeometry.PowerSwitchInkWidth(controller),
+                   "a card with a switch but no widget is as wide as its icon");
+
+        // The same reading twice gives the same column, which is what keeps a card from twitching as
+        // its container fills.
+        float before = PortGeometry.StateColumnWidth(cargo);
+        cargo.State.SetMetric(0, 1f);
+        CheckClose(PortGeometry.StateColumnWidth(cargo), before,
+                   "the column's width does not depend on the reading");
+
+        // ---- the name clears the column, switch or no switch ----
+        float spanLeft, spanRight;
+        Check(PortGeometry.TryCardTextSpan(cargo, aspect, out spanLeft, out spanRight),
+              "a cargo container's card has a text span");
+        CheckClose(spanLeft, columnTopLeft.X + columnSize.X + VgsConstants.CardButtonTextGap * aspect,
+                   "its name starts to the right of the widget's column, not under it");
+
+        Node noColumn = MakeTarget(312, "LargeBlockConveyor", "OnOff");
+        noColumn.Position = cargo.Position;
+        float plainLeft, plainRight;
+        Check(PortGeometry.TryCardTextSpan(noColumn, aspect, out plainLeft, out plainRight),
+              "a card without a column still has a text span");
+        Check(spanLeft > plainLeft,
+              "the widget pushes the name right, the same way the switch does");
+
+        // ---- the names the game actually uses ----
+        //
+        // The first version of the widget took its shape from the category, and the category came
+        // from a substring match on the subtype that looked for "cargocontainer". Not one cargo
+        // container in the shipped catalogue is called that: the game calls them
+        // LargeBlockLargeContainer, SmallBlockSmallContainer and so on, so every container fell
+        // through to Unknown and drew no widget at all (ADR-0042 §7). The check below is the
+        // regression: these are the real subtype ids the catalogue carries under
+        // MyObjectBuilder_CargoContainer, and each one must reach a category that publishes a bar.
+        //
+        // The ten decorative storage blocks — three lockers, a bookshelf, two weapon racks, two
+        // cargo terminals, a lab cabinet and a desk — are in the catalogue under the same
+        // MyObjectBuilder_CargoContainer and hold items in the game, but their names do not say
+        // "container" either. They are covered by the game's interface (IMyCargoContainer), not by
+        // this table, which is exactly why the shape is asked of the game and the table is only the
+        // fallback. Listing them here would be asserting the rule that failed.
+        string[] cargoSubtypes =
+        {
+            "LargeBlockBulkContainerA", "LargeBlockBulkContainerB", "LargeBlockBulkContainerC",
+            "LargeBlockLargeContainer", "LargeBlockLargeIndustrialContainer",
+            "LargeBlockSmallContainer", "SmallBlockLargeContainer", "SmallBlockMediumContainer",
+            "SmallBlockModularContainer", "SmallBlockSmallContainer",
+        };
+
+        for (int i = 0; i < cargoSubtypes.Length; i++)
+        {
+            BlockCategory category = BlockPortCatalog.ResolveCategory(cargoSubtypes[i]);
+            Check(category == BlockCategory.CargoContainer,
+                  "the game's own name for a cargo container is classified as one: " + cargoSubtypes[i]);
+            Check(BlockPortCatalog.Descriptor(category).Widget == StateWidgetKind.FillBar,
+                  "and it publishes a fill bar: " + cargoSubtypes[i]);
+        }
+
+        // The other four shapes, on the names the catalogue uses for them. These matched before and
+        // must keep matching — a change to the classifier must not trade one family for another.
+        Check(BlockPortCatalog.ResolveCategory("LargeBlockBatteryBlock") == BlockCategory.Battery,
+              "the game's own name for a battery is classified as one");
+        Check(BlockPortCatalog.ResolveCategory("TimerBlock") == BlockCategory.Timer,
+              "the game's own name for a timer is classified as one");
+        Check(BlockPortCatalog.ResolveCategory("LargeRefinery") == BlockCategory.Refinery,
+              "the game's own name for a refinery is classified as one");
+        Check(BlockPortCatalog.ResolveCategory("LargeAssembler") == BlockCategory.Assembler,
+              "the game's own name for an assembler is classified as one");
+
+        // ---- the shape the caller passes wins over the category ----
+        //
+        // This is the second half of the defect. `KindOf` answers from the block's interfaces, and
+        // its answer reaches the node through the constructor because the state is sized by it. A
+        // shape that arrived after construction would write into an array with no room, and
+        // `SetWidget` drops an index it has no slot for — silently, which is how the missing
+        // container widget stayed invisible.
+        var byInterface = new Node(400, "SomeModdedStorageBlock", "modded", Vector3I.Zero,
+                                   ToolbarLayout.None, false, 0, StateWidgetKind.FillBar);
+        Check(byInterface.Widget == StateWidgetKind.FillBar,
+              "a shape the caller passes is the node's shape, whatever its subtype says");
+        Check(byInterface.State.Metrics.Length == 1,
+              "and the state has room for the one number that shape reads");
+        Check(byInterface.State.Power == BlockPower.Unknown,
+              "a block whose subtype is unknown has no switch, so no switch can hide its widget");
+
+        var clockByInterface = new Node(401, "SomeModdedClock", "modded", Vector3I.Zero,
+                                        ToolbarLayout.None, false, 0, StateWidgetKind.Clock);
+        Check(clockByInterface.State.Metrics.Length == 1,
+              "a clock passed in gets a state sized for its one number");
+
+        var productionByInterface = new Node(402, "SomeModdedProduction", "modded", Vector3I.Zero,
+                                             ToolbarLayout.None, false, 0, StateWidgetKind.Production);
+        Check(productionByInterface.State.Metrics.Length == 2,
+              "a production block passed in gets a state sized for its two numbers");
+
+        // The two numbers are written where the geometry reads them: index 0 is the input and index
+        // 1 the output, which is the order ADR-0042 §3 records. A production node built from the
+        // interface must accept both, or the second bar would draw at zero forever.
+        //
+        // Guarded by a length test rather than indexed blind: a defect that leaves this node with no
+        // slots must read as a failed assertion, not as an IndexOutOfRange that aborts the rest of
+        // the section. The first version indexed directly, and a substitution that discarded the
+        // passed-in shape crashed the gate instead of counting its failures.
+        productionByInterface.State.SetWidget(new WidgetReading(true, 0.25f, 0.75f,
+                                                                WidgetAccent.None));
+        Check(productionByInterface.State.Metrics.Length == 2, "the production reading has two slots");
+        if (productionByInterface.State.Metrics.Length == 2)
+        {
+            CheckClose(productionByInterface.State.Metrics[0], 0.25f, "the input lands in slot 0");
+            CheckClose(productionByInterface.State.Metrics[1], 0.75f, "the output lands in slot 1");
+        }
+
+        // A block the game does not recognise as one of the five keeps no widget, and the column is
+        // not reserved for one.
+        var none = new Node(403, "LargeBlockConveyor", "conveyor", Vector3I.Zero,
+                            ToolbarLayout.None, false, 0, StateWidgetKind.None);
+        Check(none.Widget == StateWidgetKind.None, "a block that is none of the five has no widget");
+        Check(none.State.Metrics.Length == 0, "and no state array to write into");
+        Check(!PortGeometry.HasStateWidget(none),
+              "and its card reserves no band for a widget it will never draw");
+
+        // `None` passed in means "the caller had no block to ask", not "no widget": the category
+        // table answers, and the state is sized by that answer. Both halves matter — a node whose
+        // shape was resolved from the table but whose array was sized from the argument would hold
+        // a fill bar and no slot to write its reading into.
+        var noneFromTable = new Node(404, "LargeBlockLargeContainer", "cargo", Vector3I.Zero,
+                                     ToolbarLayout.None, false, 0, StateWidgetKind.None);
+        Check(noneFromTable.Widget == StateWidgetKind.FillBar,
+              "None means \"ask the table\", and the table knows this subtype");
+        Check(noneFromTable.State.Metrics.Length == 1,
+              "and the state is sized by the resolved shape, not by the argument");
+
+        // The seven-argument constructor is the same rule with the argument defaulted, so the two
+        // cannot drift apart.
+        var byDefault = new Node(405, "LargeBlockLargeContainer", "cargo", Vector3I.Zero,
+                                 ToolbarLayout.None, false, 0);
+        Check(byDefault.Widget == noneFromTable.Widget,
+              "the shorter constructor resolves the same shape as an explicit None");
+        Check(byDefault.State.Metrics.Length == noneFromTable.State.Metrics.Length,
+              "and sizes the state the same way");
     }
 
     private static void BlockStateSnapshot()

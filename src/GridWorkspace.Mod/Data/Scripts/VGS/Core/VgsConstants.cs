@@ -631,6 +631,197 @@ namespace Vgs.Core
         /// <summary><see cref="PowerSwitchHitPaddingPixels"/> in the layout's vertical units.</summary>
         public const float PowerSwitchHitPadding = PowerSwitchHitPaddingPixels / ReferenceHeightPixels;
 
+        // ---- The state widget (ADR-0042) ----
+        //
+        // The widget is what the LOWER band of the state column shows: a reading of the block —
+        // how full a container is, how charged a battery is, how far a timer has counted. It is
+        // geometry rather than an icon, so its numbers are the whole of its look:
+        //
+        //   * the widget AREA is the lower band of the column (the card's height less the column's
+        //     padding, times 1 − PowerSwitchBandRatio) LESS WidgetTopGapPixels, so the switch and the
+        //     widget do not touch. The column's width is 0.6 × the inner height and the band's height
+        //     was 0.6 × the same, so the area used to be a square; it is now one gap wider than it is
+        //     tall, and the shapes are inscribed in it rather than stretched (ADR-0042 §3a);
+        //   * inside the area sits the widget's FRAME — one rectangle per bar, one circle for the
+        //     clock — inset by the padding below, which differs per shape because a bar and a face
+        //     want different margins;
+        //   * inside a bar's frame sits the FILL, inset by WidgetInsetPixels, and its height is the
+        //     reading: it grows from the bottom edge upwards.
+        //
+        // The paddings are shares of the area, *both sides together*: 0.15 means the frame loses 15%
+        // of the area's width, 7.5% at each side. They are named as totals because that is how the
+        // requirement stated them.
+
+        /// <summary>
+        /// Share of the widget area's width that a cargo container's bar gives up as padding, both
+        /// sides together (ADR-0042 §3). The value the requirement named for the plainest widget.
+        ///
+        /// At 1080p the area is about 21 × 21 px, so the bar's frame comes out 17.8 px wide — wide
+        /// enough for the fill inside it to read as a column rather than as a line.
+        /// </summary>
+        public const float WidgetPaddingFillWidth = 0.15f;
+
+        /// <summary>
+        /// Share of the widget area's height that a cargo container's bar gives up as padding, both
+        /// sides together (ADR-0042 §3). The requirement's second number, and the reason the bar is
+        /// taller than it is wide: a vertical bar needs the height more than it needs the width.
+        /// </summary>
+        public const float WidgetPaddingFillHeight = 0.05f;
+
+        /// <summary>
+        /// Share of the area's width given up by every widget that is not the plain fill bar —
+        /// battery, refinery, assembler (ADR-0042 §3).
+        ///
+        /// Smaller than the cargo container's 15% because these shapes are already split: a battery
+        /// reserves a column for its bolt, and a production block draws two bars side by side.
+        /// Padding them by 15% would leave each of two bars about three pixels of fill.
+        /// </summary>
+        public const float WidgetPaddingWidth = 0.04f;
+
+        /// <summary>Share of the area's height given up by the non-plain widgets, both sides together.</summary>
+        public const float WidgetPaddingHeight = 0.04f;
+
+        /// <summary>
+        /// Share of the area's width and height given up by the clock, both sides together.
+        ///
+        /// The smallest of the three, because a clock is a circle and a circle inscribed in a square
+        /// already leaves its corners empty: the same padding that suits a bar would shrink the
+        /// hands' reach by a fifth, and the hands are the whole reading.
+        /// </summary>
+        public const float WidgetPaddingClock = 0.03f;
+
+        /// <summary>
+        /// Distance from a bar's frame to its fill, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>: the "two conditional pixels" the requirement asks
+        /// for between the outer rectangle and the inner one.
+        ///
+        /// <b>It is the distance between the two rectangles, not the clear space beside the
+        /// border.</b> The frame is drawn as a one-pixel border on its outer edge, so the visible
+        /// gap is this value less that pixel — which is what "the distance between the outer and the
+        /// inner rectangle" means, and what keeps the number checkable: the fill's edges are exactly
+        /// two pixels inside the frame's edges.
+        /// </summary>
+        public const float WidgetInsetPixels = 2f;
+
+        /// <summary><see cref="WidgetInsetPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetInset = WidgetInsetPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Clear space between the power switch and the state widget, in pixels at
+        /// <see cref="ReferenceHeightPixels"/> (ADR-0042 §3a).
+        ///
+        /// <b>The switch used to lie on the widget.</b> The two bands met exactly at 40/60 of the
+        /// column's inner height, and a wide icon whose ink fills its band therefore touched the
+        /// widget's top edge — the reading looked like part of the control. This gap is taken out of
+        /// the widget's band, not out of the switch's: the switch is a control the player clicks and
+        /// its size is fixed by ADR-0035, while the widget is a reading and can be a little shorter.
+        ///
+        /// Two conditional pixels — the same value as <see cref="PowerSwitchPaddingPixels"/> and
+        /// <see cref="WidgetInsetPixels"/>. One gap length for the whole column, so the strip reads
+        /// as one grid rather than as three different margins.
+        /// </summary>
+        public const float WidgetTopGapPixels = 2f;
+
+        /// <summary><see cref="WidgetTopGapPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetTopGap = WidgetTopGapPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Gap between the two bars of the production widget, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// Two pixels, the same as the inset: the pair has to read as two readings of one block, not
+        /// as one bar with a seam, and not as two unrelated columns. At the sizes involved a wider
+        /// gap would eat the fill of both bars.
+        /// </summary>
+        public const float WidgetBarGapPixels = 2f;
+
+        /// <summary><see cref="WidgetBarGapPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetBarGap = WidgetBarGapPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Share of a battery widget's width given to the column that holds the charge-mode bolt
+        /// (ADR-0042 §4).
+        ///
+        /// The bolt sits <em>beside</em> the bar rather than on top of it, because the bar's height
+        /// is the reading and a bolt drawn over the fill would hide the very number it explains.
+        /// A third of the width is what the bolt needs to stay legible after the bar has taken its
+        /// own share; the remaining two thirds are the bar.
+        /// </summary>
+        public const float WidgetBoltShare = 0.34f;
+
+        /// <summary>
+        /// Gap between a battery's bar and its bolt, in pixels at
+        /// <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// One pixel: at the sizes involved anything wider separates the bolt from the bar it
+        /// belongs to, and the two would read as two widgets.
+        /// </summary>
+        public const float WidgetBoltGapPixels = 1f;
+
+        /// <summary><see cref="WidgetBoltGapPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetBoltGap = WidgetBoltGapPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Thickness of a clock's face ring, in pixels at <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// The ring is what makes two hands read as a clock at all: without a face, a hand pointing
+        /// up and a hand pointing elsewhere are two lines. One and a half pixels is the thinnest
+        /// that still closes into a circle after rounding at 1080p.
+        /// </summary>
+        public const float WidgetRingPixels = 1.5f;
+
+        /// <summary><see cref="WidgetRingPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetRing = WidgetRingPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Thickness of a clock's hands, in pixels at <see cref="ReferenceHeightPixels"/>.
+        ///
+        /// Thicker than the ring on purpose: the moving hand is the reading, and it has to be the
+        /// heaviest line inside the face. The screen-space API has no rotated quad, so a hand is
+        /// rasterised as a staircase of one-pixel steps (see <c>VgsScreenDraw.ThickSegment</c>) and
+        /// this value is the width of each step.
+        /// </summary>
+        public const float WidgetHandPixels = 1.5f;
+
+        /// <summary><see cref="WidgetHandPixels"/> in the layout's vertical units.</summary>
+        public const float WidgetHand = WidgetHandPixels / ReferenceHeightPixels;
+
+        /// <summary>
+        /// Number of chords the clock's face ring is drawn with (ADR-0042 §4).
+        ///
+        /// The screen-space API has no arc, so the ring is a closed polygon of straight pieces
+        /// (<c>VgsScreenDraw.Ring</c>). The count is fixed rather than derived from the radius: at
+        /// the size a widget is drawn — a face of about twenty pixels — two dozen chords already
+        /// read as a circle, and a count that followed the zoom would make the ring's cost depend on
+        /// how far the player scrolled.
+        ///
+        /// <b>It is a cost, and the cost is named.</b> Each chord is one <c>ThickSegment</c>, and a
+        /// segment is a staircase of up to 64 squares; a face at high zoom is therefore a few hundred
+        /// quads per card, against two for a bar. That is accepted for a widget of this size and is
+        /// worth looking at in the game on a grid with many timers (ADR-0042 §Consequences).
+        /// </summary>
+        public const int WidgetRingSegments = 24;
+
+        /// <summary>
+        /// Length of the clock's <b>fixed</b> hand — the one that stays at twelve o'clock — as a
+        /// fraction of the face's radius (ADR-0042 §4).
+        ///
+        /// Longer than the moving hand: the fixed one is the target, and the moving one has to be
+        /// distinguishable from it at the moment they overlap, which is exactly when the timer
+        /// fires and again when it starts.
+        /// </summary>
+        public const float WidgetHourHandRatio = 0.86f;
+
+        /// <summary>
+        /// Length of the clock's <b>moving</b> hand, as a fraction of the face's radius.
+        ///
+        /// Shorter than <see cref="WidgetHourHandRatio"/> so the two hands never merge into one
+        /// line: at zero and at one they point the same way, and the only thing that tells the
+        /// player "this just started" from "this is about to fire" is that the short hand sits
+        /// inside the long one.
+        /// </summary>
+        public const float WidgetMinuteHandRatio = 0.60f;
+
 
         // ---- Connection lines ----
 

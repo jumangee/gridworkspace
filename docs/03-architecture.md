@@ -80,6 +80,7 @@
         │
         ├──► Vgs.Model ─── Node, Port, WatchTarget, Edge, GridGraph, BlockState,
         │                  BlockCategory + CategoryDescriptor, ControllerState,
+        │                  StateWidget (kind, accent, reading),
         │                  BlockPortCatalog, ToolbarPlanner, NodeStateFormat, GridViewFormat,
         │                  ConveyorSegment, ConveyorLink, ConveyorNetwork,
         │                  BlockSearch, TextEditor
@@ -655,11 +656,22 @@ classDiagram
         +TryCardButtonRow(Node, float, out Vector2, out Vector2) bool
         +TryCardTextSpan(Node, float, out float, out float) bool
         +HasPowerSwitch(Node) bool
+        +HasStateWidget(Node) bool
+        +HasStateColumn(Node) bool
+        +StateColumnWidth(Node) float
+        +TryStateColumnRect(Node, float, out Vector2, out Vector2) bool
         +PowerSwitchInkHeight(Node) float
         +PowerSwitchInkWidth(Node) float
         +PowerSwitchInkAspect float
         +TryPowerSwitchRect(Node, float, out Vector2, out Vector2) bool
         +HitPowerSwitch(Node, Vector2, float) bool
+        +TryStateWidgetArea(Node, float, out Vector2, out Vector2) bool
+        +StateWidgetPadding(StateWidgetKind, out float, out float)
+        +TryStateWidgetBar(Node, float, int, out Vector2, out Vector2, out Vector2, out Vector2) bool
+        +TryStateWidgetClock(Node, float, out Vector2, out float) bool
+        +TryStateWidgetBolt(Node, float, out Vector2, out float) bool
+        +BoltInkAspect float
+        +StateWidgetHandTip(Vector2, float, float, float, float) Vector2
         +TryDamageRect(Node, out Vector2, out Vector2) bool
         +FitDamageBand(ref Vector2, ref Vector2, Vector2, Vector2, float)
         +CardTextPaddingRatio float
@@ -748,6 +760,8 @@ classDiagram
         +SegmentPixels(Vector2 from, Vector2 to, float thicknessPixels, Vector2 clip, Vector2 clipSize, Color)
         +SegmentDashed(Vector2 from, Vector2 to, float t, float dash, float gap, Vector2 clip, Vector2 clipSize, Color)
         +Disc(Vector2 center, float r, Vector2 clip, Vector2 clipSize, Color)
+        +ThickSegment(Vector2 from, Vector2 to, float t, Vector2 clip, Vector2 clipSize, Color)
+        +Ring(Vector2 center, float r, float t, int segments, Vector2 clip, Vector2 clipSize, Color)
         +Text(string text, Vector2 pos, float scale, Color c)
         +Text(string text, Vector2 pos, float scale, Color c, float maxWidth)
         +TextCentered(string text, Vector2 center, float scale, Color c)
@@ -836,6 +850,7 @@ classDiagram
         +bool CanDriveBlocks
         +bool CanBeEnabled
         +BlockCategory Category
+        +StateWidgetKind Widget
         +ControllerState Controller
         +bool IsEventController
         +BlockState State
@@ -870,8 +885,17 @@ classDiagram
     class CategoryDescriptor {
         +string[] Events
         +string[] MetricKeys
+        +StateWidgetKind Widget
         +int MetricCount
         +bool HasEvents
+    }
+
+    class StateWidget {
+        <<static>>
+        +BarCount(StateWidgetKind) int
+        +MetricCount(StateWidgetKind) int
+        +IsBar(StateWidgetKind) bool
+        +ShowsWidget(StateWidgetKind, bool, BlockPower, bool) bool
     }
 
     class Port {
@@ -887,6 +911,8 @@ classDiagram
     class BlockState {
         +float Integrity
         +BlockPower Power
+        +WidgetAccent Accent
+        +bool WidgetActive
         +float[] Metrics
         +int MetricCount
         +bool IsDamaged
@@ -895,6 +921,7 @@ classDiagram
         +SetPower(bool, bool)
         +GetMetric(int) float
         +SetMetric(int, float)
+        +SetWidget(WidgetReading)
     }
 
     class BlockPower {
@@ -903,6 +930,29 @@ classDiagram
         On
         Off
         Unavailable
+    }
+
+    class StateWidgetKind {
+        <<enum>>
+        None
+        FillBar
+        Battery
+        Clock
+        Production
+    }
+
+    class WidgetAccent {
+        <<enum>>
+        None
+        Recharge
+        Discharge
+    }
+
+    class WidgetReading {
+        +bool Active
+        +float First
+        +float Second
+        +WidgetAccent Accent
     }
 
     class WatchTarget {
@@ -1016,7 +1066,7 @@ classDiagram
     TerminalJump --> VgsSession : есть ли локальный игрок
 
     GridGraphBuilder --> GridGraph
-    GridGraphBuilder ..> BlockState : RefreshState пишет через ApplyIntegrity и ApplySwitch
+    GridGraphBuilder ..> BlockState : RefreshState пишет через ApplyIntegrity, ApplySwitch и ApplyWidget
     GridGraphBuilder --> BlockSwitch : читает и пишет флаг Enabled (ADR-0035)
     GridGraphBuilder --> Node
     GridGraphBuilder --> BlockPortCatalog
@@ -1080,9 +1130,14 @@ classDiagram
     GridGraph ..> GroupMemberActions : правило действий группы
     GridGraph ..> Node : OffsetGroupMembers двигает участников
     GridGraph ..> WatchTarget : LayoutPorts назначает Slot
-    GridGraph ..> BlockState : ApplyIntegrity и ApplySwitch пишут снимок
+    GridGraph ..> BlockState : ApplyIntegrity, ApplySwitch и ApplyWidget пишут снимок
     Node ..> NodeKind : различает блок и группу
     BlockState ..> BlockPower : переключатель питания блока (ADR-0035)
+    BlockState ..> WidgetAccent : акцент виджета состояния (ADR-0042)
+    BlockState ..> WidgetReading : SetWidget пишет одно чтение целиком
+    Node ..> StateWidgetKind : форма виджета, прочитанная из игры (ADR-0042 §7)
+    CategoryDescriptor ..> StateWidgetKind : форма по подтипу — запасной путь (ADR-0042 §7)
+    GridGraphBuilder --> StateWidgetProbe : читает заполненность, заряд и отсчёт (ADR-0042)
 
     BlockPortCatalog --> Node
     BlockPortCatalog --> Port
@@ -1184,10 +1239,11 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 | `WatchTarget.cs` | `WatchTarget` — одна запись списка отслеживания контроллера |
 | `Edge.cs` | `Edge` — связь между двумя портами |
 | `GridGraph.cs` | контейнер узлов, групп и связей, инварианты связей, раскладка портов по слотам, запись снимка состояния (`ApplyIntegrity`, `ApplySwitch`) |
-| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех), `Power` — переключатель питания (ADR-0035) и `Metrics` — расширяемая часть под частные показатели категорий (заряд, заполненность; ключи задаёт описатель категории). Не сохраняется |
+| `BlockState.cs` | снимок состояния блока: `Integrity` 0..1 (общее для всех), `Power` — переключатель питания (ADR-0035), `Accent` + `WidgetActive` и `Metrics` — чтение **виджета состояния** (ADR-0042; ключи задаёт описатель категории, значение — доля 0..1, зажимается при записи). `SetWidget` пишет одно чтение целиком, чтобы кадр не увидел половину. Не сохраняется |
 | `BlockPower.cs` | `BlockPower` — что говорит переключатель блока: `Unknown` (ещё не прочитан), `On`, `Off`, `Unavailable` (повреждён ниже критической целостности, включить нельзя). Три читаемых состояния, а не два: сломанный блок репортит `Enabled == true`, и флаг в лоб сделал бы его зелёным |
-| `BlockCategory.cs` | `BlockCategory` (enum, порядок членов = порядок проверок классификатора) и `CategoryDescriptor` (что знает категория: события + ключи метрик) |
+| `BlockCategory.cs` | `BlockCategory` (enum, порядок членов = порядок проверок классификатора) и `CategoryDescriptor` (что знает категория: события, ключи метрик и форма виджета состояния — ADR-0042) |
 | `ControllerState.cs` | специфика event controller: описание режима, список отслеживания, идентификатор события. `Node.Controller` ссылается сюда только у контроллера — эта ссылка и есть признак |
+| `StateWidget.cs` | форма **виджета состояния** (ADR-0042): `StateWidgetKind` (четыре формы + `None`), `WidgetAccent` (направление заряда), `WidgetReading` (неизменяемая структура «активно / два числа / акцент») и `StateWidget` — сколько баров и сколько чисел читает форма. Форма приходит **из игры** (интерфейс блока), а `CategoryDescriptor.Widget` остаётся запасным путём для подтипа — §7 ADR-0042 объясняет, почему и что из этого проверяется шлюзом |
 | `BlockPortCatalog.cs` | какие события у какого семейства блоков, как они делятся по группам «да»/«нет», и какие действия принимает группа блоков |
 | `ToolbarPlanner.cs` | правило размещения: в какую ячейку тулбара кладётся связь и когда её класть некуда |
 | `NodeStateFormat.cs` | формат сохранённой позиции: «`x y`» ↔ `Vector2`, инвариантная культура, отказ от мусора |
@@ -1291,6 +1347,7 @@ public bool IsEventController { get { return Controller != null; } }
 | `EntityResolver.cs` | единственная реализация «id сущности → живой `IMyTerminalBlock`» (и «→ живой `IMyCubeGrid`» для конвейерного прохода): `try/catch`, один троттлинг-тег `resolve-block`, отсутствие блока — штатный ответ `false`, а не ошибка |
 | `ConveyorProbe.cs` | линии конвейеров одного грида из `MyObjectBuilder_CubeGrid.ConveyorLines` (реализация конвейеров моду недоступна — ADR-0040), сведение концов линий к id блоков через `GetCubeBlock` |
 | `BlockSwitch.cs` | переключатель питания блока (ADR-0035): `CanBeEnabled` (есть ли у блока `IMyFunctionalBlock`), `TryRead` (`Enabled` + `IsFunctional` за одно чтение) и `TrySetEnabled` (сеттер `Enabled` с проверкой, что флаг действительно принял значение) |
+| `StateWidgetProbe.cs` | **чтение виджета состояния** (ADR-0042): `KindOf` отвечает на вопрос «какая это форма» по интерфейсу игры, `TryRead` читает заполненность инвентаря, заряд и `ChargeMode` батареи, `CurrentTime / Delay` таймера, две инвентари производства. `TryRead` получает **форму** от узла, а не подтип; каждое чтение — в своём `try`; отказ возвращает `false`, и карточка сохраняет прошлую картинку |
 | `GameLanguage.cs` | **единственное** место, которое знает `MyLanguagesEnum`: читает `MyAPIGateway.Session.Config.Language` и переключает таблицу `VgsText`; всё, что ниже, говорит на `VgsLanguage` (ADR-0033) |
 
 Все методы — границы, на которых исключение из игры превращается в запись в лог.
@@ -1782,14 +1839,14 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 
 | Часть | Вопрос | Что в ней | Геометрия |
 |---|---|---|---|
-| **колонка состояния** | что блок делает **сейчас** | тумблер питания в верхней полосе (40% внутренней высоты, с зазором 2 px от граней); нижние 60% зарезервированы и пусты | `PortGeometry.TryPowerSwitchRect`, `HitPowerSwitch` |
+| **колонка состояния** | что блок делает **сейчас** | тумблер питания в верхней полосе (40% внутренней высоты, с зазором 2 px от граней) и **виджет состояния** в нижней (60% минус зазор 2 px под тумблером) | `PortGeometry.TryStateColumnRect`, `TryPowerSwitchRect`, `TryStateWidgetArea` |
 | **шильдик** | что блок **есть** | имя, подтип, описание режима | `PortGeometry.TryCardTextSpan` |
 | **ряд кнопок** | что можно **сделать** со схемой | переход, отслеживание, привязки | `PortGeometry.TryCardButtonRow` |
 
 Три части не смешиваются: у каждой своё правило размера. Поэтому добавление тумблера не сдвинуло
 ряд кнопок ни на пиксель, а шильдик просто начался правее — и поэтому же имя «колонка состояния»
-не привязано к слову «питание»: в нижней полосе появится второй контрол, и он тоже будет
-относиться к блоку, а не к схеме.
+не привязано к слову «питание»: нижнюю полосу занял **виджет состояния**, который к питанию
+отношения не имеет (ADR-0042, ниже).
 
 | Состояние `BlockState.Power` | Иконка | Цвет |
 |---|---|---|
@@ -1841,6 +1898,76 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 её (23,3 × 15,6 px против 21,5 × 21,5 px), то есть по площади меньше. Это следствие 40% и
 аспекта 1,5, а не ошибка; картинка с измерением —
 [`01-research/images/power-switch-preview.png`](01-research/images/power-switch-preview.png).
+
+
+### Виджет состояния ([ADR-0042](adr/0042-state-widget.md))
+
+Четвёртый потребитель снимка состояния и **содержимое нижней полосы** колонки, которую ADR-0035
+оставил пустой. Виджет — не иконка: величину несёт **размер**, поэтому у него своя геометрия и
+свой словарь (три формы нарисованы, четвёртая — часы — состоит из стрелок).
+
+| Форма `StateWidgetKind` | Категории | Что читает `StateWidgetProbe` |
+|---|---|---|
+| `FillBar` | грузовой контейнер | `GetInventory(0).CurrentVolume / MaxVolume` |
+| `Battery` | батарея | `CurrentStoredPower / MaxStoredPower` + `ChargeMode` |
+| `Clock` | таймер | `1 − CurrentTime / Delay` из object builder блока |
+| `Production` | refinery, assembler | две инвентари, `InputInventory` и `OutputInventory` |
+
+**Форма приходит из игры, а не из имени подтипа.** `StateWidgetProbe.KindOf(block)` отвечает по
+интерфейсу — `IMyCargoContainer`, `IMyBatteryBlock`, `IMyTimerBlock`, `IMyRefinery`, `IMyAssembler` —
+и `GridGraphBuilder.CreateNode` передаёт ответ в конструктор узла. Это то же правило, что для
+«может ли блок управлять другими» (`IMyToolbarProvider`, ADR-0011) и «это контроллер событий»
+(`IMyEventControllerBlock`, ADR-0017).
+
+Первая редакция брала форму из `CategoryDescriptor.Widget`, а категорию — из подстроки подтипа,
+и искала `"cargocontainer"`; **ни один** грузовой контейнер в игре так не называется
+(`LargeBlockLargeContainer`, `SmallBlockSmallContainer`, …), поэтому все двадцать подтипов с
+`typeId = MyObjectBuilder_CargoContainer` попадали в `Unknown` и виджета не имели
+(ADR-0042 §1, §7). Таблица описателей осталась **запасным путём** для модифицированного блока,
+чей подтип таблица знает, а интерфейсы не входят в пятёрку.
+
+**Форма входит в узел через конструктор, потому что по ней выделяется состояние.** `BlockState`
+создаётся с `StateWidget.MetricCount(widget)` слотами; форма, пришедшая сеттером, писала бы в
+массив без места, а `SetWidget` молча игнорирует индекс, для которого нет слота. Новый блок с
+заполненностью — по-прежнему строка таблицы и, если у него свой интерфейс, одна ветка в `KindOf`.
+
+**«Колонка есть» отделено от «тумблер есть».** `HasStateColumn` = тумблер **или** виджет; именно
+он сдвигает шильдик (`TryCardTextSpan` спрашивает `TryStateColumnRect`). Грузовой контейнер —
+не функциональный блок, тумблера у него нет, а колонка есть; пока эти два вопроса были одним,
+его имя начиналось бы под собственным виджетом. Ширина колонки — `StateColumnWidth` =
+max(ширина иконки тумблера, `0,6` внутренней высоты): нижняя полоса — `0,6` той же высоты.
+
+**Зазор под тумблером берётся из полосы виджета, а не из полосы тумблера.** `TryStateWidgetArea`
+вычитает `WidgetTopGap` (2 px) из высоты полосы, поэтому два прямоугольника не соприкасаются:
+раньше иконка тумблера, чья краска занимает свою полосу целиком, ложилась на верхнюю грань
+виджета. Тумблер — контрол с зафиксированным размером и hit-test'ом (ADR-0035), виджет — чтение;
+уменьшается чтение. Область становится чуть шире, чем выше (20,9 × 18,9 px при 1080p), и формы
+**вписываются** в неё: лицо часов берёт меньшую сторону, бары — данную высоту.
+
+**Чтение — одним типом в `Vgs.Game`.** `StateWidgetProbe.TryRead(block, kind, out reading)`
+получает **форму** от узла, а не подтип, и по ней выбирает члены API. Каждое чтение — в своём
+`try`; отказ возвращает `false`, и карточка сохраняет прошлую картинку, потому что ноль соврал бы
+про контейнер, который не удалось прочитать. «Показывать нечего» — это **успешное** чтение с
+`Active == false` (остановленный таймер), и оно отличается от отказа.
+
+**Запись — один вызов.** `BlockState.SetWidget(reading)` пишет активность, акцент и оба числа
+сразу: раздельные сеттеры позволили бы кадру нарисовать новый бар со старым акцентом. Значение
+зажимается в 0..1 в `SetMetric`, а не у читателя, — тогда геометрия просто умножает.
+
+**Не рисуется в трёх случаях, и колонка при этом не двигается:** у категории нет формы; блок
+выключен (`CanBeEnabled && Power != On` — у блока без тумблера `Power` навсегда `Unknown`, и это
+не «выключен»); блок не сообщает чтения. Ширина колонки выводится из типа блока, а не из
+состояния, поэтому имя не прыгает вбок, когда контейнер опустел.
+
+**Два новых примитива отрисовки.** Экрана нет ни у `Segment` (только осевые отрезки), ни у
+`Disc` для контура, а поворот квада моду недоступен (пивот не документирован). Поэтому стрелка
+часов — `VgsScreenDraw.ThickSegment`: лесенка квадратов по одному на пиксель вдоль длинной оси,
+тот же способ, что круг в `Disc` и изгиб трубы в `PipeRouter`. Циферблат — `VgsScreenDraw.Ring`,
+кольцо из 24 таких отрезков.
+
+Числа и «что править, чтобы сдвинуть» — [`08-card-layout.md`](08-card-layout.md) §2.3; рисунок
+четырёх форм — [`01-research/images/card-widget-zoom.png`](01-research/images/card-widget-zoom.png),
+полный лист — [`01-research/images/card-layout.png`](01-research/images/card-layout.png).
 
 
 ### Пауза ([ADR-0029](adr/0029-editor-does-not-pause.md))

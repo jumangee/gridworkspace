@@ -161,6 +161,14 @@ namespace Vgs.Core
         /// </summary>
         public const string PowerOffGlyph = "o";
 
+        /// <summary>
+        /// Fallback glyph of a battery widget's charge-mode bolt (ADR-0042), used only when the icon
+        /// atlas is unavailable (ADR-0019 §6). "z" is the ASCII stand-in for a lightning bolt, and it
+        /// is drawn in the accent's own colour, so "recharging" and "discharging" stay
+        /// distinguishable even without the texture.
+        /// </summary>
+        public const string BatteryAccentGlyph = "z";
+
 
         /// <summary>
         /// Comparison sign for "less or equal" (the game's inverted condition). ASCII, see above.

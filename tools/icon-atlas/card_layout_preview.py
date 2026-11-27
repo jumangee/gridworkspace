@@ -103,6 +103,21 @@ CARD_BUTTON_TEXT_GAP_PX = C['CardButtonTextGapPixels']
 POWER_SWITCH_BAND_RATIO = C['PowerSwitchBandRatio']
 POWER_SWITCH_PADDING_PX = C['PowerSwitchPaddingPixels']
 POWER_SWITCH_HIT_PADDING_PX = C['PowerSwitchHitPaddingPixels']
+# ---- the state widget (ADR-0042) ----
+WIDGET_PAD_FILL_W = C['WidgetPaddingFillWidth']
+WIDGET_PAD_FILL_H = C['WidgetPaddingFillHeight']
+WIDGET_PAD_W = C['WidgetPaddingWidth']
+WIDGET_PAD_H = C['WidgetPaddingHeight']
+WIDGET_PAD_CLOCK = C['WidgetPaddingClock']
+WIDGET_INSET_PX = C['WidgetInsetPixels']
+WIDGET_BAR_GAP_PX = C['WidgetBarGapPixels']
+WIDGET_BOLT_SHARE = C['WidgetBoltShare']
+WIDGET_BOLT_GAP_PX = C['WidgetBoltGapPixels']
+WIDGET_RING_PX = C['WidgetRingPixels']
+WIDGET_HAND_PX = C['WidgetHandPixels']
+WIDGET_HOUR_HAND_RATIO = C['WidgetHourHandRatio']
+WIDGET_MINUTE_HAND_RATIO = C['WidgetMinuteHandRatio']
+WIDGET_TOP_GAP_PX = C['WidgetTopGapPixels']
 PORT_BAR_HEIGHT = C['PortBarHeight']
 PORT_CONTROL_HEIGHT_RATIO = C['PortControlHeightRatio']
 PORT_CONTROL_MARGIN_PX = C['PortControlMarginPixels']
@@ -128,6 +143,7 @@ if CARD_TEXT_PADDING_RATIO is None:
 # Not parsed: these are two values of a generated table with ten entries, and a regex over a
 # switch statement would be more fragile than the two numbers are worth.
 TOGGLE_INK_ASPECT = 1.5          # ToggleOn / ToggleOff ink 576 x 384
+BOLT_INK_ASPECT = 0.823          # Bolt ink 448 x 544
 TOGGLE_TEXTURE_SCALE = 1.6
 ICON_TEXTURE_SCALE = 1.066667
 
@@ -142,6 +158,9 @@ COL_CANVAS = (18, 22, 29, 255)
 COL_DAMAGE = (200, 60, 55, 128)
 COL_POWER_ON = (110, 215, 130, 255)
 COL_POWER_OFF = (119, 119, 119, 255)
+COL_WIDGET = (119, 119, 119, 255)
+COL_BATTERY_RECHARGE = (240, 200, 90, 255)
+COL_BATTERY_DISCHARGE = (255, 90, 90, 255)
 
 # The window the numbers are quoted for. 16:9 is what the editor is normally used in, and the
 # aspect is what turns the layout's vertical units into horizontal ones.
@@ -149,7 +168,11 @@ SCREEN_W = 1920.0
 SCREEN_H = 1080.0
 ASPECT = SCREEN_H / SCREEN_W          # ClientAspect = height / width
 
-ZOOM = 1.0
+# The *picture* is drawn at 2x. At 100% the state widget is a 21 px square inside a 307 px card,
+# and neither its 2 px inset nor its hands can be judged at that size — a preview that cannot show
+# the thing it was drawn for is not a preview. The printed table is quoted at 100%, so `main()`
+# resets this before printing (see the comment there).
+ZOOM = 2.0
 
 
 def px_x(units):
@@ -165,6 +188,21 @@ def px_y(units):
 def px_len(vertical_units):
     """A *length* given in vertical units, as pixels — the same length on screen either way."""
     return vertical_units * SCREEN_H * ZOOM
+
+
+def px_ref_x(units):
+    """The same as `px_x`, but at the reference zoom — for the labels.
+
+    The sheet is drawn at 2x so the widget is legible, while every number the ADR quotes is at
+    100%. A label printed from `px_x` would therefore claim the column is 41.9 px when it is 20.9,
+    and a reader checking the ADR against the picture would find a factor of two that is not there.
+    """
+    return units * SCREEN_W
+
+
+def px_ref_y(units):
+    """The same as `px_y`, but at the reference zoom. See `px_ref_x`."""
+    return units * SCREEN_H
 
 
 # --------------------------------------------------------------------------- geometry
@@ -201,6 +239,104 @@ def switch_rect(controller):
     return x, pad, ink_w, ink_h
 
 
+def column_width(controller):
+    """PortGeometry.StateColumnWidth, in vertical units: the wider of the icon and the band."""
+    pad = POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX
+    inner = card_height(controller) - 2.0 * pad
+    band = inner * (1.0 - POWER_SWITCH_BAND_RATIO)
+    ink = inner * POWER_SWITCH_BAND_RATIO * TOGGLE_INK_ASPECT
+    return max(band, ink)
+
+
+def widget_area(controller):
+    """PortGeometry.TryStateWidgetArea, relative to the card's top-left, in layout units.
+
+    The lower band of the column, less the gap under the switch: as wide as the column and one gap
+    shorter than that, so the two do not touch. The area is therefore slightly wider than it is
+    tall, and the shapes are inscribed in it rather than stretched (ADR-0042 §3a).
+    """
+    pad = POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX
+    inner = card_height(controller) - 2.0 * pad
+    band = inner * (1.0 - POWER_SWITCH_BAND_RATIO) - WIDGET_TOP_GAP_PX / REFERENCE_HEIGHT_PX
+    x = (CARD_BUTTON_MARGIN_PX / REFERENCE_HEIGHT_PX) * ASPECT
+    y = pad + inner - band
+    return x, y, column_width(controller) * ASPECT, band
+
+
+def widget_padding(kind):
+    """PortGeometry.StateWidgetPadding: shares of the area, both sides together."""
+    if kind == 'fill':
+        return WIDGET_PAD_FILL_W, WIDGET_PAD_FILL_H
+    if kind == 'clock':
+        return WIDGET_PAD_CLOCK, WIDGET_PAD_CLOCK
+    return WIDGET_PAD_W, WIDGET_PAD_H
+
+
+def widget_bars(controller, kind, count, values):
+    """PortGeometry.TryStateWidgetBar for each bar: (frame, fill) in layout units, card-relative."""
+    ax, ay, aw, ah = widget_area(controller)
+    pad_x, pad_y = widget_padding(kind)
+
+    left = ax + aw * pad_x * 0.5
+    top = ay + ah * pad_y * 0.5
+    width = aw * (1.0 - pad_x)
+    height = ah * (1.0 - pad_y)
+
+    if kind == 'battery':
+        width = width - width * WIDGET_BOLT_SHARE - (WIDGET_BOLT_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT
+
+    gap = (WIDGET_BAR_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT if count > 1 else 0.0
+    bar_w = (width - gap * (count - 1)) / count
+
+    inset_x = (WIDGET_INSET_PX / REFERENCE_HEIGHT_PX) * ASPECT
+    inset_y = WIDGET_INSET_PX / REFERENCE_HEIGHT_PX
+
+    out = []
+    for index in range(count):
+        fx = left + index * (bar_w + gap)
+        inner_w = bar_w - 2.0 * inset_x
+        inner_h = height - 2.0 * inset_y
+        value = max(0.0, min(1.0, values[index] if index < len(values) else 0.0))
+        filled = inner_h * value
+        out.append(((fx, top, bar_w, height),
+                    (fx + inset_x, top + height - inset_y - filled, inner_w, filled)))
+    return out
+
+
+def widget_bolt(controller):
+    """PortGeometry.TryStateWidgetBolt: centre and ink height, card-relative, layout units.
+
+    The column is a *width* in horizontal units; the ink's height is a vertical length, so the
+    conversion goes through the aspect before the icon's own aspect divides it.
+    """
+    ax, ay, aw, ah = widget_area(controller)
+    pad_x, pad_y = widget_padding('battery')
+    width = aw * (1.0 - pad_x)
+    height = ah * (1.0 - pad_y)
+    column = width * WIDGET_BOLT_SHARE
+    ink_h = column / (ASPECT * BOLT_INK_ASPECT)
+    cx = ax + aw * (1.0 - pad_x * 0.5) - column * 0.5
+    cy = ay + ah * pad_y * 0.5 + height * 0.5
+    return cx, cy, ink_h
+
+
+def widget_clock(controller):
+    """PortGeometry.TryStateWidgetClock: centre and radius in vertical units, card-relative."""
+    ax, ay, aw, ah = widget_area(controller)
+    pad = WIDGET_PAD_CLOCK
+    diameter = min(aw * (1.0 - pad) / ASPECT, ah * (1.0 - pad))
+    return ax + aw * 0.5, ay + ah * 0.5, diameter * 0.5
+
+
+def hand_tip(center, radius, ratio, turns):
+    """PortGeometry.StateWidgetHandTip: twelve o'clock at zero, clockwise, aspect-corrected."""
+    import math
+    angle = -math.pi * 0.5 + turns * math.pi * 2.0
+    reach = radius * ratio
+    return (center[0] + math.cos(angle) * reach * ASPECT,
+            center[1] + math.sin(angle) * reach)
+
+
 def text_span(count, controller, has_switch):
     """PortGeometry.TryCardTextSpan, relative to the card's left edge, in layout X units."""
     right = button_row_left(count) - (CARD_BUTTON_TEXT_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT
@@ -211,18 +347,21 @@ def text_span(count, controller, has_switch):
     return left, right
 
 
-def name_fraction(count, controller, has_switch, aspect):
-    """Share of the card's width left to the nameplate, at an arbitrary aspect."""
+def name_fraction(count, controller, has_column, aspect):
+    """Share of the card's width left to the nameplate, at an arbitrary aspect.
+
+    `has_column` is "the card has a state column" (a switch, a widget, or both), which is what
+    indents the nameplate (ADR-0042 §1). The column's width is the same either way: the band and
+    the switch icon give one number today (1.5 x 0.4 = 0.6).
+    """
     right = (NODE_WIDTH - (CARD_BUTTON_MARGIN_PX / REFERENCE_HEIGHT_PX) * aspect
              - (count * CARD_BUTTON_DIAMETER * aspect
                 + (count - 1) * (CARD_BUTTON_GAP_PX / REFERENCE_HEIGHT_PX) * aspect)
              - (CARD_BUTTON_TEXT_GAP_PX / REFERENCE_HEIGHT_PX) * aspect)
     left = NODE_WIDTH * CARD_TEXT_PADDING_RATIO
-    if has_switch:
-        pad = POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX
-        ink_h = (card_height(controller) - 2.0 * pad) * POWER_SWITCH_BAND_RATIO
+    if has_column:
         left = ((CARD_BUTTON_MARGIN_PX / REFERENCE_HEIGHT_PX) * aspect
-                + ink_h * TOGGLE_INK_ASPECT * aspect
+                + column_width(controller) * aspect
                 + (CARD_BUTTON_TEXT_GAP_PX / REFERENCE_HEIGHT_PX) * aspect)
     return (right - left) / NODE_WIDTH
 
@@ -235,7 +374,56 @@ def load(name):
 
 TEXTURES_BY_NAME = {n: load(n) for n in
                     ('ToggleOn', 'ToggleOff', 'SquarePlus', 'Bell', 'LightbulbSolid',
-                     'LightbulbRegular', 'ShareFromSquare', 'CircleDot', 'Xmark')}
+                     'LightbulbRegular', 'ShareFromSquare', 'CircleDot', 'Xmark', 'Bolt')}
+
+
+def draw_widget(canvas, draw, left, top, controller, widget):
+    """Draws the state widget exactly as VgsEditorScreen.DrawStateWidget does (ADR-0042).
+
+    A frame is a one-pixel outline and a fill is a solid rectangle inside it; the clock is a ring
+    of 24 chords plus two hands. Everything is in the base grey except the battery's bolt, which
+    carries the accent.
+    """
+    kind, values, accent = widget
+
+    def rect(box):
+        x, y, bw, bh = box
+        return [left + px_x(x), top + px_y(y), left + px_x(x + bw), top + px_y(y + bh)]
+
+    if kind == 'clock':
+        cx, cy, radius = widget_clock(controller)
+        centre = (left + px_x(cx), top + px_y(cy))
+        r_px = px_y(radius)
+
+        import math
+        for i in range(24):
+            a0 = -math.pi * 0.5 + i / 24.0 * math.pi * 2.0
+            a1 = -math.pi * 0.5 + (i + 1) / 24.0 * math.pi * 2.0
+            # r_px is a vertical length turned into pixels, and a pixel is square on screen, so
+            # the horizontal reach is the same number: the face is round, not an ellipse.
+            draw.line([centre[0] + math.cos(a0) * r_px, centre[1] + math.sin(a0) * r_px,
+                       centre[0] + math.cos(a1) * r_px, centre[1] + math.sin(a1) * r_px],
+                      fill=COL_WIDGET, width=1)
+
+        for ratio, turns in ((WIDGET_HOUR_HAND_RATIO, 0.0),
+                             (WIDGET_MINUTE_HAND_RATIO, values[0])):
+            tip = hand_tip((cx, cy), radius, ratio, turns)
+            draw.line([centre[0], centre[1], left + px_x(tip[0]), top + px_y(tip[1])],
+                      fill=COL_WIDGET, width=max(1, int(round(WIDGET_HAND_PX))))
+        return
+
+    count = 2 if kind == 'production' else 1
+    for frame, fill in widget_bars(controller, kind, count, values):
+        draw.rectangle(rect(frame), outline=COL_WIDGET)
+        if fill[3] > 0.0 and fill[2] > 0.0:
+            draw.rectangle(rect(fill), fill=COL_WIDGET)
+
+    if kind == 'battery' and accent is not None:
+        cx, cy, ink_h = widget_bolt(controller)
+        colour = COL_BATTERY_RECHARGE if accent == 'recharge' else COL_BATTERY_DISCHARGE
+        piece = tinted('Bolt', px_y(ink_h), colour)
+        canvas.alpha_composite(piece, (int(round(left + px_x(cx) - piece.width / 2.0)),
+                                       int(round(top + px_y(cy) - piece.height / 2.0))))
 
 
 def tinted(name, ink_h_px, colour):
@@ -247,8 +435,12 @@ def tinted(name, ink_h_px, colour):
     return out
 
 
-def draw_card(canvas, left, top, controller, icons, switch_state, integrity, labels):
-    """Draws one card exactly as DrawNode does, and returns the part rectangles for labelling."""
+def draw_card(canvas, left, top, controller, icons, switch_state, integrity, labels, widget=None):
+    """Draws one card exactly as DrawNode does, and returns the part rectangles for labelling.
+
+    `widget` is (kind, [values], accent) or None; kinds are 'fill', 'battery', 'clock' and
+    'production', and `accent` is 'recharge', 'discharge' or None (ADR-0042).
+    """
     ch = card_height(controller)
     w = px_x(NODE_WIDTH)
     h = px_y(ch)
@@ -262,7 +454,7 @@ def draw_card(canvas, left, top, controller, icons, switch_state, integrity, lab
         layer = Image.new('RGBA', (max(1, int(bw)), max(1, int(h))), COL_DAMAGE)
         canvas.alpha_composite(layer, (int(left + w - bw), int(top)))
 
-    # State column: the switch in the upper 40%.
+    # State column: the switch in the upper 40%, the widget in the lower 60% (ADR-0042).
     sx, sy, sw, sh = switch_rect(controller)
     if switch_state is not None:
         colour, icon = switch_state
@@ -271,6 +463,9 @@ def draw_card(canvas, left, top, controller, icons, switch_state, integrity, lab
         cy = top + px_y(sy) + px_y(sh) / 2.0
         canvas.alpha_composite(piece, (int(round(cx - piece.width / 2.0)),
                                        int(round(cy - piece.height / 2.0))))
+
+    if widget is not None:
+        draw_widget(canvas, draw, left, top, controller, widget)
 
     # Button row: right-anchored, vertically centred (ADR-0020).
     count = len(icons)
@@ -287,8 +482,11 @@ def draw_card(canvas, left, top, controller, icons, switch_state, integrity, lab
         canvas.alpha_composite(piece, (int(round(cx - piece.width / 2.0)),
                                        int(round(cy - piece.height / 2.0))))
 
-    # Nameplate: the span from TryCardTextSpan, lines placed by equal bands.
-    sl, sr = text_span(count, controller, switch_state is not None)
+    # Nameplate: the span from TryCardTextSpan, lines placed by equal bands. The column exists
+    # when there is a switch OR a widget — a cargo container has the widget and no switch
+    # (ADR-0042 §1), which is the case that separated the two questions.
+    has_column = switch_state is not None or widget is not None
+    sl, sr = text_span(count, controller, has_column)
     tl, tr = left + px_x(sl), left + px_x(sr)
     lines = 3 if controller else 2
     band = h / lines
@@ -322,48 +520,76 @@ def main():
     ink = (150, 170, 195, 255)
     dim = (110, 125, 145, 255)
 
-    panel_w = int(px_x(NODE_WIDTH)) + 470
-    panel_h = 250
+    panel_w = int(px_x(NODE_WIDTH)) + 560
+    panel_h = 400
     rows = [
-        ('block · 2 lines · switch + 2 buttons', False, ['SquarePlus'], (COL_POWER_ON, 'ToggleOn'), 1.0,
-         ('Timer Block', 'TimerBlockLarge', '')),
+        ('block · 2 lines · switch + clock', False, ['SquarePlus'], (COL_POWER_ON, 'ToggleOn'), 1.0,
+         ('Timer Block', 'TimerBlockLarge', ''), ('clock', [0.55], None)),
+        ('cargo container · widget, no switch', False, ['ShareFromSquare'], None, 1.0,
+         ('Cargo Container', 'LargeBlockCargoContainer', ''), ('fill', [0.45], None)),
+        ('battery · recharging', False, ['ShareFromSquare'], (COL_POWER_ON, 'ToggleOn'), 1.0,
+         ('Battery', 'LargeBlockBatteryBlock', ''), ('battery', [0.70], 'recharge')),
+        ('refinery · input / output', False, ['ShareFromSquare'], (COL_POWER_ON, 'ToggleOn'), 1.0,
+         ('Refinery', 'LargeBlockRefinery', ''), ('production', [0.30, 0.80], None)),
         ('block · 1 button (no bind)', False, ['SquarePlus'], (COL_POWER_OFF, 'ToggleOff'), 1.0,
-         ('Conveyor Tube', 'LargeBlockConveyor', '')),
+         ('Conveyor Tube', 'LargeBlockConveyor', ''), None),
         ('block · damaged 35%', False, ['SquarePlus'], (COL_POWER_ON, 'ToggleOn'), 0.35,
-         ('Timer Block', 'TimerBlockLarge', '')),
+         ('Timer Block', 'TimerBlockLarge', ''), None),
         ('controller · 3 lines · 4 buttons', True,
          ['ShareFromSquare', 'Bell', 'LightbulbSolid', 'LightbulbRegular'],
          (COL_POWER_ON, 'ToggleOn'), 1.0,
-         ('Event Controller', 'EventControllerLarge', 'Event: Block Damaged')),
+         ('Event Controller', 'EventControllerLarge', 'Event: Block Damaged'), None),
     ]
 
     sheet = Image.new('RGBA', (panel_w, panel_h * len(rows) + 60), COL_CANVAS)
     draw = ImageDraw.Draw(sheet)
+    draw.text((40, 12),
+              'Grid Workspace · card layout · drawn at %dx, every number in px at 100%% (1920x1080)'
+              % int(ZOOM), fill=(150, 165, 185, 255))
 
-    for index, (label, controller, icons, switch_state, integrity, texts) in enumerate(rows):
-        top = 50 + index * panel_h
+    for index, (label, controller, icons, switch_state, integrity, texts, widget) in enumerate(rows):
+        top = 80 + index * panel_h
         left = 40
         draw.text((left, top - 26), label, fill=(150, 165, 185, 255))
 
-        parts = draw_card(sheet, left, top, controller, icons, switch_state, integrity, texts)
+        parts = draw_card(sheet, left, top, controller, icons, switch_state, integrity, texts, widget)
         cx, cy, cw, chh = parts['card']
         sx, sy, sw, sh = parts['switch']
         rx, ry, rw, rh = parts['row']
         tl, tr = parts['span']
 
         # ---- state column callout ----
+        #
+        # Every number in these labels is at the *reference* zoom (100%), while the picture is at
+        # 2x — otherwise a reader comparing the ADR with the sheet would find a factor of two that
+        # is not in the layout. `px_ref_*` exists for exactly this.
         draw.rectangle([sx - 1, sy - 1, sx + sw + 1, sy + sh + 1], outline=(110, 215, 130, 255))
         draw.line([sx + sw + 2, sy + sh / 2, cx + cw + 60, sy + sh / 2], fill=dim, width=1)
         draw.text((cx + cw + 66, sy + sh / 2 - 16),
                   'STATE COLUMN', fill=(110, 215, 130, 255))
         draw.text((cx + cw + 66, sy + sh / 2 - 2),
-                  'band %.0f%% of inner = %.1f px high' % (POWER_SWITCH_BAND_RATIO * 100, sh), fill=ink)
+                  'switch band %.0f%% of inner = %.1f px'
+                  % (POWER_SWITCH_BAND_RATIO * 100,
+                     px_ref_y(switch_rect(controller)[3])), fill=ink)
         draw.text((cx + cw + 66, sy + sh / 2 + 12),
-                  'width = 1.5 x band = %.1f px' % sw, fill=ink)
+                  'column width = %.1f px' % px_ref_x(column_width(controller) * ASPECT), fill=ink)
         draw.text((cx + cw + 66, sy + sh / 2 + 26),
-                  'pad %.1f px top and bottom' % px_y(POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX), fill=dim)
-        draw.text((cx + cw + 66, sy + sh / 2 + 40),
-                  'reserved below: %.1f px' % (chh - sh - 2 * px_y(POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX)), fill=dim)
+                  'pad %.1f px top and bottom'
+                  % px_ref_y(POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX), fill=dim)
+
+        # ---- widget callout (ADR-0042): its own line, below the column's ----
+        if widget is not None:
+            wx, wy, ww, wh = widget_area(controller)
+            box = [left + px_x(wx), top + px_y(wy), left + px_x(wx + ww), top + px_y(wy + wh)]
+            draw.rectangle(box, outline=(200, 160, 255, 255))
+            callout_y = sy + sh / 2 + 52
+            draw.line([box[2] + 2, box[3] - 2, cx + cw + 60, callout_y + 6], fill=dim, width=1)
+            draw.text((cx + cw + 66, callout_y),
+                      'STATE WIDGET: %s' % widget[0], fill=(200, 160, 255, 255))
+            draw.text((cx + cw + 66, callout_y + 14),
+                      '%.1f x %.1f px, %.0f%% band less the %.0f px gap'
+                      % (px_ref_x(ww), px_ref_y(wh), (1.0 - POWER_SWITCH_BAND_RATIO) * 100,
+                         WIDGET_TOP_GAP_PX), fill=ink)
 
         # ---- nameplate callout ----
         my = cy + chh + 34
@@ -375,7 +601,8 @@ def main():
         by = cy - 22
         arrow_h(draw, rx, rx + rw, by, (255, 214, 140, 255))
         draw.text((rx - 4, by - 18), 'BUTTON ROW  d=%.1f px  ink=%.1f px'
-                  % (rh, rh * CARD_BUTTON_ICON_RATIO), fill=(255, 214, 140, 255))
+                  % (px_ref_y(CARD_BUTTON_DIAMETER), px_ref_y(CARD_BUTTON_DIAMETER)
+                     * CARD_BUTTON_ICON_RATIO), fill=(255, 214, 140, 255))
 
         # ---- card height callout ----
         arrow_v(draw, cy, cy + chh, cx - 18, dim)
@@ -391,27 +618,66 @@ def main():
     sheet.convert('RGB').save(OUT)
     print('wrote', OUT, sheet.size)
 
-    # ---- the printed table: the numbers the picture was drawn from ----
+    # ---- the printed table: the numbers the picture was drawn from, at 100% ----
+    #
+    # The picture is at 2x so the widget is legible; every number here is at the reference zoom,
+    # which is what the ADR quotes. `px_ref_*` is that conversion, so the two cannot drift.
     print()
-    print('window %dx%d, aspect %.4f, zoom %.0f%%' % (SCREEN_W, SCREEN_H, ASPECT, ZOOM * 100))
+    print('window %dx%d, aspect %.4f; numbers below are at 100%% (the sheet is drawn at %dx)'
+          % (SCREEN_W, SCREEN_H, ASPECT, int(ZOOM)))
     print('card: %.1f x %.1f px (block) / %.1f x %.1f px (controller)'
-          % (px_x(NODE_WIDTH), px_y(NODE_HEIGHT), px_x(NODE_WIDTH),
-             px_y(card_height(True))))
+          % (px_ref_x(NODE_WIDTH), px_ref_y(NODE_HEIGHT), px_ref_x(NODE_WIDTH),
+             px_ref_y(card_height(True))))
     print('button: d %.1f px, ink %.1f px, gap %.1f px, margin %.1f px'
-          % (px_len(CARD_BUTTON_DIAMETER), px_len(CARD_BUTTON_DIAMETER) * CARD_BUTTON_ICON_RATIO,
-             px_x((CARD_BUTTON_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT),
-             px_x((CARD_BUTTON_MARGIN_PX / REFERENCE_HEIGHT_PX) * ASPECT)))
+          % (px_ref_y(CARD_BUTTON_DIAMETER), px_ref_y(CARD_BUTTON_DIAMETER) * CARD_BUTTON_ICON_RATIO,
+             px_ref_x((CARD_BUTTON_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT),
+             px_ref_x((CARD_BUTTON_MARGIN_PX / REFERENCE_HEIGHT_PX) * ASPECT)))
     print('switch: %.1f x %.1f px (band %.0f%% of inner, pad %.1f px, ink aspect %.1f)'
-          % (px_x(switch_rect(False)[2]), px_y(switch_rect(False)[3]),
-             POWER_SWITCH_BAND_RATIO * 100, px_y(POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX),
+          % (px_ref_x(switch_rect(False)[2]), px_ref_y(switch_rect(False)[3]),
+             POWER_SWITCH_BAND_RATIO * 100, px_ref_y(POWER_SWITCH_PADDING_PX / REFERENCE_HEIGHT_PX),
              TOGGLE_INK_ASPECT))
+
+    # ---- the state widget (ADR-0042) ----
+    ax, ay, aw, ah = widget_area(False)
+    print('widget area: %.1f x %.1f px (lower %.0f%% of the column inner height, less the %.0f px gap '
+          'under the switch)'
+          % (px_ref_x(aw), px_ref_y(ah), (1.0 - POWER_SWITCH_BAND_RATIO) * 100, WIDGET_TOP_GAP_PX))
+
+    pad_x, pad_y = widget_padding('fill')
+    frame_w = aw * (1.0 - pad_x)
+    frame_h = ah * (1.0 - pad_y)
+    inset_x = (WIDGET_INSET_PX / REFERENCE_HEIGHT_PX) * ASPECT
+    inset_y = WIDGET_INSET_PX / REFERENCE_HEIGHT_PX
+    print('cargo bar: pad %.0f%% x %.0f%% -> frame %.1f x %.1f px, fill %.1f x %.1f px, inset %.1f px'
+          % (pad_x * 100, pad_y * 100, px_ref_x(frame_w), px_ref_y(frame_h),
+             px_ref_x(frame_w - 2.0 * inset_x), px_ref_y(frame_h - 2.0 * inset_y),
+             px_ref_y(inset_y)))
+
+    pad_x, pad_y = widget_padding('production')
+    pair_w = aw * (1.0 - pad_x)
+    gap_x = (WIDGET_BAR_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT
+    print('production pair: pad %.0f%% x %.0f%% -> each bar %.1f px wide, gap %.1f px'
+          % (pad_x * 100, pad_y * 100, px_ref_x((pair_w - gap_x) / 2.0), px_ref_x(gap_x)))
+
+    pad_x, _ = widget_padding('battery')
+    bolt_cx, bolt_cy, bolt_h = widget_bolt(False)
+    bolt_column = aw * (1.0 - pad_x) * WIDGET_BOLT_SHARE
+    print('battery: bar %.1f px wide, bolt %.1f x %.1f px (share %.0f%% of the padded width)'
+          % (px_ref_x(aw * (1.0 - pad_x) * (1.0 - WIDGET_BOLT_SHARE)
+                      - (WIDGET_BOLT_GAP_PX / REFERENCE_HEIGHT_PX) * ASPECT),
+             px_ref_x(bolt_column), px_ref_y(bolt_h), WIDGET_BOLT_SHARE * 100))
+
+    clock_cx, clock_cy, clock_r = widget_clock(False)
+    print('clock: face %.1f px across (pad %.0f%%), fixed hand %.0f%% of the radius, moving %.0f%%'
+          % (px_ref_y(clock_r) * 2.0, WIDGET_PAD_CLOCK * 100,
+             WIDGET_HOUR_HAND_RATIO * 100, WIDGET_MINUTE_HAND_RATIO * 100))
     print()
     print('nameplate share of the card width, 4-button controller card:')
-    print('  %-8s %-12s %-12s' % ('aspect', 'no switch', 'with switch'))
+    print('  %-8s %-14s %-14s' % ('aspect', 'no column', 'with column'))
     for aspect, name in ((0.5625, '16:9'), (0.625, '16:10'), (0.75, '4:3'), (1.0, 'square')):
         a = name_fraction(4, True, False, aspect)
         b = name_fraction(4, True, True, aspect)
-        print('  %-8s %-12.1f %-12.1f' % (name, a * 100, b * 100))
+        print('  %-8s %-14.1f %-14.1f' % (name, a * 100, b * 100))
     print()
     print('aspect at which the name keeps the 30%% floor (4 buttons):')
     lo, hi = 0.2, 3.0
@@ -421,7 +687,7 @@ def main():
             lo = mid
         else:
             hi = mid
-    print('  with switch: %.3f' % lo)
+    print('  with column: %.3f' % lo)
     lo2, hi2 = 0.2, 3.0
     for _ in range(60):
         mid = (lo2 + hi2) / 2.0
@@ -429,7 +695,7 @@ def main():
             lo2 = mid
         else:
             hi2 = mid
-    print('  without switch: %.3f' % lo2)
+    print('  without column: %.3f' % lo2)
 
 
 if __name__ == '__main__':

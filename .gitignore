@@ -18,3 +18,7 @@ desktop.ini
 
 # Throwaway output of the local harnesses (tools/icon-proto, ACL recovery records).
 /tmp/
+
+# Python bytecode from tools/icon-atlas (the preview scripts import each other).
+__pycache__/
+*.pyc

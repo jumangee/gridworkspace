@@ -742,10 +742,10 @@ namespace Vgs.Ui
         /// (<see cref="Node.CanBeEnabled"/>), not about its power: the column is reserved for the
         /// block's whole life, so switching it off cannot move its own name sideways.
         ///
-        /// This is also the predicate that decides whether the card has a <b>state column</b> at
-        /// all — the part's existence and its one control's existence are the same fact today, and
-        /// keeping one predicate for both is what stops the nameplate from being indented for a
-        /// column that is not drawn.
+        /// This used to be the predicate that decided whether the card had a <b>state column</b> at
+        /// all. Since ADR-0042 it is not: a cargo container carries a state widget and no switch, so
+        /// the column exists without one. <see cref="HasStateColumn"/> answers that question now, and
+        /// this one answers "is there something to click on the leading edge".
         /// </summary>
         public static bool HasPowerSwitch(Node node)
         {
@@ -848,16 +848,18 @@ namespace Vgs.Ui
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            Vector2 cardTopLeft, cardSize;
-            CardRect(node, out cardTopLeft, out cardSize);
-
             float inkHeight = PowerSwitchInkHeight(node);
             if (inkHeight <= 0f) return false;
 
             float inkWidth = inkHeight * PowerSwitchInkAspect * aspectX;
 
-            topLeft = new Vector2(cardTopLeft.X + VgsConstants.CardButtonMargin * aspectX,
-                                  cardTopLeft.Y + VgsConstants.PowerSwitchPadding);
+            // The corner comes from the column, not from a second derivation of "card plus margin
+            // plus padding": the switch and the widget under it have to sit in one strip, and the
+            // strip is what TryStateColumnRect describes (ADR-0042).
+            Vector2 columnTopLeft, columnSize;
+            if (!TryStateColumnRect(node, aspectX, out columnTopLeft, out columnSize)) return false;
+
+            topLeft = new Vector2(columnTopLeft.X, columnTopLeft.Y);
             size = new Vector2(inkWidth, inkHeight);
             return true;
         }
@@ -909,6 +911,395 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// True when this node's card carries a <b>state widget</b> in the lower band of its state
+        /// column (ADR-0042).
+        ///
+        /// <b>It is a fact about the block, not about its state.</b> A cargo container has a fill
+        /// level for its whole life; whether the card draws it right now is a different question
+        /// (<see cref="HasStateColumn"/> keeps the column's width either way, so a widget that stops
+        /// being drawn cannot move the block's name). The fact is <see cref="Node.Widget"/>, which
+        /// the editor read from the game's interfaces rather than from the subtype (ADR-0042 §7).
+        /// A group has no reading of its own, which is why the group check is here and not at the
+        /// call sites.
+        /// </summary>
+        public static bool HasStateWidget(Node node)
+        {
+            return node != null && !node.IsGroup && node.Widget != StateWidgetKind.None;
+        }
+
+        /// <summary>
+        /// True when the card has a <b>state column</b> at all: a switch, a widget, or both
+        /// (ADR-0035, ADR-0042).
+        ///
+        /// <b>This is the predicate the nameplate is indented by.</b> Until ADR-0042 the column
+        /// existed exactly where the switch did, so one predicate answered both questions. A cargo
+        /// container has a widget and no switch, and it still needs the column — so the two
+        /// questions are now separate, and this is the one that says "there is something on the
+        /// leading edge".
+        /// </summary>
+        public static bool HasStateColumn(Node node)
+        {
+            return HasPowerSwitch(node) || HasStateWidget(node);
+        }
+
+        /// <summary>
+        /// Width of a node's <b>state column</b>, in the layout's vertical units — so a caller turns
+        /// it into a horizontal length by multiplying by the client aspect, like every other width
+        /// in this type.
+        ///
+        /// <b>The widget's band decides the width when there is no switch, and the switch's icon
+        /// decides it when there is one.</b> The column is 0.6 of its inner height wide, because the
+        /// widget's band is 0.6 of that height — one set of proportions for every card. For a block
+        /// that also has a switch, the icon's own width wins if it is larger — a redrawn toggle
+        /// would otherwise be clipped by a column sized for the widget.
+        ///
+        /// The two are exactly equal today: the switch is 1.5 × its 40% band, and 1.5 × 0.4 = 0.6.
+        /// The <c>max</c> is what keeps that from being a coincidence the layout depends on. The band
+        /// also loses <see cref="VgsConstants.WidgetTopGap"/> in height, so the area is no longer a
+        /// square (ADR-0042 §3a); the width still comes from the band's full 0.6.
+        /// </summary>
+        public static float StateColumnWidth(Node node)
+        {
+            if (!HasStateColumn(node)) return 0f;
+
+            float inner = PowerSwitchContentHeight(node);
+            if (inner <= 0f) return 0f;
+
+            float width = inner * (1f - VgsConstants.PowerSwitchBandRatio);
+
+            if (HasPowerSwitch(node))
+            {
+                float ink = PowerSwitchInkWidth(node);
+                if (ink > width) width = ink;
+            }
+
+            return width;
+        }
+
+        /// <summary>
+        /// Rectangle of a node's whole <b>state column</b>, in graph units: the card's leading edge,
+        /// inset from all four sides (ADR-0035 §1).
+        ///
+        /// It exists as one method so the switch, the widget and the nameplate's left end cannot
+        /// disagree about where the column is. Before ADR-0042 each of them re-derived its own part
+        /// of this rectangle; a cargo container — which has a widget and no switch — is what showed
+        /// that "the column starts at the switch" stops being true.
+        /// </summary>
+        public static bool TryStateColumnRect(Node node, float aspectX, out Vector2 topLeft,
+                                              out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (!HasStateColumn(node)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float inner = PowerSwitchContentHeight(node);
+            float width = StateColumnWidth(node);
+            if (inner <= 0f || width <= 0f) return false;
+
+            Vector2 cardTopLeft, cardSize;
+            CardRect(node, out cardTopLeft, out cardSize);
+
+            topLeft = new Vector2(cardTopLeft.X + VgsConstants.CardButtonMargin * aspectX,
+                                  cardTopLeft.Y + VgsConstants.PowerSwitchPadding);
+            size = new Vector2(width * aspectX, inner);
+            return true;
+        }
+
+        /// <summary>
+        /// Rectangle of a node's <b>state widget area</b> in graph units, or false when the card has
+        /// no widget. It is the lower band of the state column, less the gap above it.
+        ///
+        /// <b>As wide as the column, and shorter than that by one gap.</b> The column is 0,6 of its
+        /// inner height wide and the lower band is the other 0,6 of it — so the band alone would be a
+        /// square — but <see cref="VgsConstants.WidgetTopGap"/> is taken off the top, because the
+        /// switch and the widget must not touch (ADR-0042 §3a). The area is therefore slightly wider
+        /// than it is tall, and every shape is inscribed in it rather than stretched to fill it: the
+        /// clock's face takes the shorter side, the bars take the height they are given.
+        ///
+        /// <b>It is the area, not the drawing.</b> What is drawn inside it — the frame's padding, the
+        /// fill's inset, the bolt's column — is decided by the shape, and each of those numbers is
+        /// relative to this rectangle rather than to the card.
+        /// </summary>
+        public static bool TryStateWidgetArea(Node node, float aspectX, out Vector2 topLeft,
+                                              out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+            if (!HasStateWidget(node)) return false;
+
+            Vector2 columnTopLeft, columnSize;
+            if (!TryStateColumnRect(node, aspectX, out columnTopLeft, out columnSize)) return false;
+
+            float band = columnSize.Y * (1f - VgsConstants.PowerSwitchBandRatio)
+                         - VgsConstants.WidgetTopGap;
+            if (band <= 0f) return false;
+
+            topLeft = new Vector2(columnTopLeft.X, columnTopLeft.Y + columnSize.Y - band);
+            size = new Vector2(columnSize.X, band);
+            return true;
+        }
+
+        /// <summary>
+        /// Padding a widget's frame keeps inside its area, as a share of the area on each axis,
+        /// <b>both sides together</b> (ADR-0042 §3).
+        ///
+        /// The plain fill bar gets the two numbers the requirement named for it — 15% of the width,
+        /// 5% of the height — and the shapes that are already split inside (a battery's bolt column,
+        /// a production block's two bars) get a smaller one, because 15% of a half-width is three
+        /// pixels of fill. The clock gets the smallest: a circle in a square leaves its corners
+        /// empty anyway, and padding it like a bar would shorten the hands, which are the reading.
+        /// </summary>
+        public static void StateWidgetPadding(StateWidgetKind kind, out float padX, out float padY)
+        {
+            switch (kind)
+            {
+                case StateWidgetKind.FillBar:
+                    padX = VgsConstants.WidgetPaddingFillWidth;
+                    padY = VgsConstants.WidgetPaddingFillHeight;
+                    return;
+
+                case StateWidgetKind.Clock:
+                    padX = VgsConstants.WidgetPaddingClock;
+                    padY = VgsConstants.WidgetPaddingClock;
+                    return;
+
+                default:
+                    padX = VgsConstants.WidgetPaddingWidth;
+                    padY = VgsConstants.WidgetPaddingHeight;
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// One bar of a node's state widget, in graph units: its frame (the outer rectangle, drawn as
+        /// a border) and its fill (the inner one, filled from the bottom up to the reading).
+        ///
+        /// <b>The fill is the reading, and it grows upwards.</b> An empty container is an empty
+        /// rectangle — the frame alone — and a full one is a rectangle filled to its own top edge,
+        /// <see cref="VgsConstants.WidgetInsetPixels"/> short of the frame on every side. The inset is
+        /// what makes the two rectangles readable as two: without it a full bar and a solid block
+        /// would be the same picture.
+        ///
+        /// <b>Bar index is metric index.</b> The first bar reads metric 0 and the second reads metric
+        /// 1, so a caller draws bar <c>i</c> without knowing whether it is looking at a container's
+        /// fill, a battery's charge or a production block's output — the descriptor's key order is
+        /// the only place that knows.
+        ///
+        /// Returns false for a bar the shape does not have (index out of range, no widget), and
+        /// returns true with a zero-height fill for a reading of zero: an empty bar is drawn, because
+        /// the frame is the part that says "there is a reading here and it is empty".
+        ///
+        /// <b>A true result with a degenerate frame leaves <paramref name="fillTopLeft"/> at the
+        /// origin.</b> That happens when the card is too small for the inset (a zoomed-out card
+        /// still draws its frame, but there is no room inside it), and the contract is that the fill
+        /// is meaningful only while <paramref name="fillSize"/> is positive — which is what the draw
+        /// path tests before painting. Returning false instead would drop the frame as well, and an
+        /// empty container would lose the rectangle that says it is empty.
+        /// </summary>
+        public static bool TryStateWidgetBar(Node node, float aspectX, int bar,
+                                             out Vector2 frameTopLeft, out Vector2 frameSize,
+                                             out Vector2 fillTopLeft, out Vector2 fillSize)
+        {
+            frameTopLeft = Vector2.Zero;
+            frameSize = Vector2.Zero;
+            fillTopLeft = Vector2.Zero;
+            fillSize = Vector2.Zero;
+
+            if (!HasStateWidget(node)) return false;
+
+            int count = StateWidget.BarCount(node.Widget);
+            if (bar < 0 || bar >= count) return false;
+
+            Vector2 areaTopLeft, areaSize;
+            if (!TryStateWidgetArea(node, aspectX, out areaTopLeft, out areaSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float padX, padY;
+            StateWidgetPadding(node.Widget, out padX, out padY);
+
+            float left = areaTopLeft.X + areaSize.X * padX * 0.5f;
+            float top = areaTopLeft.Y + areaSize.Y * padY * 0.5f;
+            float width = areaSize.X * (1f - padX);
+            float height = areaSize.Y * (1f - padY);
+
+            // A battery gives the trailing part of its padded width to the bolt, so the bar is what
+            // is left: the bolt sits beside the bar, never on top of it (ADR-0042 §4).
+            //
+            // The column is reserved even in `Auto`, when no bolt is drawn. A bar that grew when the
+            // mode changed would make one charge reading look like two, and the mode is a fact about
+            // the block, not about its charge — so the shape keeps the room and the accent only fills
+            // it or does not.
+            if (node.Widget == StateWidgetKind.Battery)
+            {
+                width = width - width * VgsConstants.WidgetBoltShare
+                        - VgsConstants.WidgetBoltGap * aspectX;
+            }
+
+            float gap = count > 1 ? VgsConstants.WidgetBarGap * aspectX : 0f;
+            float barWidth = (width - gap * (count - 1)) / count;
+            if (barWidth <= 0f || height <= 0f) return false;
+
+            frameTopLeft = new Vector2(left + bar * (barWidth + gap), top);
+            frameSize = new Vector2(barWidth, height);
+
+            float insetX = VgsConstants.WidgetInset * aspectX;
+            float insetY = VgsConstants.WidgetInset;
+
+            float innerWidth = frameSize.X - 2f * insetX;
+            float innerHeight = frameSize.Y - 2f * insetY;
+            if (innerWidth <= 0f || innerHeight <= 0f) return true;
+
+            // Re-clamped even though BlockState.SetMetric already does: the array is public, so the
+            // write-side clamp is a guarantee about writes, not about reads (ADR-0042 §6). A bar
+            // drawn past the top of its own frame is the one defect this indicator cannot afford.
+            float value = node.State != null ? node.State.GetMetric(bar) : 0f;
+            if (value < 0f) value = 0f;
+            else if (value > 1f) value = 1f;
+
+            float filled = innerHeight * value;
+
+            fillSize = new Vector2(innerWidth, filled);
+            fillTopLeft = new Vector2(frameTopLeft.X + insetX,
+                                      frameTopLeft.Y + frameSize.Y - insetY - filled);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre and radius of a node's <b>clock</b> face, in graph units, or false when the card
+        /// has no clock. The radius is in the layout's vertical units; a caller turns it into a
+        /// horizontal one by multiplying by the client aspect, exactly as <c>VgsScreenDraw.Disc</c>
+        /// does, so the face is round on screen.
+        ///
+        /// <b>The face is inscribed in the padded area, not stretched to it.</b> The area is a
+        /// rectangle in graph units whose axes have different scales — and since ADR-0042 §3a it is
+        /// not even a square on screen, being one gap wider than it is tall — so the diameter is the
+        /// smaller of the two sides measured in vertical units. Stretching it would draw an ellipse
+        /// the moment a redrawn toggle changed the column's width.
+        /// </summary>
+        public static bool TryStateWidgetClock(Node node, float aspectX, out Vector2 center,
+                                               out float radius)
+        {
+            center = Vector2.Zero;
+            radius = 0f;
+
+            if (!HasStateWidget(node) || node.Widget != StateWidgetKind.Clock) return false;
+
+            Vector2 areaTopLeft, areaSize;
+            if (!TryStateWidgetArea(node, aspectX, out areaTopLeft, out areaSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float padX, padY;
+            StateWidgetPadding(node.Widget, out padX, out padY);
+
+            float width = areaSize.X * (1f - padX);
+            float height = areaSize.Y * (1f - padY);
+
+            // Both sides in vertical units: the width has to lose the aspect to be comparable.
+            float diameter = width / aspectX;
+            if (height < diameter) diameter = height;
+
+            radius = diameter * 0.5f;
+            center = new Vector2(areaTopLeft.X + areaSize.X * 0.5f,
+                                 areaTopLeft.Y + areaSize.Y * 0.5f);
+            return radius > 0f;
+        }
+
+        /// <summary>
+        /// Centre and ink height of a battery's charge-mode <b>bolt</b>, in graph units, or false
+        /// when the card has no battery widget.
+        ///
+        /// <b>The bolt is sized by its column, not by the area.</b> It sits in the share of the width
+        /// that <see cref="TryStateWidgetBar"/> left free, and it fills that share across: the ink's
+        /// height is the column's width divided by the icon's own aspect, which the atlas build
+        /// measures. A redrawn bolt therefore changes its own size and nothing else — the same rule
+        /// the power switch follows with <see cref="PowerSwitchInkAspect"/>.
+        ///
+        /// <b>It is vertically centred, not aligned to the fill.</b> The bolt says which way the
+        /// charge is going, not how much of it there is; aligning it with the top of the fill would
+        /// make it move on every reading, which is motion that means nothing.
+        /// </summary>
+        public static bool TryStateWidgetBolt(Node node, float aspectX, out Vector2 center,
+                                              out float inkHeight)
+        {
+            center = Vector2.Zero;
+            inkHeight = 0f;
+
+            if (!HasStateWidget(node) || node.Widget != StateWidgetKind.Battery) return false;
+
+            Vector2 areaTopLeft, areaSize;
+            if (!TryStateWidgetArea(node, aspectX, out areaTopLeft, out areaSize)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float padX, padY;
+            StateWidgetPadding(node.Widget, out padX, out padY);
+
+            float width = areaSize.X * (1f - padX);
+            float height = areaSize.Y * (1f - padY);
+
+            float column = width * VgsConstants.WidgetBoltShare;
+            if (column <= 0f) return false;
+
+            // `column` is a width in the layout's *horizontal* units, and the ink's height is a
+            // vertical length: the conversion goes through the client aspect, exactly as the
+            // radius does in TryStateWidgetClock. Dropping it would make the bolt `aspect` times
+            // too short — 0.56× on a 16:9 window, which reads as a dash rather than a bolt.
+            float inkWidth = column;
+            inkHeight = inkWidth / (aspectX * BoltInkAspect);
+            if (inkHeight <= 0f) return false;
+
+            // The column's centre is the padded area's trailing end, minus half of what it takes.
+            center = new Vector2(areaTopLeft.X + areaSize.X * (1f - padX * 0.5f) - column * 0.5f,
+                                 areaTopLeft.Y + areaSize.Y * padY * 0.5f + height * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Width ÷ height of the charge-mode bolt's ink, taken from the generated atlas table — the
+        /// same rule as <see cref="PowerSwitchInkAspect"/>: the number belongs to the texture, and a
+        /// copy here would size the bolt against an icon nobody draws any more.
+        /// </summary>
+        public static float BoltInkAspect
+        {
+            get { return VgsIconAtlas.InkAspect(VgsIcon.Bolt); }
+        }
+
+        /// <summary>
+        /// Where a clock's hand ends, given the fraction of the countdown that has elapsed.
+        ///
+        /// <b>Zero is twelve o'clock and the hand sweeps clockwise</b> (ADR-0042 §4): the fixed hand
+        /// marks where the timer will be when it fires, so the moving one has to arrive there rather
+        /// than leave from there. Screen Y grows downwards, so "up" is a negative sine — the sign that
+        /// a hand at zero points at the top of the face rather than the bottom.
+        ///
+        /// <b>The angle is computed in screen proportions, the result in graph units.</b> One X unit
+        /// of the layout is the window's width and one Y unit its height, so a circle is an ellipse
+        /// in graph units; the horizontal component is multiplied by the aspect, exactly as the
+        /// radius is in <see cref="TryStateWidgetClock"/>. Doing it the other way round — an angle
+        /// taken from graph-space extents — would make the hand sweep an ellipse.
+        /// </summary>
+        public static Vector2 StateWidgetHandTip(Vector2 center, float radius, float aspectX,
+                                                 float ratio, float turns)
+        {
+            if (aspectX <= 0f) aspectX = 1f;
+
+            if (turns < 0f) turns = 0f;
+            else if (turns > 1f) turns = 1f;
+
+            // Twelve o'clock is -90 degrees, and a full turn is 2π; clockwise on screen is a
+            // positive angle because Y grows downwards.
+            double angle = -Math.PI * 0.5 + turns * Math.PI * 2.0;
+            float reach = radius * ratio;
+
+            return new Vector2(center.X + (float)Math.Cos(angle) * reach * aspectX,
+                               center.Y + (float)Math.Sin(angle) * reach);
+        }
+
+        /// <summary>
         /// Horizontal span of the card's <b>nameplate</b>, in graph units: from the card's inner
         /// padding (or from the state column, when there is one) to the leading edge of the button
         /// row, less one gap.
@@ -941,10 +1332,13 @@ namespace Vgs.Ui
 
             left = node.Position.X + VgsConstants.NodeWidth * CardTextPaddingRatio;
 
-            Vector2 switchTopLeft, switchSize;
-            if (TryPowerSwitchRect(node, aspectX, out switchTopLeft, out switchSize))
+            // The column, whatever it holds — a switch, a widget, or both (ADR-0042). Asking for
+            // the switch's rectangle here was the same thing until a cargo container arrived with a
+            // widget and no switch: that card would have drawn its name under its own widget.
+            Vector2 columnTopLeft, columnSize;
+            if (TryStateColumnRect(node, aspectX, out columnTopLeft, out columnSize))
             {
-                left = switchTopLeft.X + switchSize.X + VgsConstants.CardButtonTextGap * aspectX;
+                left = columnTopLeft.X + columnSize.X + VgsConstants.CardButtonTextGap * aspectX;
             }
 
             right = rowTopLeft.X - VgsConstants.CardButtonTextGap * aspectX;

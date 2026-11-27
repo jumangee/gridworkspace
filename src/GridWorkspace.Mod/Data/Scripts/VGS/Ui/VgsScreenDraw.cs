@@ -908,6 +908,98 @@ namespace Vgs.Ui
         }
 
         /// <summary>
+        /// Draws a <b>thick line at any angle</b>, clipped to the canvas — the one primitive the
+        /// state widget's clock needs and the editor did not have (ADR-0042 §4).
+        ///
+        /// <b>Why not a rotated quad.</b> <see cref="Segment"/> is axis-aligned for a reason: the
+        /// screen-space API's <c>rotation</c> parameter exists, but its pivot semantics are not
+        /// documented for mods, and a wrong guess rotates the shape around the wrong point. A
+        /// connection line never needed an angle; a clock hand always does.
+        ///
+        /// <b>So the line is a staircase of small squares, one per screen pixel along its longer
+        /// axis.</b> The same construction as <see cref="Disc"/> and as the pipe's bends: the step is
+        /// a single pixel, which the eye reads as a straight edge, and the count is bounded so a
+        /// pathological call cannot cost hundreds of quads. Each step is a square of
+        /// <paramref name="thickness"/> (in vertical units, aspect-corrected horizontally) centred on
+        /// the line, so the joins overlap and the result has no gaps.
+        ///
+        /// <b>The thickness is in vertical units, the step in pixels.</b> A hand has to look the same
+        /// weight at every zoom and on every window shape; a step in layout units would come out one
+        /// pixel tall and <c>width/height</c> wide on a 16:9 window (ADR-0009).
+        /// </summary>
+        public static void ThickSegment(Vector2 from, Vector2 to, float thickness,
+                                        Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        {
+            if (thickness <= 0f) return;
+            if (SafePixelsX <= 0f || SafePixelsY <= 0f) return;
+
+            float dx = to.X - from.X;
+            float dy = to.Y - from.Y;
+
+            // Steps are counted along the longer axis in *pixels*, so the staircase has one step per
+            // pixel whatever the angle and the zoom.
+            float spanX = Math.Abs(dx) * SafePixelsX;
+            float spanY = Math.Abs(dy) * SafePixelsY;
+
+            int steps = (int)(spanX > spanY ? spanX : spanY) + 1;
+            if (steps < 1) steps = 1;
+            if (steps > MaxThickSegmentSteps) steps = MaxThickSegmentSteps;
+
+            float half = thickness * 0.5f;
+            float halfX = half * _clientAspect;
+
+            for (int i = 0; i <= steps; i++)
+            {
+                float t = (float)i / steps;
+                float x = from.X + dx * t;
+                float y = from.Y + dy * t;
+
+                RectClipped(new Vector2(x - halfX, y - half), new Vector2(halfX * 2f, thickness),
+                            clipTopLeft, clipSize, color);
+            }
+        }
+
+        /// <summary>
+        /// Upper bound on squares per <see cref="ThickSegment"/> call. A clock hand is a few dozen
+        /// pixels long at any realistic zoom; the cap only stops a caller that passes a
+        /// screen-length line from queuing thousands of quads in one frame.
+        /// </summary>
+        private const int MaxThickSegmentSteps = 64;
+
+        /// <summary>
+        /// Draws a circle's <b>outline</b> — the face of the state widget's clock (ADR-0042 §4).
+        ///
+        /// There is no arc primitive either, so the ring is a closed polygon of
+        /// <paramref name="segments"/> <see cref="ThickSegment"/> calls. The count is fixed rather
+        /// than derived from the radius: at the sizes a widget is drawn (a face of about 18 px) two
+        /// dozen chords already read as a circle, and a count derived from the radius would make the
+        /// ring's cost depend on the zoom.
+        ///
+        /// The vertices are placed with the same aspect correction the disc uses, so the face is
+        /// round on screen rather than an ellipse in graph units.
+        /// </summary>
+        public static void Ring(Vector2 center, float radius, float thickness, int segments,
+                                Vector2 clipTopLeft, Vector2 clipSize, Color color)
+        {
+            if (radius <= 0f || thickness <= 0f) return;
+            if (segments < 3) segments = 3;
+
+            float xRadius = radius * _clientAspect;
+
+            Vector2 previous = new Vector2(center.X, center.Y - radius);
+            for (int i = 1; i <= segments; i++)
+            {
+                double angle = -Math.PI * 0.5 + (double)i / segments * Math.PI * 2.0;
+                Vector2 point = new Vector2(
+                    center.X + (float)Math.Cos(angle) * xRadius,
+                    center.Y + (float)Math.Sin(angle) * radius);
+
+                ThickSegment(previous, point, thickness, clipTopLeft, clipSize, color);
+                previous = point;
+            }
+        }
+
+        /// <summary>
         /// Draws a filled disc, clipped to the canvas. <paramref name="radius"/> is measured
         /// along Y; the horizontal extent is derived so the result is round on screen.
         ///

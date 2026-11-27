@@ -107,7 +107,7 @@ namespace Vgs.Game
         /// wired", and it is expensive: it walks every slim block, probes toolbars, reads action
         /// lists and re-derives the port slots. It therefore runs on a slow timer
         /// (<c>VgsEditorScreen.RefreshIntervalFrames</c>), while the values that change every
-        /// second — damage today, charge and fill level later — go through
+        /// second — damage, the on/off switch and the category's own reading — go through
         /// <see cref="RefreshState"/>, which reads nothing but those values and rebuilds nothing.
         /// Keeping the two apart is what lets the schema look live without paying for a full
         /// rebuild twice a second (see <c>docs/03-architecture.md</c>, «два прохода»).
@@ -393,11 +393,12 @@ namespace Vgs.Game
         /// that change while the editor is open, and nothing else. Returns how many visible cards
         /// it managed to read.
         ///
-        /// <b>Two values, one pass.</b> Damage (<c>BuildIntegrity / MaxIntegrity</c>) and the
-        /// block's own on/off switch (ADR-0035) are read from the same resolved block, because
-        /// they are two questions about one block and the pass runs for every visible card twice
-        /// a second. Each is written separately: a block whose integrity read threw can still
-        /// have a good switch reading, and losing one must not cost the other.
+        /// <b>Three values, one pass.</b> Damage (<c>BuildIntegrity / MaxIntegrity</c>), the block's
+        /// own on/off switch (ADR-0035) and the category's own reading — the state widget's numbers
+        /// (ADR-0042) — are read from the same resolved block, because they are questions about one
+        /// block and the pass runs for every visible card twice a second. Each is written
+        /// separately: a block whose integrity read threw can still have a good switch reading, and
+        /// losing one must not cost the others.
         ///
         /// <b>What it deliberately does not do:</b> it does not add or remove nodes, does not
         /// touch ports, groups, toolbars or edges, does not reconcile the schema with the world
@@ -458,6 +459,20 @@ namespace Vgs.Game
                     }
                 }
 
+                // The category's own reading, if it has one (ADR-0042). The kind comes from the
+                // node, which copied it out of the category descriptor when it was built, so a
+                // block whose category publishes no widget is not asked at all — and a cargo
+                // container, which has no switch, is still read.
+                if (node.Widget != StateWidgetKind.None)
+                {
+                    WidgetReading widget;
+                    if (StateWidgetProbe.TryRead(block, node.Widget, out widget)
+                        && graph.ApplyWidget(node.EntityId, widget))
+                    {
+                        wrote = true;
+                    }
+                }
+
                 if (wrote) written++;
             }
             return written;
@@ -502,14 +517,29 @@ namespace Vgs.Game
             // (one fire group or two), so it has to be known before the ports are built.
             ToolbarLayout toolbar = ToolbarProbe.Probe(block);
 
+            // The widget's shape is asked of the game, not guessed from the subtype (ADR-0042 §7):
+            // no real cargo container subtype contains "cargocontainer", so the category table alone
+            // left every container without a widget. The interface is exact — IMyCargoContainer,
+            // IMyBatteryBlock, IMyTimerBlock, IMyRefinery, IMyAssembler — and it is the same rule
+            // this project already applies to "can this block drive others" and "is this a
+            // controller".
+            //
+            // The category's row is the fallback, for a modded block whose subtype the table knows
+            // but whose interfaces are not one of the five — and the node applies it, in one place,
+            // when this answers None (Node's constructor). Passing None through rather than
+            // resolving it here keeps the rule in one file.
+            string subtype = SafeSubtype(block);
+            StateWidgetKind widget = StateWidgetProbe.KindOf(block);
+
             var node = new Node(
                 block.EntityId,
-                SafeSubtype(block),
+                subtype,
                 SafeName(block),
                 SafePosition(block),
                 toolbar,
                 EventControllerProbe.IsController(block),
-                gridId);
+                gridId,
+                widget);
 
             var actions = new List<string>();
             var actionNames = new List<string>();

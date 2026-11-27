@@ -269,6 +269,31 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// Writes one state-widget reading into the node's state (ADR-0042). False when the graph
+        /// has no node for that id, which is normal — a block can be destroyed between the state
+        /// pass being scheduled and it running.
+        ///
+        /// <b>Same contract as <see cref="ApplyIntegrity"/> and <see cref="ApplySwitch"/>:</b> it
+        /// touches <see cref="Node.State"/> and nothing else, so a card's ports, slots and frame
+        /// cannot move because a container was filled. The reading is passed in rather than read
+        /// here, because the model layer never touches the world (ADR-0003).
+        ///
+        /// <b>A node without a widget is not an error.</b> The pass asks about every visible card;
+        /// a conveyor tube has no reading, and writing one would be a claim about a picture the
+        /// card does not have. The write is refused, and the caller treats the refusal as "nothing
+        /// to do" — the same way it treats a missing node.
+        /// </summary>
+        public bool ApplyWidget(long entityId, WidgetReading reading)
+        {
+            Node node = GetNode(entityId);
+            if (node == null) return false;
+            if (node.Widget == StateWidgetKind.None) return false;
+
+            node.State.SetWidget(reading);
+            return true;
+        }
+
+        /// <summary>
         /// Adds a node, or returns the existing one with the same entity id.
         /// Idempotent so a refresh can call it blindly.
         /// </summary>

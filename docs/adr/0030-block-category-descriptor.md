@@ -19,6 +19,10 @@
   производное), `Model/GridGraph` (наблюдение через `ControllerState`),
   `Game/GridGraphBuilder`, `Ui/PortGeometry`, `Ui/VgsEditorScreen`,
   `tests/OfflineChecks.cs`. Шлюзы зелёные; приёмка в игре — за человеком (§Verification).
+- Amended by: [0042](0042-state-widget.md) — описатель получает **третье поле** (`Widget`, форма
+  виджета состояния), а `MetricKeys` перестают быть пустыми у пяти категорий: механизм, который
+  здесь заявлен как «живой, но без читателя», получил читателя и форму. §Decision.2 (два вопроса
+  описателя) дополняется третьим.
 - Amended by: [0031](0031-specificity-inheritance-vs-typed-state.md) — §Decision.3
   («nullable-ссылка, а не подкласс») **подтверждается**, но отклонение подклассов в
   §Alternatives было обосновано одной строкой. ADR-0031 разбирает вопрос по существу

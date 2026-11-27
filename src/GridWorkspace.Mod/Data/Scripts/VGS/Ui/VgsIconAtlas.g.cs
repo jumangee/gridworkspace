@@ -33,6 +33,8 @@ namespace Vgs.Ui
         ToggleOn = 8,
         /// <summary>toggle-off (Solid): the card's block-power switch while the block is off or too damaged to be switched on</summary>
         ToggleOff = 9,
+        /// <summary>bolt (Solid): a battery's charge mode — yellow while recharging, red while discharging</summary>
+        Bolt = 10,
     }
 
     /// <summary>
@@ -57,7 +59,7 @@ namespace Vgs.Ui
         public const int TextureSize = 256;
 
         /// <summary>Number of icons the build produced.</summary>
-        public const int Count = 10;
+        public const int Count = 11;
 
         /// <summary>
         /// SubtypeName of <paramref name="icon"/> in Data\GuiTextures.sbc, and therefore the
@@ -78,6 +80,7 @@ namespace Vgs.Ui
                 case VgsIcon.Sliders: return "VGS_Sliders";
                 case VgsIcon.ToggleOn: return "VGS_ToggleOn";
                 case VgsIcon.ToggleOff: return "VGS_ToggleOff";
+                case VgsIcon.Bolt: return "VGS_Bolt";
                 default: return "";
             }
         }
@@ -119,6 +122,7 @@ namespace Vgs.Ui
                 case VgsIcon.Sliders: return 1.137778f;
                 case VgsIcon.ToggleOn: return 1.6f;
                 case VgsIcon.ToggleOff: return 1.6f;
+                case VgsIcon.Bolt: return 1.066667f;
                 default: return 1f;
             }
         }
@@ -147,6 +151,7 @@ namespace Vgs.Ui
                 case VgsIcon.Sliders: return 1.066667f;
                 case VgsIcon.ToggleOn: return 1.5f;
                 case VgsIcon.ToggleOff: return 1.5f;
+                case VgsIcon.Bolt: return 0.823489f;
                 default: return 1f;
             }
         }

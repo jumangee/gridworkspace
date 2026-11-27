@@ -48,6 +48,10 @@
         <SubtypeName>VGS_ToggleOff</SubtypeName>
         <Path>Textures\VGS\Icons\ToggleOff.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_Bolt</SubtypeName>
+        <Path>Textures\VGS\Icons\Bolt.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>

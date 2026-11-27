@@ -32,8 +32,8 @@ namespace Vgs.Model
     ///
     /// <b>The table is indexed by category, not by a family string</b> (ADR-0030): a subtype is
     /// classified once, by <see cref="ResolveCategory"/>, and the category's
-    /// <see cref="CategoryDescriptor"/> answers what fires its toolbar. The same descriptor is
-    /// where a category's own state readings will be declared (Stage 5.2), so per-category
+    /// <see cref="CategoryDescriptor"/> answers what fires its toolbar. The same descriptor declares
+    /// the category's own state readings and the shape that draws them (ADR-0042), so per-category
     /// knowledge stays in one row instead of spreading into a second table.
     /// </summary>
     public static class BlockPortCatalog
@@ -48,8 +48,8 @@ namespace Vgs.Model
         public const string FalseKeySuffix = "#false";
 
         /// <summary>
-        /// What the editor knows about each category: the events that fire its toolbar, and the
-        /// keys of its own state readings (ADR-0030).
+        /// What the editor knows about each category: the events that fire its toolbar, the keys of
+        /// its own state readings, and the shape that draws them (ADR-0030, ADR-0042).
         ///
         /// A row is the whole knowledge of one category — there is no second table. Categories
         /// without a row fall back to <see cref="UnknownDescriptor"/>, which is the same thing as
@@ -57,12 +57,23 @@ namespace Vgs.Model
         ///
         /// Only toolbar-triggering events belong here. A battery announcing a charge change to C#
         /// code cannot put anything on its own toolbar, so it is not a source in this editor.
+        ///
+        /// <b>The five rows that carry a widget are the five that carry metric keys</b>, and the
+        /// counts have to agree — <c>StateWidget.MetricCount(widget) == metricKeys.Length</c> — which
+        /// the offline gate asserts. A row with a widget and no keys would draw a bar from a number
+        /// nobody writes; a row with keys and no widget would read the world for a picture that has
+        /// nowhere to go.
         /// </summary>
         private static readonly Dictionary<BlockCategory, CategoryDescriptor> Descriptors =
             new Dictionary<BlockCategory, CategoryDescriptor>
             {
                 { BlockCategory.Cockpit, new CategoryDescriptor(new[] { "TargetLocked", "TargetLost" }, null) },
-                { BlockCategory.Timer, new CategoryDescriptor(new[] { "Triggered" }, null) },
+
+                // A timer's widget is a countdown, not a fraction of anything: the reading is how
+                // much of the delay has elapsed, and the hand returning to twelve is the trigger.
+                { BlockCategory.Timer, new CategoryDescriptor(new[] { "Triggered" },
+                                                              new[] { "Elapsed" }, StateWidgetKind.Clock) },
+
                 { BlockCategory.Sensor, new CategoryDescriptor(new[] { "Detected" }, null) },
                 { BlockCategory.EventController, new CategoryDescriptor(new[] { "EventTriggered" }, null) },
                 { BlockCategory.ButtonPanel, new CategoryDescriptor(new[] { "ButtonPressed" }, null) },
@@ -71,7 +82,28 @@ namespace Vgs.Model
                 { BlockCategory.Door, new CategoryDescriptor(new[] { "OpenChanged" }, null) },
                 { BlockCategory.LandingGear, new CategoryDescriptor(new[] { "LockedChanged" }, null) },
                 { BlockCategory.Connector, new CategoryDescriptor(new[] { "LockedChanged" }, null) },
-                { BlockCategory.SafeZone, new CategoryDescriptor(new[] { "Entered", "Left" }, null) }
+                { BlockCategory.SafeZone, new CategoryDescriptor(new[] { "Entered", "Left" }, null) },
+
+                // The five state widgets (ADR-0042). A cargo container is the plainest reading —
+                // how full the box is — and its shape is the one the others are variations of.
+                { BlockCategory.CargoContainer, new CategoryDescriptor(null,
+                                                                       new[] { "Fill" },
+                                                                       StateWidgetKind.FillBar) },
+
+                // A battery reads the same fraction and adds the one thing it knows that a
+                // container does not: which way the charge is going.
+                { BlockCategory.Battery, new CategoryDescriptor(null,
+                                                                new[] { "Charge" },
+                                                                StateWidgetKind.Battery) },
+
+                // Two inventories, two bars, in the order the block uses them: what goes in on the
+                // leading side, what comes out on the trailing one.
+                { BlockCategory.Refinery, new CategoryDescriptor(null,
+                                                                 new[] { "InputFill", "OutputFill" },
+                                                                 StateWidgetKind.Production) },
+                { BlockCategory.Assembler, new CategoryDescriptor(null,
+                                                                  new[] { "InputFill", "OutputFill" },
+                                                                  StateWidgetKind.Production) }
             };
 
         /// <summary>
@@ -121,7 +153,18 @@ namespace Vgs.Model
             if (s.Contains("programmable")) return BlockCategory.Programmable;
             if (s.Contains("buttonpanel")) return BlockCategory.ButtonPanel;
             if (s.Contains("landinggear")) return BlockCategory.LandingGear;
-            if (s.Contains("cargocontainer") || s.Contains("cargosmall")) return BlockCategory.CargoContainer;
+            // Cargo containers are the one family whose real subtypes never say "cargo": the game
+            // calls them LargeBlockLargeContainer, SmallBlockSmallContainer,
+            // LargeBlockLargeIndustrialContainer and so on. Matching only "cargocontainer" left all
+            // twenty of them Unknown (ADR-0042 §7). "container" covers the storage blocks; the
+            // decorative ones (a locker room, a bookshelf, a weapon rack, a cargo terminal) do not
+            // contain it either, which is why the *widget* is decided by the game's interface and
+            // this table is only its fallback.
+            if (s.Contains("container") || s.Contains("cargocontainer") || s.Contains("cargosmall"))
+            {
+                return BlockCategory.CargoContainer;
+            }
+
             if (s.Contains("solarpanel")) return BlockCategory.SolarPanel;
             if (s.Contains("jumpdrive")) return BlockCategory.JumpDrive;
             if (s.Contains("safezone")) return BlockCategory.SafeZone;
