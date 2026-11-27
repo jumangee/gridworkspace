@@ -839,6 +839,7 @@ classDiagram
         +string GroupName
         +string SubtypeId
         +string DisplayName
+        +string TypeDisplayName
         +Vector2 Position
         +Vector2 FrameSize
         +bool Placed
@@ -1654,7 +1655,9 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
   названию типа* («Timer Block», «Таймер»), которое берёт из тултипа строки списка. Поэтому
   `Node` несёт `TypeDisplayName`, прочитанный у блока при построении графа
   (`IMyCubeBlock.DefinitionDisplayNameText`), а не `SubtypeId`: подтип — идентификатор движка
-  («LargeBlockTimer»), которого игрок не набирает и которого нет в его языке.
+  («LargeBlockTimer»), которого игрок не набирает и которого нет в его языке. **Это же поле
+  рисуется второй строкой карточки** ([ADR-0043](adr/0043-card-type-line-is-localized.md)):
+  подпись и поиск обязаны называть блок одинаково, поэтому второго источника названия типа нет.
 - **Клавиатура**: поле всегда является целью ввода; символы читаются из `IMyInput.TextInput`
   раз в кадр (игра подменяет буфер при чтении, поэтому каждый символ приходит ровно однажды —
   [`01-research/api-terminal-search.md`](01-research/api-terminal-search.md) §2). Поверх этого —
@@ -1840,7 +1843,7 @@ VgsEditorScreen ──► VgsScreenDraw.Icon(VgsIcon.Xmark, центр, высо
 | Часть | Вопрос | Что в ней | Геометрия |
 |---|---|---|---|
 | **колонка состояния** | что блок делает **сейчас** | тумблер питания в верхней полосе (40% внутренней высоты, с зазором 2 px от граней) и **виджет состояния** в нижней (60% минус зазор 2 px под тумблером) | `PortGeometry.TryStateColumnRect`, `TryPowerSwitchRect`, `TryStateWidgetArea` |
-| **шильдик** | что блок **есть** | имя, подтип, описание режима | `PortGeometry.TryCardTextSpan` |
+| **шильдик** | что блок **есть** | имя, отображаемый тип (локализованный, ADR-0043), описание режима | `PortGeometry.TryCardTextSpan` |
 | **ряд кнопок** | что можно **сделать** со схемой | переход, отслеживание, привязки | `PortGeometry.TryCardButtonRow` |
 
 Три части не смешиваются: у каждой своё правило размера. Поэтому добавление тумблера не сдвинуло

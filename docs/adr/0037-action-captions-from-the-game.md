@@ -3,6 +3,9 @@
 - Status: accepted
 - Date: 2026-11-25
 - Supersedes: — (уточняет §4a ADR-0002 и §4 ADR-0033)
+- Amended by: [0043](0043-card-type-line-is-localized.md) — §4 в части строки лога: к подтипу
+  добавлено название типа (подтип у «default»-определений пуст), у группы вместо подтипа и
+  entity id печатается `group:<имя>`; остальной формат тот же.
 - Joint review: —
 
 ## Context

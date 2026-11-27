@@ -65,6 +65,11 @@
 - **«Почему редактор на русском, а кнопка в терминале осталась английской (или наоборот)?»** →
   [ADR-0033](adr/0033-localization.md) §Consequences и
   [01-research/api-language.md](01-research/api-language.md).
+- **«Почему на карточке „Таймер“, а не `LargeBlockTimer`, и почему раньше было `Unknown`?»** →
+  [ADR-0043](adr/0043-card-type-line-is-localized.md): вторая строка карточки — локализованное
+  название типа (`DefinitionDisplayNameText`), а не подтип движка; у «default»-определений игры
+  (двери, вентиляция, кислородные баки) подтип пуст, и локализованное название — единственное,
+  что у них есть.
 - **«Как добавить третий язык?»** → [ADR-0033](adr/0033-localization.md) §Consequences:
   словарь в `Core/VgsStrings.cs`, член в `VgsLanguage`, одна ветка в
   `Game/GameLanguage.Translate`, имя в цикле проверки `tests/OfflineChecks.cs`. **Нового

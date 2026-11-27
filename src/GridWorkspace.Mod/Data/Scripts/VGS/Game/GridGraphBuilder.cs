@@ -1459,6 +1459,14 @@ namespace Vgs.Game
                 // BlockDefinition is a SerializableDefinitionId struct (never null); its
                 // SubtypeName is the canonical subtype id used in save data and in every
                 // modding reference.
+                //
+                // <b>An empty subtype is a real answer, not a failure.</b> The game ships a
+                // "default" definition with an empty <c>&lt;Id&gt;&lt;SubtypeId/&gt;</c> for
+                // several types (Door, OxygenTank, OxygenGenerator, AirVent, ...), and blocks
+                // placed from it report exactly that. A placeholder returned here would make
+                // the identity field lie; it is also what put the literal "Unknown" on the
+                // card before ADR-0043. The card's type line comes from
+                // <see cref="SafeTypeDisplayName"/> instead, and the two must not be confused.
                 string subtype = block.BlockDefinition.SubtypeName;
                 if (!string.IsNullOrEmpty(subtype)) return subtype;
             }
@@ -1466,9 +1474,18 @@ namespace Vgs.Game
             {
                 VgsLog.Throttled("subtype", "could not read block subtype", e, 300);
             }
-            return "Unknown";
+            return string.Empty;
         }
 
+        /// <summary>
+        /// The block's own name, or the type name when the game cannot answer.
+        ///
+        /// The fallback is <see cref="SafeTypeDisplayName"/>, not <see cref="SafeSubtype"/>: the
+        /// subtype is empty for the game's "default" definitions (Door, OxygenTank, AirVent, ...),
+        /// so falling back to it would leave the card's <em>title</em> blank on exactly the blocks
+        /// ADR-0043 was written for. A title is never allowed to be empty — the type name is the
+        /// closest true answer, and the card then reads "Дверь" / "Дверь" instead of "" / "Дверь".
+        /// </summary>
         private static string SafeName(IMyTerminalBlock block)
         {
             try
@@ -1478,26 +1495,33 @@ namespace Vgs.Game
             }
             catch (Exception e)
             {
-                // Falls through to the subtype, which is always available.
+                // Falls through to the type name. The game fills CustomName from the definition's
+                // display name, so an empty one here means the read failed, not that the block
+                // is unnamed.
                 VgsLog.Throttled("name", "could not read block name", e, 300);
             }
-            return SafeSubtype(block);
+            return SafeTypeDisplayName(block);
         }
 
         /// <summary>
         /// The block's type as the player sees it — the localized definition name, which is what
-        /// the terminal's block list shows and searches (ADR-0023).
+        /// the terminal's block list shows and searches (ADR-0023) and what the card draws under
+        /// the block's name (ADR-0043).
         ///
         /// <b>Why not <see cref="SafeSubtype"/>.</b> The subtype is the engine id
         /// ("LargeBlockTimer"): a player never types it, and it is the same string in every
         /// language. The terminal searches the *display* name, so the editor has to as well, or
         /// the two searches disagree on exactly the queries a player is most likely to type —
-        /// "timer", "таймер".
+        /// "timer", "таймер". The same argument applies to the card: the subtype line read
+        /// "LargeBlockTimer" in a Russian game, and "Unknown" for the game's legacy definitions
+        /// whose subtype is empty, which is what ADR-0043 fixes.
         ///
-        /// Falls back to the subtype when the game cannot answer: a block that is still loading
-        /// its definition, or one whose definition was removed with a mod. An empty string would
-        /// silently remove the type from the search, which is a worse failure than searching the
-        /// engine id.
+        /// <b>The chain, and why it ends in a translated placeholder.</b> The localized name is
+        /// the answer; the subtype is the fallback for a definition the game cannot name (a block
+        /// still loading, or one whose definition was removed with a mod); and the last resort is
+        /// <see cref="VgsText.BlockTypeUnknown"/>, because an empty line would silently remove
+        /// the type from the search and from the card, and an English literal would be the very
+        /// defect this method exists to avoid. The result is therefore never empty for a block.
         /// </summary>
         private static string SafeTypeDisplayName(IMyTerminalBlock block)
         {
@@ -1510,7 +1534,11 @@ namespace Vgs.Game
             {
                 VgsLog.Throttled("typedefname", "could not read block type name", e, 300);
             }
-            return SafeSubtype(block);
+
+            string subtype = SafeSubtype(block);
+            if (!string.IsNullOrEmpty(subtype)) return subtype;
+
+            return VgsText.BlockTypeUnknown;
         }
 
         private static Vector3I SafePosition(IMyTerminalBlock block)

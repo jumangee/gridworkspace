@@ -200,6 +200,17 @@ namespace Vgs.Core
         public static string NoGrid { get { return S("NO_GRID"); } }
         public static string GridFallbackName { get { return S("GRID_FALLBACK_NAME"); } }
 
+        // ---- Card (ADR-0043) ----
+
+        /// <summary>
+        /// The card's type line for a block whose type the game cannot name at all — no localized
+        /// definition name and no subtype. A last resort, not a default: it exists so that the
+        /// line is never empty and never an English literal, which is exactly what the card
+        /// showed before ADR-0043. Written by <c>GridGraphBuilder.SafeTypeDisplayName</c> into
+        /// <c>Node.TypeDisplayName</c>; the draw pass reads the node, not this property.
+        /// </summary>
+        public static string BlockTypeUnknown { get { return S("BLOCK_TYPE_UNKNOWN"); } }
+
         // ---- Bottom bar: modes menu and block search (ADR-0023) ----
 
         public static string SearchPlaceholder { get { return S("SEARCH_PLACEHOLDER"); } }

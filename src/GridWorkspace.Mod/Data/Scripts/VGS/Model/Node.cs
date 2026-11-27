@@ -63,7 +63,16 @@ namespace Vgs.Model
         /// </summary>
         public readonly string GroupName;
 
-        /// <summary>Block definition subtype, e.g. "LargeBlockCockpit". Empty for a group.</summary>
+        /// <summary>
+        /// Block definition subtype, e.g. "LargeBlockCockpit". Empty for a group.
+        ///
+        /// <b>Empty is also a real answer for a block.</b> The game ships "default" definitions
+        /// with an empty subtype for several types (Door, OxygenTank, OxygenGenerator, AirVent,
+        /// ...), and blocks placed from them report exactly that; a failed read yields the same
+        /// empty string. This field is the engine identity — it is what the category is resolved
+        /// from and what the log prints — and it is deliberately <b>not</b> what the card shows:
+        /// the player-visible type is <see cref="TypeDisplayName"/> (ADR-0043).
+        /// </summary>
         public readonly string SubtypeId;
 
         /// <summary>Grid coordinates of the block, used to seed a readable initial layout.</summary>
@@ -98,14 +107,24 @@ namespace Vgs.Model
 
         /// <summary>
         /// The block's <b>type</b> as the player sees it — the localized definition name, e.g.
-        /// "Timer Block" or "Таймер" (ADR-0023). Empty for a group.
+        /// "Timer Block" or "Таймер" (ADR-0023, ADR-0043). <b>Null</b> for a group, and null for a
+        /// block until the refresh pass writes it; once written it is never empty, because
+        /// <c>GridGraphBuilder.SafeTypeDisplayName</c> falls back to the subtype and then to a
+        /// translated placeholder. Null rather than empty on purpose: a caller that wants to know
+        /// "has this node been through the world pass" can ask, and both readers below tolerate
+        /// null.
         ///
-        /// It exists for one reason: the terminal's block search looks in the block's name
-        /// <em>and in its type</em> (`MyTerminalControlPanel.blockSearch_TextChanged`, verified
-        /// by IL — see <c>docs/01-research/api-terminal-search.md</c> §1), and the editor's search
-        /// has to match it. <see cref="SubtypeId"/> is not a substitute: it is the engine id
-        /// ("LargeBlockTimer"), which a player never types and which does not exist in the
-        /// player's language at all. Refreshed with the name.
+        /// It serves two readers, and they must not disagree about what a block is called:
+        ///
+        ///  * the card, as the line under the name — the old line was <see cref="SubtypeId"/>,
+        ///    which read "LargeBlockTimer" in every language and "Unknown" for the game's legacy
+        ///    definitions (ADR-0043);
+        ///  * the search field. The terminal's block search looks in the block's name <em>and in
+        ///    its type</em> (`MyTerminalControlPanel.blockSearch_TextChanged`, verified by IL —
+        ///    see <c>docs/01-research/api-terminal-search.md</c> §1), and the editor's search has
+        ///    to match it. <see cref="SubtypeId"/> is not a substitute: it is the engine id
+        ///    ("LargeBlockTimer"), which a player never types and which does not exist in the
+        ///    player's language at all. Refreshed with the name.
         /// </summary>
         public string TypeDisplayName; // review:allow R009 written only by the refresh pass
 
@@ -526,8 +545,14 @@ namespace Vgs.Model
             return null;
         }
 
+        /// <summary>
+        /// The node for a log line or a debugger. The subtype is bracketed because it is the
+        /// identity, but it is <b>empty for a group and for the game's "default" definitions</b>
+        /// (ADR-0043), so an empty bracket is dropped rather than printed as "Дверь []".
+        /// </summary>
         public override string ToString()
         {
+            if (string.IsNullOrEmpty(SubtypeId)) return DisplayName;
             return DisplayName + " [" + SubtypeId + "]";
         }
     }

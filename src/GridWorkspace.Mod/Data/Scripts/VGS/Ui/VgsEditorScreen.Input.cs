@@ -1450,9 +1450,22 @@ namespace Vgs.Ui
             // The log is the only place a wrong list can be diagnosed from: the editor shows the
             // block's own actions, so a report of "the event controller offers font actions" is
             // answered by this line naming the block and every id that was read.
+            //
+            // The type name comes before the subtype because the subtype is empty for the game's
+            // "default" definitions (Door, OxygenTank, AirVent, ...) — the eight blocks ADR-0043
+            // was written for — and a log line that starts with two spaces names nothing. The
+            // subtype stays in the line: it is the identity a bug report is searched by, and the
+            // type name is what the player saw on the card.
+            //
+            // A group has neither of those: no type, no subtype and no entity id (ADR-0015). It
+            // is named the way the rest of this file names one — "group:<name>" — or the line
+            // would read "for [] (0)", which is the very thing the type name was added to fix.
             VgsLog.Info((mode == ActionMenuMode.Manual ? "manual action menu for " : "action menu for ")
-                        + target.SubtypeId + " (" + target.EntityId + "): "
-                        + _menuRows.Count + " action(s): " + JoinActionIds(_menuRows));
+                        + (target.IsGroup
+                               ? "group:" + target.GroupName
+                               : target.TypeDisplayName + " [" + target.SubtypeId + "] ("
+                                 + target.EntityId + ")")
+                        + ": " + _menuRows.Count + " action(s): " + JoinActionIds(_menuRows));
         }
 
         /// <summary>

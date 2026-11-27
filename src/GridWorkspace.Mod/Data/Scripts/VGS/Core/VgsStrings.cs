@@ -67,6 +67,13 @@ namespace Vgs.Core
                 { "NO_GRID", "Could not determine the grid" },
                 { "GRID_FALLBACK_NAME", "Grid" },
 
+                // ---- Card (ADR-0043) ----
+                //
+                // The type line of a block whose type the game cannot name at all: no localized
+                // definition name and no subtype. It is a last resort, not a default — every
+                // vanilla block and every properly declared modded block has a name.
+                { "BLOCK_TYPE_UNKNOWN", "Unknown type" },
+
                 // ---- Bottom bar: modes menu and block search (ADR-0023) ----
                 { "SEARCH_PLACEHOLDER", "Search blocks" },
                 { "MODES_SHOW_HIDDEN", "Show/hide invisible" },
@@ -203,6 +210,9 @@ namespace Vgs.Core
                 { "LOADING", "Чтение блоков грида…" },
                 { "NO_GRID", "Не удалось определить грид" },
                 { "GRID_FALLBACK_NAME", "Грид" },
+
+                // ---- Карточка (ADR-0043) ----
+                { "BLOCK_TYPE_UNKNOWN", "Тип неизвестен" },
 
                 // ---- Bottom bar ----
                 { "SEARCH_PLACEHOLDER", "Поиск блока" },

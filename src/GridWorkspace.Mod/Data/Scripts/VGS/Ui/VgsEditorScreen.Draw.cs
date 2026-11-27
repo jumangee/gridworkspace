@@ -516,8 +516,8 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Draws one card: name, subtype, the optional status line, its button row and its port
-        /// bars.
+        /// Draws one card: name, its localized type, the optional status line, its button row and
+        /// its port bars.
         ///
         /// The card is deliberately just a label. Ports are drawn *outside* it, as bars
         /// hanging underneath, and only the ones the user has actually connected — which is
@@ -635,7 +635,13 @@ namespace Vgs.Ui
                                    VgsConstants.NodeTitleScale * zoomText, Fade(ColText, alpha),
                                    textWidth);
 
-                VgsScreenDraw.Text(node.SubtypeId,
+                // The type line, in the language the game is running in (ADR-0043). It used to be
+                // `SubtypeId`, which is the engine's identifier: "LargeBlockTimer" in every
+                // language, and "Unknown" for the game's legacy definitions whose subtype is
+                // empty. The localized name is the same string the search matches and the
+                // terminal shows, so the card and the search cannot disagree about what a block
+                // is called.
+                VgsScreenDraw.Text(node.TypeDisplayName,
                                    screenPos + new Vector2(textLeft, band * 1.10f),
                                    VgsConstants.NodeSubtitleScale * zoomText, Fade(ColTextDim, alpha),
                                    textWidth);
