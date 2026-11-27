@@ -894,6 +894,26 @@ namespace Vgs.Model
         }
 
         /// <summary>
+        /// True when a stored editor list was made for an event the controller no longer checks,
+        /// and therefore no longer describes anything (ADR-0044).
+        ///
+        /// <b>Why the event id is part of the record.</b> The game clears its own selection when
+        /// the player picks another event, and it clears it before anyone opens the schema, so
+        /// the editor cannot notice the switch by watching the world — it has to remember which
+        /// event it added its own entries for. That is the number this rule compares.
+        ///
+        /// <b>Zero on either side is "not known", not "another event".</b> A value written by an
+        /// older version has no event id, and a block whose event component has not been attached
+        /// yet reports none either; treating either as a mismatch would erase a player's list on
+        /// the strength of a missing reading. Only two known and different ids are evidence.
+        /// </summary>
+        public static bool IsWatchListStale(long storedEventId, long currentEventId)
+        {
+            if (storedEventId <= 0 || currentEventId <= 0) return false;
+            return storedEventId != currentEventId;
+        }
+
+        /// <summary>
         /// Drops from <paramref name="overlayIds"/> every id the game has adopted into its own
         /// list, and returns true when something was dropped (ADR-0018).
         ///

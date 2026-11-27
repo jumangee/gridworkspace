@@ -329,6 +329,333 @@ namespace Vgs.Game
         }
 
         /// <summary>
+        /// What this session wrote into one controller's event component: the component itself and
+        /// the blocks it was subscribed to.
+        ///
+        /// <b>The ids are kept, not re-read.</b> Releasing a subscription needs the blocks, and the
+        /// stored list is exactly what may already be gone — the player can detach the last entry
+        /// from the schema after switching the event, and then the storage is empty while the old
+        /// component is still firing. What this session subscribed is known to this session, so it
+        /// is remembered here rather than inferred from a value that may have been cleared.
+        /// </summary>
+        private sealed class Subscription
+        {
+            public readonly IMyEventComponentWithGui Component;
+            public readonly List<long> Ids = new List<long>(4);
+
+            public Subscription(IMyEventComponentWithGui component)
+            {
+                Component = component;
+            }
+        }
+
+        /// <summary>
+        /// The event component each controller was last subscribed into, by block entity id.
+        ///
+        /// <b>Why a reference has to be kept.</b> Switching the event in the terminal does not
+        /// destroy the old component — it stays attached to the block, unselected, and keeps the
+        /// subscriptions the editor made in it (see
+        /// <c>docs/01-research/api-event-controller.md</c> §1f). The game only unsubscribes the
+        /// blocks of its *own* list, so an editor-added block would go on firing the controller's
+        /// toolbar under an event the player no longer checks. The selected component is readable
+        /// through <c>SelectedEvent</c>; the old one is not reachable at all, so the only way to
+        /// release it is to remember it when the subscription is made.
+        ///
+        /// <b>Session state, and cleared on unload.</b> The entries are game objects; a static
+        /// map that outlived the session would be exactly the leak of R-002. The keeper clears it
+        /// in <see cref="ReleaseSubscriptions"/>, and an entry is dropped as soon as the block is
+        /// gone, the component is released, or the list it describes is emptied from the schema.
+        /// </summary>
+        private static readonly Dictionary<long, Subscription> _subscriptions =
+            new Dictionary<long, Subscription>(4);
+
+        /// <summary>
+        /// Reused buffer of controller ids for the subscription poll: the loop removes entries as
+        /// it goes, and a dictionary cannot be modified while it is enumerated.
+        /// </summary>
+        private static readonly List<long> _pollScratch = new List<long>(4);
+
+        /// <summary>
+        /// Reads the editor's own additions to a controller's list — the entries the game does not
+        /// store — and reconciles them with the event they were added for (ADR-0018, ADR-0044).
+        ///
+        /// <b>The event decides whether the list still exists.</b> Picking another event in the
+        /// terminal makes the game throw its own selection away, and a watch the editor added
+        /// through the event component is subscribed to a component that is no longer selected. So
+        /// the stored list carries the id of the event it was made for, and a list that belongs to
+        /// another event is <b>dropped</b> here: released from the old component, emptied in
+        /// storage, and returned empty, which removes its bars on the same refresh. This is the one
+        /// place that decides it — the graph builder and the keeper both come through here, so the
+        /// schema and the live component cannot disagree about a list that is gone.
+        ///
+        /// <b>Two writes, both on the server only.</b> A stale list is emptied, and a list written
+        /// by an older version — which stored no event id — is stamped with the current one instead
+        /// of being erased: its ids are a player's data, and "the file predates the field" is not
+        /// evidence that the event changed. On a client nothing is written; the empty list is
+        /// returned all the same, so the picture follows the game there too.
+        ///
+        /// Returns false only when the block stores nothing at all, which the keeper has to tell
+        /// apart from "stores an empty list" (see <see cref="NodeStateStore.HasStorage"/>). The
+        /// returned <paramref name="eventId"/> is the event the list now belongs to, so a caller
+        /// that writes the list back — pruning an adopted id, say — cannot lose it.
+        /// </summary>
+        public static bool ReadOverlay(IMyTerminalBlock controller, List<long> into, out long eventId)
+        {
+            eventId = 0;
+            if (into == null) return false;
+
+            if (!NodeStateStore.TryReadWatchList(controller, into, out eventId))
+            {
+                into.Clear();
+                eventId = 0;
+                return false;
+            }
+
+            if (into.Count == 0) return true;
+
+            // 0 is "the game has not said which event it checks", not "another event": an event
+            // component that is not attached yet must not cost the player their list.
+            long current = SelectedEventId(controller);
+            if (current <= 0) return true;
+
+            if (GridGraph.IsWatchListStale(eventId, current))
+            {
+                // Drop clears the list and writes the empty value itself; clearing it again here
+                // would read as a second, separate decision.
+                Drop(controller, into, eventId, current);
+                eventId = current;
+                return true;
+            }
+
+            if (eventId == 0)
+            {
+                // Written before the event id was part of the value. Claim it for the event the
+                // controller checks now, which is the assumption the old code made every refresh.
+                eventId = current;
+                if (IsServer()) NodeStateStore.SaveWatchList(controller, into, eventId);
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Drops a stored watch list whose event the controller no longer checks, without a caller
+        /// having read it first: the same decision as <see cref="ReadOverlay"/>, made on a timer so
+        /// the reset happens when the player switches the event, not when they next open the schema.
+        ///
+        /// <b>An emptied list is not a reason to skip the release.</b> The player can detach the
+        /// last entry from the schema and then switch the event; the storage is empty, but the
+        /// subscription made into the old component is still live. So the release happens on the
+        /// strength of the remembered component alone, and the storage is only read to decide
+        /// whether there is a list to erase as well.
+        ///
+        /// Returns true when something was released or dropped. Everything it touches is guarded:
+        /// it runs from the session tick, and an exception there would reach the game loop.
+        /// </summary>
+        public static bool DropStaleWatchList(IMyTerminalBlock controller)
+        {
+            if (controller == null) return false;
+
+            try
+            {
+                long current = SelectedEventId(controller);
+                if (current <= 0) return false;              // no event: no news
+
+                var list = new List<long>();
+                long eventId;
+                if (!NodeStateStore.TryReadWatchList(controller, list, out eventId) || list.Count == 0)
+                {
+                    return ReleaseSubscription(controller, current);
+                }
+
+                if (!GridGraph.IsWatchListStale(eventId, current))
+                {
+                    return ReleaseSubscription(controller, current);
+                }
+
+                Drop(controller, list, eventId, current);
+                return true;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("ec-drop-stale", "could not drop a stale watch list", e, 300);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Forgets every remembered event component. Called by the keeper on unload, so no game
+        /// object survives the session in a static map (R-002). Nothing is written to any block:
+        /// a subscription that was still live dies with the session it belonged to.
+        /// </summary>
+        public static void ReleaseSubscriptions()
+        {
+            _subscriptions.Clear();
+            _pollScratch.Clear();
+        }
+
+        /// <summary>
+        /// Drops the watch lists of controllers whose event the player has switched, and releases
+        /// the subscriptions this session made in the component that is no longer selected
+        /// (ADR-0044). Called from the session tick, once a second.
+        ///
+        /// <b>The cheap question first.</b> The remembered component knows which event it is, so a
+        /// controller whose event did not change costs two field reads and no storage access: the
+        /// stored value is only parsed when there is something to drop. On a normal ship that is
+        /// zero controllers, and on an edited one it is a handful of comparisons per second.
+        ///
+        /// <b>The decision itself is not repeated here.</b> Once the component's event differs from
+        /// the controller's, the controller is handed to <see cref="DropStaleWatchList"/>, which
+        /// owns the rule: it erases a list that belongs to another event and, in every case where
+        /// the component is no longer the selected one, releases the subscription — including when
+        /// the storage holds nothing, because the ids it needs come from the map and not from the
+        /// value that may already be gone.
+        ///
+        /// A controller whose block is gone is forgotten rather than retried: the entity id is
+        /// unique for the session, so the entry can never become valid again.
+        /// </summary>
+        public static void PollStaleSubscriptions()
+        {
+            if (_subscriptions.Count == 0) return;
+
+            try
+            {
+                // Server only: the reset writes to the block's storage and calls the event
+                // component; a client can do neither, and the schema there follows the game on its
+                // own refresh.
+                if (!IsServer()) return;
+
+                // Collected first: the loop removes entries, and a dictionary cannot be modified
+                // while it is enumerated. The list is reused, so the poll allocates nothing.
+                _pollScratch.Clear();
+                foreach (KeyValuePair<long, Subscription> entry in _subscriptions)
+                {
+                    _pollScratch.Add(entry.Key);
+                }
+
+                for (int i = 0; i < _pollScratch.Count; i++)
+                {
+                    long entityId = _pollScratch[i];
+
+                    IMyTerminalBlock block;
+                    if (!EntityResolver.TryResolveTerminalBlock(entityId, out block))
+                    {
+                        // The block is gone; the entity id is unique for the session, so the entry
+                        // can never become valid again.
+                        ForgetSubscription(entityId);
+                        continue;
+                    }
+
+                    Subscription entry;
+                    if (!_subscriptions.TryGetValue(entityId, out entry)) continue;
+
+                    long current = SelectedEventId(block);
+                    if (current <= 0) continue;                      // no event: no news
+                    if (entry.Component != null && entry.Component.UniqueSelectionId == current)
+                    {
+                        continue;                                    // still the same component
+                    }
+
+                    // The event changed (or the component is unreadable): drop the list, and
+                    // release the subscription even when there is no list left to drop.
+                    DropStaleWatchList(block);
+                }
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("ec-poll-stale", "could not poll watch subscriptions", e, 300);
+            }
+        }
+
+        /// <summary>
+        /// The whole reset: unsubscribe the remembered component, empty the storage, log it. Called
+        /// only when the list is known to belong to another event.
+        ///
+        /// <b>The list is emptied before it is written back, and that order is the fix itself.</b>
+        /// The ids are needed by <see cref="ReleaseSubscription"/> — it can only unsubscribe blocks
+        /// it can name — and the value that survives must be the empty one. Writing the list back
+        /// with the new event id would keep every entry and merely relabel it, which is the defect
+        /// this method exists to remove, in its most durable form: it would come back after a
+        /// reload.
+        /// </summary>
+        private static void Drop(IMyTerminalBlock controller, List<long> ids,
+                                 long storedEventId, long currentEventId)
+        {
+            int dropped = ids.Count;
+
+            ReleaseSubscription(controller, currentEventId);
+            ids.Clear();
+
+            if (IsServer()) NodeStateStore.SaveWatchList(controller, ids, currentEventId);
+
+            // Throttled, not Info: on a client the storage is not written, so the condition stays
+            // true on every refresh until the screen closes, and an unthrottled line would fill
+            // the log with one sentence per frame pair.
+            VgsLog.Throttled("ec-overlay-stale",
+                             "controller " + controller.EntityId + ": the event changed ("
+                             + storedEventId + " -> " + currentEventId + "), so " + dropped
+                             + " editor-added watch(es) were dropped", 60);
+        }
+
+        /// <summary>
+        /// Unsubscribes the blocks this session subscribed from the component it wrote them into,
+        /// when that component is not the selected one any more (ADR-0044).
+        ///
+        /// <b>Why this is not optional.</b> The game unsubscribes only the blocks of its own
+        /// selection when the event changes, so a component that is no longer selected keeps
+        /// calling <c>TriggerAction</c> for the blocks the editor put there — the controller would
+        /// go on firing its toolbar under an event it does not check, while the schema showed
+        /// nothing. Dropping the picture without dropping the subscription is the lie this project
+        /// forbids in the other direction.
+        ///
+        /// <b>The ids come from the map, not from the storage.</b> The stored list may have been
+        /// emptied by the player detaching the last entry from the schema, and the subscription
+        /// would then be unreleasable if the ids were read from it. What this session subscribed is
+        /// what this session remembers.
+        ///
+        /// Returns true when an entry was released (or when there was nothing left to release).
+        /// </summary>
+        private static bool ReleaseSubscription(IMyTerminalBlock controller, long currentEventId)
+        {
+            if (!IsServer()) return false;
+
+            Subscription entry;
+            if (!_subscriptions.TryGetValue(controller.EntityId, out entry)) return false;
+
+            // The component is still the selected one: this is not a switch, and the subscription
+            // is live and wanted.
+            if (entry.Component != null && entry.Component.UniqueSelectionId == currentEventId)
+            {
+                return false;
+            }
+
+            _subscriptions.Remove(controller.EntityId);
+            if (entry.Component == null || entry.Ids.Count == 0) return true;
+
+            try
+            {
+                var blocks = new List<IMyTerminalBlock>(entry.Ids.Count);
+                for (int i = 0; i < entry.Ids.Count; i++)
+                {
+                    IMyTerminalBlock block;
+                    if (EntityResolver.TryResolveTerminalBlock(entry.Ids[i], out block)) blocks.Add(block);
+                }
+
+                if (blocks.Count > 0) entry.Component.RemoveBlocks(blocks);
+                entry.Component.RefreshDetailedInfo();
+
+                VgsLog.Info("controller " + controller.EntityId + " released "
+                            + blocks.Count + " block(s) of the previous event");
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("ec-release", "could not release the previous event's blocks", e, 300);
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Attaches a block to the controller's list: the storage value and the live
         /// subscription are written together, and the storage is rolled back when the
         /// subscription fails.
@@ -363,14 +690,32 @@ namespace Vgs.Game
                 return WatchResult.Duplicate;
             }
 
+            // The overlay is read through the same rule the refresh uses (ADR-0044): a list that
+            // belongs to another event is dropped here first, so a watch added right after the
+            // player switched the event cannot adopt the stale entries by writing them back under
+            // the new event id.
             var list = new List<long>();
-            if (!NodeStateStore.TryReadWatchList(controller, list)) list.Clear();
+            long listEventId;
+            if (!ReadOverlay(controller, list, out listEventId)) list.Clear();
 
             if (list.Contains(target.EntityId)) return WatchResult.Duplicate;
 
             list.Add(target.EntityId);
 
-            if (!NodeStateStore.SaveWatchList(controller, list))
+            // The event the entries belong to is written with them (ADR-0044): a watch added for
+            // this event must be dropped, not replayed, when the player picks another one.
+            //
+            // `listEventId` is that event whenever there was a value to read — ReadOverlay dropped
+            // a stale list, stamped a legacy one, or found the stored id equal to the live one.
+            // It is **0** when there was nothing to read: no storage on the block yet, or a value
+            // that is already empty. That is the ordinary first attach, and writing it as-is would
+            // produce exactly the headerless value the upgrade path has to adopt — a list whose
+            // event nobody knows. So the live event is asked here, and only here: on the path where
+            // ReadOverlay had nothing to report. `TryValidate` above has already refused a
+            // controller without a selected event, so this cannot answer 0.
+            long eventId = listEventId > 0 ? listEventId : SelectedEventId(controller);
+
+            if (!NodeStateStore.SaveWatchList(controller, list, eventId))
             {
                 VgsLog.Warn("watch list not saved: controller " + controller.EntityId);
                 return WatchResult.Rejected;
@@ -381,7 +726,7 @@ namespace Vgs.Game
                 // Undo the storage: a block in the saved list that the game is not watching
                 // would come back as a port on the next load, with nothing behind it.
                 list.Remove(target.EntityId);
-                NodeStateStore.SaveWatchList(controller, list);
+                NodeStateStore.SaveWatchList(controller, list, eventId);
                 return WatchResult.Rejected;
             }
 
@@ -429,21 +774,36 @@ namespace Vgs.Game
                 return WatchResult.GameOwned;
             }
 
+            // The overlay is read through the same rule the refresh uses (ADR-0044). A list that
+            // belongs to another event is dropped first — which also releases the subscription
+            // this session made in the old component — and the removal then has nothing left to
+            // do. Removing the last entry of a stale list without this would empty the storage
+            // while the old component kept firing, and nothing could release it afterwards: the
+            // ids would be gone from the only place that knew them.
             var list = new List<long>();
-            if (!NodeStateStore.TryReadWatchList(controller, list)) list.Clear();
+            long listEventId;
+            if (!ReadOverlay(controller, list, out listEventId)) list.Clear();
             if (!list.Contains(target.EntityId)) return WatchResult.Ok;
 
             if (!Unsubscribe(controller, target)) return WatchResult.Rejected;
 
             list.Remove(target.EntityId);
 
-            if (!NodeStateStore.SaveWatchList(controller, list))
+            // The event id travels with the list: removing one block does not change which event
+            // the remaining entries were added for (ADR-0044).
+            if (!NodeStateStore.SaveWatchList(controller, list, listEventId))
             {
                 VgsLog.Warn("watch list not saved after removal: controller " + controller.EntityId
                             + "; restoring the subscription");
                 Subscribe(controller, target);
                 return WatchResult.Rejected;
             }
+
+            // The list is empty, so this session subscribes the controller to nothing: the entry
+            // would otherwise be polled until the session ended, and it describes a subscription
+            // that no longer exists. With entries left, only this id leaves — the rest are still
+            // live in the component ReadOverlay just approved.
+            ForgetSubscribedId(controller, target.EntityId);
 
             VgsLog.Info("controller " + controller.EntityId + " no longer watches " + target.EntityId);
             return WatchResult.Ok;
@@ -454,6 +814,10 @@ namespace Vgs.Game
         /// component. Used when the watched block no longer exists: there is nothing left to
         /// unsubscribe from, but the id must still leave the storage, or the next refresh would
         /// put the port back and the player could never get rid of it.
+        ///
+        /// The stored event id is written back with the list, and the remembered subscription
+        /// forgets the id too — a block that is gone cannot be unsubscribed later, and keeping it
+        /// in the map would make every release try to resolve an entity that no longer exists.
         /// </summary>
         public static bool ForgetWatch(IMyTerminalBlock controller, long targetEntityId)
         {
@@ -461,21 +825,33 @@ namespace Vgs.Game
             if (!IsServer()) return false;
 
             var list = new List<long>();
-            if (!NodeStateStore.TryReadWatchList(controller, list)) return false;
+            long listEventId;
+            if (!NodeStateStore.TryReadWatchList(controller, list, out listEventId)) return false;
+
+            ForgetSubscribedId(controller, targetEntityId);
+
             if (!list.Remove(targetEntityId)) return true;
 
-            return NodeStateStore.SaveWatchList(controller, list);
+            return NodeStateStore.SaveWatchList(controller, list, listEventId);
         }
 
         /// <summary>
-        /// Replays the editor's own additions into the live controller: after a world load, and
-        /// after the player switches the event in the terminal (ADR-0018).
+        /// Replays the editor's own additions into the live controller after a world load
+        /// (ADR-0018).
         ///
         /// <b>Only the overlay is replayed, never the game's own selection.</b> The game stores
         /// that selection in the save and rebuilds the component from it itself; replaying it
         /// again would be pointless work. What the game does not store is what the editor added
         /// through <c>AddBlocks</c>, and that is what this method puts back into the component —
         /// the only place the controller actually listens from.
+        ///
+        /// <b>A list that belongs to another event is never replayed</b> (ADR-0044). Picking a new
+        /// event in the terminal makes the game clear its own selection, and the editor's entries
+        /// for the old event describe a configuration that no longer exists; replaying them would
+        /// restore exactly the watch the player has just discarded. The keeper drops such a list
+        /// through <see cref="ReadOverlay"/> before it gets here, and the check is repeated at this
+        /// write boundary so no future caller can subscribe a block under an event it was not
+        /// added for.
         ///
         /// <b>Idempotent, which is what makes a retry safe.</b> The component skips a block it
         /// already has (its generic event checks the key before subscribing), so replaying the
@@ -485,8 +861,7 @@ namespace Vgs.Game
         ///
         /// Returns the number of blocks the controller was subscribed to. A block that no
         /// longer exists, or that the current event no longer accepts, is skipped rather than
-        /// removed from storage: the player may switch the event back, and silently deleting
-        /// their list would be a data loss nobody asked for.
+        /// removed from storage: the block may still arrive, and the next replay will subscribe it.
         /// </summary>
         public static int ReapplyWatchList(IMyTerminalBlock controller)
         {
@@ -494,7 +869,13 @@ namespace Vgs.Game
             if (!IsServer()) return 0;
 
             var list = new List<long>();
-            if (!NodeStateStore.TryReadWatchList(controller, list) || list.Count == 0) return 0;
+            long listEventId;
+            if (!NodeStateStore.TryReadWatchList(controller, list, out listEventId) || list.Count == 0)
+            {
+                return 0;
+            }
+
+            if (GridGraph.IsWatchListStale(listEventId, SelectedEventId(controller))) return 0;
 
             var gui = SelectedGui(controller);
             if (gui == null) return 0;
@@ -522,6 +903,10 @@ namespace Vgs.Game
             {
                 gui.AddBlocks(blocks);
                 gui.RefreshDetailedInfo();
+
+                // Remembered like every other subscription: a replay is a subscription too, and
+                // the player can switch the event right after a world load (ADR-0044).
+                for (int i = 0; i < blocks.Count; i++) Remember(controller, gui, blocks[i].EntityId);
             }
             catch (Exception e)
             {
@@ -536,6 +921,48 @@ namespace Vgs.Game
 
         // ------------------------------------------------------------------ internals
 
+        /// <summary>
+        /// Records that this session subscribed a block into a component, so the subscription can
+        /// be released if the player picks another event (ADR-0044).
+        ///
+        /// An entry for the same component gains the id; an entry for a **different** component is
+        /// replaced, because that is what a switch looks like — and the old component is released
+        /// before the new one is recorded, so its blocks do not fire under the new event.
+        /// </summary>
+        private static void Remember(IMyTerminalBlock controller, IMyEventComponentWithGui gui,
+                                     long targetEntityId)
+        {
+            Subscription entry;
+            if (_subscriptions.TryGetValue(controller.EntityId, out entry)
+                && ReferenceEquals(entry.Component, gui))
+            {
+                if (!entry.Ids.Contains(targetEntityId)) entry.Ids.Add(targetEntityId);
+                return;
+            }
+
+            if (entry != null) ReleaseSubscription(controller, gui.UniqueSelectionId);
+
+            entry = new Subscription(gui);
+            entry.Ids.Add(targetEntityId);
+            _subscriptions[controller.EntityId] = entry;
+        }
+
+        /// <summary>Drops one id from the remembered subscription, for a block that is gone.</summary>
+        private static void ForgetSubscribedId(IMyTerminalBlock controller, long targetEntityId)
+        {
+            Subscription entry;
+            if (!_subscriptions.TryGetValue(controller.EntityId, out entry)) return;
+
+            entry.Ids.Remove(targetEntityId);
+            if (entry.Ids.Count == 0) _subscriptions.Remove(controller.EntityId);
+        }
+
+        /// <summary>Drops the remembered subscription of a block, without writing to it.</summary>
+        private static void ForgetSubscription(long controllerEntityId)
+        {
+            _subscriptions.Remove(controllerEntityId);
+        }
+
         private static bool Subscribe(IMyTerminalBlock controller, IMyTerminalBlock target)
         {
             var gui = SelectedGui(controller);
@@ -545,6 +972,11 @@ namespace Vgs.Game
             {
                 gui.AddBlocks(new List<IMyTerminalBlock> { target });
                 gui.RefreshDetailedInfo();
+
+                // Remembered so the subscription can be released if the player picks another
+                // event: the old component stays attached and is no longer reachable from the
+                // block (ADR-0044, docs/01-research/api-event-controller.md §1f).
+                Remember(controller, gui, target.EntityId);
                 return true;
             }
             catch (Exception e)

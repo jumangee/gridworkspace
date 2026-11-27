@@ -87,18 +87,38 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Formats a list of entity ids as <c>"id id id"</c> (ADR-0017, an event controller's
-        /// watch list). An empty list becomes an empty string rather than a stray separator.
+        /// Opens the event-id token of a watch list: <c>"e12 34 56"</c> (ADR-0044).
+        ///
+        /// A letter cannot begin an entity id, so a value written by an older version — plain
+        /// <c>"id id id"</c> — parses as a list with no event, which is exactly what it is: the
+        /// version that wrote it did not know which event the list belonged to.
+        /// </summary>
+        private const char EventMarker = 'e';
+
+        /// <summary>
+        /// Formats an event controller's watch list as <c>"e&lt;event&gt; id id id"</c>, where
+        /// <c>&lt;event&gt;</c> is the <c>UniqueSelectionId</c> of the event the editor added the
+        /// entries for (ADR-0017, ADR-0044). An empty list becomes an empty string rather than a
+        /// stray separator, and a zero event id is left out: a list with nothing in it needs no
+        /// owner, and an unknown event is not a value worth writing down.
         ///
         /// Invariant culture, like the position: the value is read back on a machine whose
         /// locale may format numbers differently, and a list that fails to parse would silently
         /// empty the controller on the next load.
         /// </summary>
-        public static string FormatIds(IList<long> ids)
+        public static string FormatWatchState(long eventId, IList<long> ids)
         {
             if (ids == null || ids.Count == 0) return string.Empty;
 
-            var text = new System.Text.StringBuilder(ids.Count * 8);
+            var text = new System.Text.StringBuilder(ids.Count * 8 + 4);
+
+            if (eventId > 0)
+            {
+                text.Append(EventMarker);
+                text.Append(eventId.ToString(CultureInfo.InvariantCulture));
+                text.Append(Separator);
+            }
+
             for (int i = 0; i < ids.Count; i++)
             {
                 if (i > 0) text.Append(Separator);
@@ -108,22 +128,51 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Parses <c>"id id id"</c> into <paramref name="into"/>, which is cleared first.
+        /// Parses a stored watch list into <paramref name="into"/>, which is cleared first, and
+        /// reports the event the list was written for in <paramref name="eventId"/> (0 when the
+        /// value carries none — an older format, or an empty list).
         ///
         /// <b>Tolerant on purpose, unlike <see cref="TryParsePosition"/>.</b> A watch list is a
         /// set of independent ids: one unreadable token must not cost the others, so it is
         /// skipped. A repeated id is skipped too — a block cannot be watched twice, and the
         /// graph would otherwise grow a second port for the same block. Zero and negative ids
         /// are skipped as well: no entity has them, and they would draw a bar with no block
-        /// behind it.
+        /// behind it. A malformed header is skipped by the same rule: it costs the header, not
+        /// the list.
         /// </summary>
-        public static void ParseIds(string text, List<long> into)
+        public static void ParseWatchState(string text, List<long> into, out long eventId)
         {
+            eventId = 0;
             if (into == null) return;
             into.Clear();
             if (string.IsNullOrEmpty(text)) return;
 
             int start = 0;
+
+            if (text[0] == EventMarker)
+            {
+                int end = text.IndexOf(Separator);
+                if (end < 0) end = text.Length;
+
+                long id;
+                if (long.TryParse(text.Substring(1, end - 1), NumberStyles.Integer,
+                                  CultureInfo.InvariantCulture, out id)
+                    && id > 0)
+                {
+                    eventId = id;
+                    start = end + 1;
+                }
+            }
+
+            ParseIds(text, start, into);
+        }
+
+        /// <summary>
+        /// Parses <c>"id id id"</c> from <paramref name="start"/> into <paramref name="into"/>,
+        /// skipping everything that cannot be a watched block.
+        /// </summary>
+        private static void ParseIds(string text, int start, List<long> into)
+        {
             while (start < text.Length)
             {
                 int end = text.IndexOf(Separator, start);

@@ -4,8 +4,14 @@ namespace Vgs.Model
 {
     /// <summary>
     /// Everything the editor knows about an event controller that no other block has: the line
-    /// describing what it checks, the blocks it watches, and the identity of the event those
-    /// watches belong to (ADR-0017, ADR-0018).
+    /// describing what it checks and the blocks it watches (ADR-0017, ADR-0018).
+    ///
+    /// <b>Which event the watches belong to is not kept here.</b> The player can switch the event
+    /// in the terminal with the editor closed, so the question has to be answerable from the
+    /// block: the watch list in storage carries the event id it was written for, and
+    /// <c>GridGraph.IsWatchListStale</c> compares it with the live one on every refresh
+    /// (ADR-0044). A copy of that number on the node would be a second truth that starts at
+    /// "unknown" each time the screen opens — the very blind spot the stored id closes.
     ///
     /// <b>Why this type exists.</b> These fields used to live on <see cref="Node"/> itself, so
     /// every block in the grid — a conveyor tube, a reactor, eighty categories that have nothing
@@ -45,16 +51,6 @@ namespace Vgs.Model
         /// so a member is always drawn.
         /// </summary>
         public readonly List<WatchTarget> Watched = new List<WatchTarget>();
-
-        /// <summary>
-        /// Identity of the event the controller had when its watch list was last read, or 0.
-        ///
-        /// The game builds a *new* event component when the player picks another event, and a
-        /// watch added through the component does not survive that switch. Comparing this value
-        /// across refreshes is how the editor notices that it has to replay its own additions into
-        /// the new component (ADR-0018).
-        /// </summary>
-        public long WatchEventId; // review:allow R009 written only by the refresh pass
 
         /// <summary>The watch target for this block, or null when the controller does not watch it.</summary>
         public WatchTarget FindWatch(long entityId)

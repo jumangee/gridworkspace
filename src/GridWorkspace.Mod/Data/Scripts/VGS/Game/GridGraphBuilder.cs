@@ -614,6 +614,13 @@ namespace Vgs.Game
         /// terminal appears, disappears or moves here on the next refresh — the schema follows the
         /// game instead of keeping a private copy of it.
         ///
+        /// <b>A list that belongs to another event is dropped, not shown</b> (ADR-0044). Picking
+        /// another event in the terminal makes the game clear its own selection; the editor's
+        /// entries were subscribed to the component that no longer exists, so they describe
+        /// nothing and their bars would be a picture of a configuration the player has discarded.
+        /// <see cref="EventControllerProbe.ReadOverlay"/> is what drops them — here and in the
+        /// keeper alike, so the schema and the live block cannot disagree.
+        ///
         /// <b>Nothing is deleted because it is not visible.</b> A watched block whose "Show in
         /// VGS" flag is off has no card, so its line cannot be drawn, but it stays in the list and
         /// keeps its port: the schema hides what it cannot draw, it never edits the game's data
@@ -632,25 +639,30 @@ namespace Vgs.Game
 
             controller.StatusText = EventControllerProbe.Describe(block);
 
-            long eventId = EventControllerProbe.SelectedEventId(block);
-
             // What the controller itself says it watches. Unreadable is not empty: keeping the
             // previous picture for one refresh is better than making every port vanish and
             // reappear, and the next refresh retries.
             var gameIds = new List<long>();
             if (!EventControllerProbe.TryReadGameWatchIds(block, gameIds)) return;
 
-            // What the editor added on top, and the game therefore does not store.
+            // What the editor added on top, and the game therefore does not store. Reading it also
+            // reconciles it with the event it was added for: a stale list comes back empty and is
+            // already gone from storage (ADR-0044).
             var overlay = new List<long>();
-            NodeStateStore.TryReadWatchList(block, overlay);
+            long overlayEventId;
+            EventControllerProbe.ReadOverlay(block, overlay, out overlayEventId);
 
             // An id the game now reports is the game's business: drop it from the overlay, or it
-            // would be counted twice and replayed after a reload for no reason.
+            // would be counted twice and replayed after a reload for no reason. The event id comes
+            // back with the list, so this write cannot lose it.
             if (GridGraph.PruneAdoptedWatchIds(gameIds, overlay))
             {
                 // Only the server may write; on a client the prune stays in memory and simply
                 // repeats next refresh, which is harmless because the union is the same.
-                if (EventControllerProbe.IsServer()) NodeStateStore.SaveWatchList(block, overlay);
+                if (EventControllerProbe.IsServer())
+                {
+                    NodeStateStore.SaveWatchList(block, overlay, overlayEventId);
+                }
             }
 
             var ids = new List<long>();
@@ -663,17 +675,6 @@ namespace Vgs.Game
             }
 
             GridGraph.SyncWatched(node, ids, id => SafeNameOf(id, LookupName(_nameScratch, id)));
-            // The player picked another event in the terminal: the game built a new event
-            // component, and the editor's own additions are subscribed to the old one. Replaying
-            // them is what keeps those ports honest after a switch (ADR-0018).
-            if (eventId != controller.WatchEventId && overlay.Count > 0 && EventControllerProbe.IsServer())
-            {
-                VgsLog.Info("event changed on controller " + node.EntityId
-                            + "; replaying " + overlay.Count + " editor-added watch(es)");
-                EventControllerProbe.ReapplyWatchList(block);
-            }
-
-            controller.WatchEventId = eventId;
         }
 
         /// <summary>

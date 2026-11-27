@@ -136,40 +136,51 @@ namespace Vgs.Game
         }
 
         /// <summary>
-        /// Reads the watch list of an event controller: the entity ids of the blocks it
-        /// observes (ADR-0017). False means "nothing is stored" — a controller that never had a
-        /// block attached — and the list is left empty in that case.
+        /// Reads the watch list of an event controller: the entity ids of the blocks it observes,
+        /// and the id of the event those entries were added for (ADR-0017, ADR-0044). False means
+        /// "nothing is stored" — a controller that never had a block attached — and the list and
+        /// the event id are both left empty in that case.
+        ///
+        /// The event id is 0 for a value written before the id was stored, which is not an event:
+        /// the caller must read it as "not known" (see <c>GridGraph.IsWatchListStale</c>).
         ///
         /// Like every other read here it never creates the storage component: opening the
         /// editor must not attach storage to every block in the world.
         /// </summary>
-        public static bool TryReadWatchList(IMyTerminalBlock block, List<long> into)
+        public static bool TryReadWatchList(IMyTerminalBlock block, List<long> into, out long eventId)
         {
+            eventId = 0;
             if (into == null) return false;
             into.Clear();
 
             string raw;
             if (!TryRead(block, VgsConstants.WatchStorageKey, out raw)) return false;
 
-            NodeStateFormat.ParseIds(raw, into);
+            NodeStateFormat.ParseWatchState(raw, into, out eventId);
             return true;
         }
 
         /// <summary>
-        /// Stores the watch list of an event controller. The value is the id list as
-        /// <c>"id id id"</c>, or an empty string for "watches nothing" — written explicitly
-        /// rather than removed, so that an emptied list cannot be mistaken for "never set".
+        /// Stores the watch list of an event controller together with the id of the event the
+        /// entries were added for (ADR-0044). The value is <c>"e&lt;event&gt; id id id"</c>, or an
+        /// empty string for "watches nothing" — written explicitly rather than removed, so that
+        /// an emptied list cannot be mistaken for "never set".
+        ///
+        /// <b>One value, not two keys.</b> The list and the event it belongs to are one fact: a
+        /// list whose event id landed in a second key could survive a failed write of that key and
+        /// then be replayed under an event it never belonged to. One write cannot be half done.
         ///
         /// Returns false when the block is gone or the write was refused; the caller then has
         /// to undo whatever it did in the graph (ADR-0017 §6).
         /// </summary>
-        public static bool SaveWatchList(IMyTerminalBlock block, List<long> ids)
+        public static bool SaveWatchList(IMyTerminalBlock block, List<long> ids, long eventId)
         {
             if (block == null) return false;
 
             try
             {
-                return Write(block, VgsConstants.WatchStorageKey, NodeStateFormat.FormatIds(ids));
+                return Write(block, VgsConstants.WatchStorageKey,
+                             NodeStateFormat.FormatWatchState(eventId, ids));
             }
             catch (Exception e)
             {

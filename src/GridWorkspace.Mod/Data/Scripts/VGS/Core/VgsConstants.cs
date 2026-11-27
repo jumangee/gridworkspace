@@ -55,8 +55,9 @@ namespace Vgs.Core
         public static readonly Guid VisibilityStorageKey = new Guid("b1e4a2c8-77d3-4a0f-8c61-2f9e5b0d3a47");
 
         /// <summary>
-        /// Storage key of the event controller's watch list: entity ids of the blocks the
-        /// controller observes, space separated (ADR-0017).
+        /// Storage key of the event controller's watch list: the id of the event the entries were
+        /// added for, then the entity ids of the blocks the controller observes, space separated
+        /// (ADR-0017, ADR-0044).
         ///
         /// It lives on the controller because the game's own selection list has no public API
         /// — neither to read nor to persist (see docs/01-research/api-event-controller.md).

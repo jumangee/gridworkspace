@@ -18,6 +18,13 @@ namespace Vgs.Game
     /// component — that lives only in the block's mod storage, so it has to be put back into the
     /// component, which is the only place the controller actually listens from.
     ///
+    /// <b>A list that belongs to another event is dropped, not replayed</b> (ADR-0044). The player
+    /// can pick a different event in the terminal with the editor closed and with the world saved
+    /// afterwards; the game then clears its own selection, and the editor's entries for the old
+    /// event are a configuration the player has already discarded. Restoring them on load would
+    /// resurrect the watch the game just cleared — so the event id travels with the list in
+    /// storage, and <see cref="EventControllerProbe.ReadOverlay"/> is what decides.
+    ///
     /// <b>Why <c>OnEntityAdd</c>.</b> It fires for every way a block can appear with its storage
     /// already populated: loading a world, building a block, pasting a blueprint. A timer-based
     /// sweep would have to walk every grid in the world instead.
@@ -73,6 +80,25 @@ namespace Vgs.Game
 
         private static readonly List<Pending> Queue = new List<Pending>(8);
 
+        /// <summary>
+        /// How many ticks between two checks of the subscriptions this session made.
+        ///
+        /// <b>Why a check exists at all.</b> A replay only happens when a block appears. The
+        /// player can switch a controller's event at any moment, and the game then leaves the
+        /// editor's subscriptions in the component that is no longer selected — it only
+        /// unsubscribes the blocks of its own list (see
+        /// <c>docs/01-research/api-event-controller.md</c> §1f). Without this check the controller
+        /// would go on firing its toolbar under an event it does not check until the schema is
+        /// opened, and the reset of ADR-0044 would be a picture change only.
+        ///
+        /// One second at 60 fps, and the work is one dictionary lookup per controller the editor
+        /// has subscribed in this session — usually none.
+        /// </summary>
+        private const int SubscriptionPollTicks = 60;
+
+        /// <summary>Counts simulation ticks for <see cref="SubscriptionPollTicks"/>.</summary>
+        private static int _pollCounter;
+
         private static bool _installed;
 
         /// <summary>
@@ -114,6 +140,19 @@ namespace Vgs.Game
 
             _installed = false;
             Queue.Clear();
+            _pollCounter = 0;
+
+            // The probe remembers the event component of every controller it subscribed. Those
+            // are game objects: leaving them behind would hand the next world references into the
+            // previous one, which is exactly the failure R-002 recorded.
+            try
+            {
+                EventControllerProbe.ReleaseSubscriptions();
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("ec-keeper-release", "could not release watch subscriptions", e, 600);
+            }
         }
 
         private static void OnEntityAdd(IMyEntity entity)
@@ -153,6 +192,24 @@ namespace Vgs.Game
         /// </summary>
         public static void Update()
         {
+            // The subscription check runs on its own cadence and independently of the queue: a
+            // controller whose event the player switched has nothing queued, and waiting for one
+            // would leave it firing under the old event until the schema was opened.
+            if (++_pollCounter >= SubscriptionPollTicks)
+            {
+                _pollCounter = 0;
+
+                try
+                {
+                    EventControllerProbe.PollStaleSubscriptions();
+                }
+                catch (Exception e)
+                {
+                    // The probe guards itself; this is the boundary rule, and the tick must go on.
+                    VgsLog.Throttled("ec-keeper-poll", "watch subscription poll failed", e, 300);
+                }
+            }
+
             if (Queue.Count == 0) return;
 
             try
@@ -201,7 +258,8 @@ namespace Vgs.Game
 
         /// <summary>
         /// Applies one controller's stored list. Returns true when the entry is finished with —
-        /// because every stored id was replayed, or because there is nothing to replay at all.
+        /// because every stored id was replayed, because the list belonged to another event and
+        /// was dropped (ADR-0044), or because there is nothing to replay at all.
         ///
         /// <b>Partial is not done.</b> <see cref="EventControllerProbe.ReapplyWatchList"/> skips
         /// blocks that do not exist yet, which on a world load is the normal case: the
@@ -218,7 +276,8 @@ namespace Vgs.Game
                 if (!EntityResolver.TryResolveTerminalBlock(entityId, out block)) return true;
 
                 var ids = new List<long>();
-                if (!NodeStateStore.TryReadWatchList(block, ids))
+                long eventId;
+                if (!EventControllerProbe.ReadOverlay(block, ids, out eventId))
                 {
                     // No value. Either the block never stored anything (the common case: the
                     // editor was never used on it) or the component is not attached yet. A
@@ -227,6 +286,9 @@ namespace Vgs.Game
                     return !NodeStateStore.HasStorage(block);
                 }
 
+                // Empty means either "nothing was ever added" or "the list belonged to another
+                // event and has just been dropped" (ADR-0044). Both are finished with: there is
+                // nothing left to subscribe.
                 if (ids.Count == 0) return true;
 
                 int applied = EventControllerProbe.ReapplyWatchList(block);

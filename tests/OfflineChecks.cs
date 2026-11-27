@@ -3530,63 +3530,99 @@ internal static class OfflineChecks
     }
 
     /// <summary>
-    /// The wire format of an event controller's watch list (ADR-0017): ids separated by spaces,
-    /// tolerant on read, invariant on write.
+    /// The wire format of an event controller's watch list (ADR-0017, ADR-0044): the id of the
+    /// event the entries were added for, then ids separated by spaces, tolerant on read,
+    /// invariant on write.
+    ///
+    /// The event id is the part that makes "the player switched the event" visible after the
+    /// editor was closed, so it is checked here in both directions: it must survive the round
+    /// trip, and a value written without it must still read as the same list.
     /// </summary>
     private static void WatchListFormat()
     {
         var ids = new List<long> { 1234567890123L, 42L, 7L };
-        string text = NodeStateFormat.FormatIds(ids);
+        string text = NodeStateFormat.FormatWatchState(12, ids);
 
-        Check(text == "1234567890123 42 7", "the list is written space separated");
+        Check(text == "e12 1234567890123 42 7", "the event id opens the value and the ids follow");
 
         var back = new List<long>();
-        NodeStateFormat.ParseIds(text, back);
+        long eventId;
+        NodeStateFormat.ParseWatchState(text, back, out eventId);
+        Check(eventId == 12, "the event id comes back");
         Check(back.Count == 3, "all three ids come back");
         Check(back[0] == 1234567890123L && back[1] == 42L && back[2] == 7L,
               "the ids come back in order");
 
-        // An empty list is an empty string, and an empty string is an empty list.
-        Check(NodeStateFormat.FormatIds(new List<long>()) == string.Empty,
-              "an empty list is an empty string");
-        Check(NodeStateFormat.FormatIds(null) == string.Empty, "a null list is an empty string");
+        // An empty list is an empty string, and an empty string is an empty list: a list with
+        // nothing in it needs no owner, so no header is written for one.
+        Check(NodeStateFormat.FormatWatchState(12, new List<long>()) == string.Empty,
+              "an empty list is an empty string, even with an event");
+        Check(NodeStateFormat.FormatWatchState(12, null) == string.Empty, "a null list is an empty string");
+        Check(NodeStateFormat.FormatWatchState(0, ids) == "1234567890123 42 7",
+              "an unknown event writes no header");
 
         back.Add(999);
-        NodeStateFormat.ParseIds(string.Empty, back);
+        NodeStateFormat.ParseWatchState(string.Empty, back, out eventId);
         Check(back.Count == 0, "an empty string clears the list");
+        Check(eventId == 0, "an empty string reports no event");
 
-        NodeStateFormat.ParseIds(null, back);
+        NodeStateFormat.ParseWatchState(null, back, out eventId);
         Check(back.Count == 0, "a null string clears the list");
+
+        // A value written before the event id was stored: the list is a player's data and must
+        // survive the upgrade, and "no event" must be reported as unknown rather than guessed.
+        back.Clear();
+        NodeStateFormat.ParseWatchState("1234567890123 42 7", back, out eventId);
+        Check(eventId == 0, "a value without a header reports no event");
+        Check(back.Count == 3 && back[0] == 1234567890123L,
+              "a value without a header still yields its ids");
+
+        // A broken header costs the header, not the list.
+        back.Clear();
+        NodeStateFormat.ParseWatchState("ex 5 6", back, out eventId);
+        Check(eventId == 0, "an unreadable header reports no event");
+        Check(back.Count == 2 && back[0] == 5 && back[1] == 6, "an unreadable header keeps the ids");
+
+        back.Clear();
+        NodeStateFormat.ParseWatchState("e-3 8", back, out eventId);
+        Check(eventId == 0 && back.Count == 1 && back[0] == 8,
+              "a non-positive event id is not an event");
+
+        // A header with no ids is readable and means "watches nothing".
+        back.Clear();
+        NodeStateFormat.ParseWatchState("e12", back, out eventId);
+        Check(eventId == 12 && back.Count == 0, "a header alone is an empty list for that event");
 
         // Tolerant on read: garbage costs its own token, not the whole list.
         back.Clear();
-        NodeStateFormat.ParseIds("12  garbage  34", back);
+        NodeStateFormat.ParseWatchState("e12 12  garbage  34", back, out eventId);
         Check(back.Count == 2 && back[0] == 12 && back[1] == 34,
               "an unreadable token is skipped, the rest survives");
 
         // A set has no duplicates, and no entity has id zero or a negative id.
         back.Clear();
-        NodeStateFormat.ParseIds("5 5 0 -3 6", back);
+        NodeStateFormat.ParseWatchState("e12 5 5 0 -3 6", back, out eventId);
         Check(back.Count == 2 && back[0] == 5 && back[1] == 6,
               "duplicates, zero and negative ids are dropped");
 
         // Leading and trailing separators are not a format change: they produce no token.
         back.Clear();
-        NodeStateFormat.ParseIds(" 8  9 ", back);
+        NodeStateFormat.ParseWatchState("e12  8  9 ", back, out eventId);
         Check(back.Count == 2 && back[0] == 8 && back[1] == 9,
               "extra separators are harmless");
 
         // Round trip through the storage format is stable, which is the property a save/load
-        // cycle depends on.
+        // cycle depends on — including the event id, or a switch would go unnoticed next time.
         back.Clear();
-        NodeStateFormat.ParseIds(NodeStateFormat.FormatIds(ids), back);
-        Check(NodeStateFormat.FormatIds(back) == text, "the round trip is stable");
+        NodeStateFormat.ParseWatchState(text, back, out eventId);
+        Check(NodeStateFormat.FormatWatchState(eventId, back) == text, "the round trip is stable");
     }
 
     /// <summary>
     /// The rule that makes the schema follow the game (ADR-0018): the displayed list is the union
-    /// of what the controller reports and what the editor added, and an entry the game has adopted
-    /// stops being an editor addition.
+    /// of what the controller reports and what the editor added, an entry the game has adopted
+    /// stops being an editor addition, and an editor addition made for another event stops being
+    /// one at all (ADR-0044).
     ///
     /// This is the part of the feature a player notices first — change the selection in the
     /// terminal, open the editor, and the ports must match — and it is pure data, so it is
@@ -3658,6 +3694,21 @@ internal static class OfflineChecks
         game.Clear();
         overlay.Clear();
         Check(!GridGraph.PruneAdoptedWatchIds(game, overlay), "pruning two empty lists does nothing");
+
+        // ---- the event a list was added for (ADR-0044) ----
+        //
+        // Picking another event in the terminal makes the game clear its own selection, so the
+        // editor's entries for the old event describe nothing. The stored event id is the only
+        // thing that can tell — the player can switch with the editor closed — and this is the
+        // rule that decides whether a list is still the player's current configuration.
+        Check(!GridGraph.IsWatchListStale(12, 12), "the same event is not a switch");
+        Check(GridGraph.IsWatchListStale(12, 14), "a different event makes the list stale");
+        Check(!GridGraph.IsWatchListStale(0, 14),
+              "a list with no recorded event is not stale — an old value is not evidence");
+        Check(!GridGraph.IsWatchListStale(12, 0),
+              "an unreadable current event is not a switch either");
+        Check(!GridGraph.IsWatchListStale(0, 0), "two unknowns are not a switch");
+        Check(!GridGraph.IsWatchListStale(-1, 12), "a negative id is not an event");
 
         // ---- SyncWatched: the ids are the truth, the list is the view ----
 

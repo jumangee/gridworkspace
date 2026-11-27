@@ -272,7 +272,7 @@
 | Удаление связи мышью | `Ui/PortGeometry` (кнопка «x» на полосе, hit-test), `Ui/VgsEditorScreen.RemovePortConnections`, `Model/GridGraph.CollectEdgesForPort`; порядок «ячейка тулбара → ребро» — [ADR-0014](adr/0014-port-remove-button-and-port-look.md) |
 | Иконки контролов Font Awesome | `tools/build-icon-atlas.ps1` (SVG → PNG, по файлу на иконку, превью каталога), `Textures/VGS/Icons/*.png`, `docs/icons/*.png`, `Data/GuiTextures.sbc`, `Ui/VgsIconAtlas.g.cs` (сгенерированная таблица), `Ui/VgsIcons.cs` (материалы иконок), `Ui/IconPlacement.cs` (пиксели окна и обрезка), `Ui/VgsScreenDraw.Icon`; точки, кнопки карточки и «x» — [ADR-0019](adr/0019-icons-atlas.md), [ADR-0020](adr/0020-card-button-row.md), [ADR-0021](adr/0021-jump-to-block-terminal.md) |
 | Каталог иконок и его шлюз | `docs/07-icon-catalog.md` (таблица «изображение · описание · идентификатор · где используется»), `tools/check-icon-catalog.ps1` (входит в `offline-check.ps1`); правила актуализации — [ADR-0020](adr/0020-card-button-row.md) §7 |
-| Наблюдение event controller за блоками | `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`), `Model/GridGraph` (`TryAddWatch`/`RemoveWatch`/`LayoutPorts`), `Model/NodeStateFormat.FormatIds/ParseIds`, `Ui/PortGeometry` (кнопка отслеживания, полосы отслеживания), `Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen` (режим отслеживания), `Game/EventControllerProbe`, `Game/EventControllerKeeper`, `Game/NodeStateStore`; решение — [ADR-0017](adr/0017-event-controller-watch-ports.md) |
+| Наблюдение event controller за блоками | `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`), `Model/GridGraph` (`TryAddWatch`/`RemoveWatch`/`LayoutPorts`, `IsWatchListStale`), `Model/NodeStateFormat.FormatWatchState/ParseWatchState`, `Ui/PortGeometry` (кнопка отслеживания, полосы отслеживания), `Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen` (режим отслеживания), `Game/EventControllerProbe` (`ReadOverlay`), `Game/EventControllerKeeper`, `Game/NodeStateStore`; решение — [ADR-0017](adr/0017-event-controller-watch-ports.md), [ADR-0018](adr/0018-game-is-the-source-of-truth.md), сброс при смене события — [ADR-0044](adr/0044-event-change-resets-editor-watches.md) |
 | Источники событий, которые тулбар не умеет (порог, значение) | новый `Vgs.Game/EventSources.cs` |
 | Вычислитель для условий и значений | новый `Vgs.Game/GraphEvaluator.cs` |
 | Защита от лавины (петли, ограничение глубины, кулдаун) | `GraphEvaluator` |
@@ -461,14 +461,16 @@
 
 Реализация: `Model/Node.cs` (`WatchTarget`, `IsEventController`, `StatusText`, `Watched`),
 `Model/GridGraph.cs` (`TryAddWatch`, `RemoveWatch`, `SyncWatched`, `MergeWatchIds`,
-`PruneAdoptedWatchIds`, `LayoutPorts`), `Model/NodeStateFormat`
-(`FormatIds`, `ParseIds`), `Game/EventControllerProbe.cs`, `Game/EventControllerKeeper.cs`,
+`PruneAdoptedWatchIds`, `IsWatchListStale`, `LayoutPorts`), `Model/NodeStateFormat`
+(`FormatWatchState`, `ParseWatchState`), `Game/EventControllerProbe.cs` (`ReadOverlay`),
+`Game/EventControllerKeeper.cs`,
 `Game/NodeStateStore.cs` (`TryReadWatchList`, `SaveWatchList`, `HasStorage`), `Game/GridGraphBuilder`
 (`RefreshControllerState`), `Ui/PortGeometry` (кнопка отслеживания, полосы и точка отслеживания),
 `Ui/EdgeRouting.BuildDashes`, `Ui/VgsScreenDraw.SegmentDashed`, `Ui/VgsEditorScreen`
 (`HandleWatchInput`, `TryAttachWatch`, `RemoveWatchTarget`, `DrawWatchBars`,
 `DrawWatchLines`, `DrawPendingWatchLine`). Источник истины — игра
-([ADR-0018](adr/0018-game-is-the-source-of-truth.md)).
+([ADR-0018](adr/0018-game-is-the-source-of-truth.md)); смена события сбрасывает привязки
+редактора ([ADR-0044](adr/0044-event-change-resets-editor-watches.md)).
 
 - [ ] На карточке event controller **справа**, в общем ряду кнопок, стоит колокольчик (светлый, как все кнопки ряда; жёлтым теплеет под указателем)
       (`bell` Regular) того же диаметра, что кнопки привязки; слева кнопок нет. Название блока
@@ -491,6 +493,13 @@
       открытия редактора.
 - [ ] Поменял событие контроллера и добавил блок в ванильном терминале, вернулся в редактор —
       схема показывает **игровой** выбор, а не прошлый.
+- [ ] Сменил событие контроллера в терминале (редактор закрыт) — открыл редактор: привязок,
+      добавленных колокольчиком, **нет**, и в логе строка «the event changed (N -> M), so … were
+      dropped»; вернул прежнее событие — они не вернулись ([ADR-0044](adr/0044-event-change-resets-editor-watches.md)).
+- [ ] Сменил событие при закрытом редакторе, не открывая схему, — контроллер перестал
+      срабатывать от снятого блока (сброс снимает подписку, а не только картинку).
+- [ ] Сменил событие при закрытом редакторе, сохранил и загрузил мир — до открытия редактора
+      контроллер по снятому блоку не срабатывает.
 - [ ] Убрал блок в терминале — после обновления схемы его порт исчез.
 - [ ] Выключил «Show in Grid Workspace» у отслеживаемого блока — порт остался, линия пропала; включил
       обратно — линия вернулась, в терминале привязка не изменилась.

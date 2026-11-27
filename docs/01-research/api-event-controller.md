@@ -94,7 +94,9 @@ public MyObjectBuilder_CubeBlock GetObjectBuilderCubeBlock(bool copy = false);
 - схема может показывать то, что игрок настроил в терминале, и подхватывать изменения;
 - **записи редактора в этот список не попадают**: `IMyEventComponentWithGui.AddBlocks` наполняет
   компонент события, но не приватные поля блока. Поэтому редакторская часть списка хранится
-  отдельно (надстройка) и проигрывается в компонент — [ADR-0018](../adr/0018-game-is-the-source-of-truth.md);
+  отдельно (надстройка) и проигрывается в компонент после загрузки мира — [ADR-0018](../adr/0018-game-is-the-source-of-truth.md);
+  при смене события она **удаляется**, а не проигрывается ([§1f](#1f-смена-события-чистит-список-сама-и-не-оставляет-следов),
+  [ADR-0044](../adr/0044-event-change-resets-editor-watches.md));
 - `MySerializableList<T>` объявлен в `VRage.ObjectBuilder` (единственное число), которого нет в
   вайтлисте, поэтому читать его нужно через `System.Collections.IList`, не называя тип.
 
@@ -215,8 +217,68 @@ Multigrid Projector (publicizer открывает `m_selectedBlockIds`/`m_selec
 `now monitors block <id> (event component only; ...)` пишется, когда запись ушла в компонент,
 и `(already in vanilla Selected Blocks)` — когда блок уже был выбран в терминале.
 
+### 1f. Смена события чистит свой список, но не чужие подписки
 
+```powershell
+& .\tools\dump-se-il.ps1 -Assembly 'SpaceEngineers.Game.dll' `
+    -Type 'SpaceEngineers.Game.Entities.Blocks.MyEventControllerBlock' -Method 'OnSelectedEventIdChanged'
+& .\tools\dump-se-il.ps1 -Assembly 'SpaceEngineers.Game.dll' `
+    -Type 'SpaceEngineers.Game.Entities.Blocks.MyEventControllerBlock' -Method 'FillEventsSelector'
+```
 
+Всё тело `OnSelectedEventIdChanged` — это обход `Components`, поиск компонента, чей
+`UniqueSelectionId` совпал с `m_selectedEventId`, и, если он **отличается от текущего**
+`m_selectedEvent`, снятие подписок и очистка живого выбора:
+
+```il
+0056: ldfld   m_selectedBlocks
+005C: callvirt Dictionary`2::get_Count
+0061: brfalse.s  28                     ; пустой ванильный список → RemoveBlocks не вызывается
+0063: ldloc.2
+0064: ldarg.0
+0065: ldfld   m_selectedBlocks
+006A: callvirt Dictionary`2::get_Values
+006F: callvirt IMyEventComponentWithGui::RemoveBlocks   ; только ванильный выбор!
+0074: ldarg.0
+0075: ldfld   m_selectedBlocks
+007A: callvirt Dictionary`2::Clear
+007F: ldarg.0
+0080: ldloc.1
+0081: stfld   m_selectedEvent
+```
+
+Все компоненты событий **живут на блоке одновременно**: `FillEventsSelector` перебирает
+`Components`, отбирает все `IMyEventControllerEntityComponent` и строит из них выпадающий список,
+а `Init` находит среди них тот, чей `UniqueSelectionId` совпал с сохранённым. `IsSelected` —
+отметка на компоненте (`set_IsSelected` пишет только backing field), а не признак жизни.
+
+Следствия, важные для мода:
+
+- **игровой список после смены события пуст** — и это всё, что игра сообщает о произошедшем;
+  `GetObjectBuilderCubeBlock().SelectedBlocks` честно отдаёт пусто, восстановить прежний выбор
+  из мира нельзя;
+- **записи, сделанные модом через `AddBlocks` компонента, не снимаются.** `RemoveBlocks`
+  получает `m_selectedBlocks.Values` — то есть только ванильный выбор. Компонент, в который мод
+  писал, остаётся прикреплённым к блоку и сохраняет `m_observedBlocks` и подписки на события
+  блоков;
+- **старый компонент продолжает срабатывать.** `OnVolumeChanged` →
+  `TriggerAction` компонента → `IMyEventControllerBlock.TriggerAction` не проверяют ни
+  `IsSelected`, ни выбранное событие: контроллер запускает тулбар по условию события, которое
+  игрок уже не выбрал. Поэтому мод обязан снимать свою подписку сам
+  ([ADR-0044](../adr/0044-event-change-resets-editor-watches.md));
+- **доступен только выбранный компонент.** `IMyEventControllerBlock.SelectedEvent` отдаёт
+  `m_selectedEvent`; перебрать компоненты блока публичного API нет (`MyEntity.Components` вне
+  вайтлиста). Единственный способ добраться до прежнего компонента — запомнить его в момент
+  подписки.
+
+**Идентификатор события стабилен.** `UniqueSelectionId` приходит из определения компонента
+(`Content/Data/EntityComponents.sbc`, у каждого события свой `<UniqueSelectionId>` 1..23) и
+читается через `MyEventCargoFilledEntityComponentDefinition.UniqueSelectionId` →
+`MyEventCargoFilledEntityComponent.UniqueSelectionId` (IL: `Init` копирует поле определения,
+геттер компонента отдаёт `k__BackingField`). Он одинаков на клиенте и сервере, не зависит от
+языка игры и не меняется между сессиями — в отличие от `EventDisplayName`, который
+локализуется. Это и есть число, которым можно пометить список привязок
+([ADR-0044](../adr/0044-event-change-resets-editor-watches.md)).
 
 ## 2. Как игра сама добавляет блок
 
@@ -358,7 +420,10 @@ Multigrid Projector (publicizer открывает `m_selectedBlockIds`/`m_selec
 Следствие: список, записанный модом в компонент, живёт до конца сессии и работает; но в
 `MyObjectBuilder_EventControllerBlock.SelectedBlocks` он не попадает (см. §1a), поэтому после
 загрузки мира его проигрывает `EventControllerKeeper`, а список терминала игра восстанавливает
-сама.
+сама. Смена события — исключение, но не потому, что игра снимает подписки мода (§1f: она снимает
+только ванильный выбор), а потому, что список описывает событие, которого больше нет: мод снимает
+свою подписку сам и стирает список
+([ADR-0044](../adr/0044-event-change-resets-editor-watches.md)).
 
 ## 6. Открытые вопросы
 

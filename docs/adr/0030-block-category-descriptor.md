@@ -48,7 +48,8 @@
   разъедутся.
 
 **Вторая: `Node` носит специфику event controller.** На общем узле лежат `StatusText`,
-`Watched`, `WatchEventId`, `HasStatusLine` и `FindWatch`. Из них контроллеру принадлежат все
+`Watched`, `WatchEventId` (снято в [0044](0044-event-change-resets-editor-watches.md)),
+`HasStatusLine` и `FindWatch`. Из них контроллеру принадлежат все
 пять, а остальным восьмидесяти категориям блоков — ни одного. Отсюда:
 
 - каждый узел платит за пустой `List<WatchTarget>` и три поля;
@@ -112,8 +113,9 @@
 ### 3. Специфика контроллера — в `ControllerState`, ссылка с `Node`
 
 `Node` получает `public readonly ControllerState Controller` — **null у всех, кроме event
-controller**. В `ControllerState` переезжают `StatusText`, `Watched`, `WatchEventId`,
-`HasStatusText` и `FindWatch`. Методы наблюдения остаются на `GridGraph` (они меняют граф и
+controller**. В `ControllerState` переезжают `StatusText`, `Watched`, `WatchEventId`
+(поле снято в [0044](0044-event-change-resets-editor-watches.md)), `HasStatusText` и `FindWatch`.
+Методы наблюдения остаются на `GridGraph` (они меняют граф и
 его инварианты — кап стека, раскладка слотов), но работают через `node.Controller` и
 отказывают, если он null.
 
