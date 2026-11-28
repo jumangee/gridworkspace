@@ -42,6 +42,10 @@
 - **«Почему связь — это тулбар блока, и почему вместо кнопок T/F теперь лампы?»** →
   [ADR-0011](adr/0011-toolbar-is-the-connection.md) и
   [01-research/api-toolbar.md](01-research/api-toolbar.md).
+- **«Почему в сетевой игре на клиенте нельзя создать связь, даже если блоки наши?»** →
+  [01-research/multiplayer.md](01-research/multiplayer.md): запись в тулбар — серверная
+  рассылка (`Sync.IsServer`), а фракция даёт только `HasPlayerAccess`; там же — что нужно,
+  чтобы это исправить.
 - **«Почему все кнопки карточки справа в один ряд, и что за лампы с колокольчиком?»** →
   [ADR-0020](adr/0020-card-button-row.md) и [07-icon-catalog.md](07-icon-catalog.md).
 - **«Почему переход к далёкому блоку требует антенны, даже если блок на том же гриде?»** →
@@ -88,6 +92,7 @@
 | [01-research/api-modscreen.md](01-research/api-modscreen.md) | Mod Screen API (`MyModScreen`, `MyScreenSpace*`) — новый UI-API 1.211 |
 | [01-research/api-screen-space.md](01-research/api-screen-space.md) | Проверенная семантика экранных координат: safe-GUI 4:3, единицы `Measure`, порядок слоёв |
 | [01-research/api-toolbar.md](01-research/api-toolbar.md) | Тулбар блока: кто может управлять другими, форма тулбара, «да»/«нет», правило «одно действие на страницу», запись через `BeginChanges().Apply()`; какой API разрешён моду и почему |
+| [01-research/multiplayer.md](01-research/multiplayer.md) | Почему запись в тулбар — серверная рассылка, а не правка блока; чем право игрока (`HasPlayerAccess`, фракция) отличается от права машины (`Sync.IsServer`); что именно не работает на удалённом клиенте и что нужно для полной совместимости (канал намерений, серверная ветка, репликация раскладки) |
 | [01-research/api-block-groups.md](01-research/api-block-groups.md) | Группы блоков: где живут, как игра считает их действия (пересечение по id, а не «общий предок»), элемент тулбара `GroupAction` и что происходит при срабатывании |
 | [01-research/api-grid-construct.md](01-research/api-grid-construct.md) | Что игра считает «одним кораблём»: логическая группа гридов и её терминальная система — граница, по которой схема собирает блоки (ADR-0032) |
 | [01-research/api-block-state.md](01-research/api-block-state.md) | Состояние живого блока: откуда берётся целостность (повреждение), что ещё моду доступно и почему читается именно это |

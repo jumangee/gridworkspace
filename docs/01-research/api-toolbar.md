@@ -238,6 +238,15 @@ bool ok = change.Apply();
 Чтение (`TryGetItem`, `GetItems`, `SlotCount`, `PageCount`, `Type`) работает везде, поэтому
 клиент видит связи, записанные сервером.
 
+**Куда идёт запись.** `SendChanges` не правит тулбар локально: он передаёт пачку в
+`IMyToolbarHost.SendToolbarBatch`, а `MyToolbarProviderComponent.SendToolbarBatch` поднимает
+сетевое событие `ReceiveToolbarBatch` с атрибутами `[Event][Reliable][ServerInvoked][Broadcast]`,
+которое применяют **все клиенты**, включая инициатора. То есть `Apply()` — это серверная
+рассылка, а не правка блока; поэтому её и может инициировать только сервер. У игры есть второй,
+клиентский путь (`SetItemAtIndex` → `ItemChanged` → `SendToolbarItemChanged`), но он лежит в
+запрещённых пространствах имён. Разбор и следствия для мультиплеера —
+[multiplayer.md](multiplayer.md).
+
 Элемент валидируется на стороне игры: `MyToolbarChangeBuilder.Build` для
 `Kind == BlockAction` создаёт `MyObjectBuilder_ToolbarItemTerminalBlock`, кладёт
 `BlockEntityId` и через `Fill` — `_Action`; если `ActionId` пуст или действие не найдено,
