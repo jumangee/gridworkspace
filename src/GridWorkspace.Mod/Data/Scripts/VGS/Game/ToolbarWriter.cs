@@ -99,6 +99,23 @@ namespace Vgs.Game
         public static WriteResult TryWrite(IMyTerminalBlock source, Node sourceNode, Port eventPort,
                                            IMyTerminalBlock target, string actionId, out ToolbarCell cell)
         {
+            return TryWrite(source, sourceNode, eventPort, target, actionId, ParameterSet.None, out cell);
+        }
+
+        /// <summary>
+        /// The same, with the arguments the item must carry (ADR-0050).
+        ///
+        /// <b>The arguments are part of the item, not a detail beside it.</b> The game stores them
+        /// inside the toolbar item and hands them to the action when it fires; an item without
+        /// them is an item that runs an action the way a bare button would, which for
+        /// <c>Run</c> or <c>RotateToAngle</c> is not the connection the player drew. So they are
+        /// written with the item, and the read-back check compares them too — a cell that holds
+        /// the right action with the wrong values is not this connection.
+        /// </summary>
+        public static WriteResult TryWrite(IMyTerminalBlock source, Node sourceNode, Port eventPort,
+                                           IMyTerminalBlock target, string actionId,
+                                           ParameterSet parameters, out ToolbarCell cell)
+        {
             cell = ToolbarCell.None;
             if (target == null) return WriteResult.ActionUnavailable;
 
@@ -115,12 +132,14 @@ namespace Vgs.Game
             }
 
             long targetId = target.EntityId;
+            ParameterSet values = parameters ?? ParameterSet.None;
 
             return WriteItem(
                 source, sourceNode, eventPort,
                 MyToolbarItemInfo.BlockAction(targetId, actionId),
-                (toolbar, index) => ReadCell(toolbar, index).HoldsBlockAction(targetId, actionId),
-                contents => contents.HoldsBlockAction(targetId, actionId),
+                values,
+                (toolbar, index) => ReadCell(toolbar, index).HoldsBlockAction(targetId, actionId, values),
+                contents => contents.HoldsBlockAction(targetId, actionId, values),
                 out cell);
         }
 
@@ -143,6 +162,15 @@ namespace Vgs.Game
         public static WriteResult TryWriteGroup(IMyTerminalBlock source, Node sourceNode, Port eventPort,
                                                 string groupName, string actionId, out ToolbarCell cell)
         {
+            return TryWriteGroup(source, sourceNode, eventPort, groupName, actionId, ParameterSet.None,
+                                 out cell);
+        }
+
+        /// <summary>The same, with the arguments the group item carries (ADR-0050).</summary>
+        public static WriteResult TryWriteGroup(IMyTerminalBlock source, Node sourceNode, Port eventPort,
+                                                string groupName, string actionId, ParameterSet parameters,
+                                                out ToolbarCell cell)
+        {
             cell = ToolbarCell.None;
             if (string.IsNullOrEmpty(groupName) || string.IsNullOrEmpty(actionId))
             {
@@ -152,12 +180,14 @@ namespace Vgs.Game
             if (!GroupStillOffers(source, groupName, actionId)) return WriteResult.ActionUnavailable;
 
             long contextId = source != null ? source.EntityId : 0;
+            ParameterSet values = parameters ?? ParameterSet.None;
 
             return WriteItem(
                 source, sourceNode, eventPort,
                 MyToolbarItemInfo.GroupAction(contextId, groupName, actionId),
-                (toolbar, index) => ReadCell(toolbar, index).HoldsGroupAction(groupName, actionId),
-                contents => contents.HoldsGroupAction(groupName, actionId),
+                values,
+                (toolbar, index) => ReadCell(toolbar, index).HoldsGroupAction(groupName, actionId, values),
+                contents => contents.HoldsGroupAction(groupName, actionId, values),
                 out cell);
         }
 
@@ -214,6 +244,7 @@ namespace Vgs.Game
         /// </summary>
         private static WriteResult WriteItem(IMyTerminalBlock source, Node sourceNode, Port eventPort,
                                              MyToolbarItemInfo item,
+                                             ParameterSet parameters,
                                              Func<IMyToolbar, int, bool> pageHoldsSameAction,
                                              Func<CellContents, bool> matches,
                                              out ToolbarCell cell)
@@ -258,10 +289,16 @@ namespace Vgs.Game
                 // One batch for the single change: the builder validates the item (an unknown
                 // action or a missing block makes it reject the whole batch) and Apply reports
                 // whether the game took it.
+                //
+                // <b>Set with parameters, not Set alone.</b> The ModAPI's own
+                // `MyToolbarApiExtensions.Set` is the only way to hand the values to the builder:
+                // the plain `change.Set(index, item)` writes an item with no arguments, which for
+                // a parameterised action is a different item. The extension is also safe when the
+                // builder is not the engine's own implementation — it rejects instead of throwing.
                 IMyToolbarChangeBuilder change = toolbar.BeginChanges();
                 if (change == null) return WriteResult.Rejected;
 
-                change.Set(index, item);
+                ToolbarParameters.Set(change, index, item, parameters);
 
                 if (!change.Apply())
                 {
@@ -286,6 +323,65 @@ namespace Vgs.Game
             catch (Exception e)
             {
                 VgsLog.Throttled("toolbar-write", "could not write toolbar item", e, 120);
+                return WriteResult.Rejected;
+            }
+        }
+
+        /// <summary>
+        /// Replaces the item in a cell the connection already occupies, with new arguments — the
+        /// write behind "edit the parameters of this connection" (ADR-0050).
+        ///
+        /// <b>Why not clear-then-write.</b> Clearing first would leave the cell empty for the
+        /// duration of two batches, and a timer firing between them would run nothing: the
+        /// connection would be silently lost for a tick. One batch that overwrites the cell has
+        /// no such window, and the read-back check is the same one every other write uses.
+        ///
+        /// Returns <see cref="WriteResult.Ok"/> only when the cell holds the new item afterwards;
+        /// a refusal leaves the old item in place, so the caller can tell the player that nothing
+        /// changed rather than showing arguments the block does not have.
+        /// </summary>
+        public static WriteResult TryRewrite(IMyTerminalBlock source, Node sourceNode,
+                                             ToolbarCell cell, string actionId,
+                                             ParameterSet parameters,
+                                             Func<CellContents, bool> matches)
+        {
+            if (source == null || sourceNode == null || !cell.IsValid) return WriteResult.NotDrivable;
+
+            ToolbarLayout layout = sourceNode.Toolbar;
+            if (layout == null || !layout.CanDrive) return WriteResult.NotDrivable;
+
+            try
+            {
+                IMyToolbar toolbar = ToolbarProbe.GetToolbar(source, cell.ToolbarIndex);
+                if (toolbar == null) return WriteResult.NotDrivable;
+                if (cell.Index < 0 || cell.Index >= toolbar.ItemCount) return WriteResult.NoFreeCell;
+
+                CellContents current = ReadCell(toolbar, cell.Index);
+                if (current.IsEmpty) return WriteResult.NoFreeCell;
+                if (!string.Equals(current.ActionId, actionId, StringComparison.Ordinal))
+                {
+                    // Somebody replaced the item in the terminal since the schema was drawn.
+                    // Overwriting it would destroy a connection the player made by hand.
+                    return WriteResult.ActionUnavailable;
+                }
+
+                IMyToolbarChangeBuilder change = toolbar.BeginChanges();
+                if (change == null) return WriteResult.Rejected;
+
+                MyToolbarItemInfo item = current.IsGroupAction
+                    ? MyToolbarItemInfo.GroupAction(source.EntityId, current.GroupName, actionId)
+                    : MyToolbarItemInfo.BlockAction(current.BlockEntityId, actionId);
+
+                ToolbarParameters.Set(change, cell.Index, item, parameters);
+
+                if (!change.Apply()) return WriteResult.Rejected;
+                if (!matches(ReadCell(toolbar, cell.Index))) return WriteResult.Rejected;
+
+                return WriteResult.Ok;
+            }
+            catch (Exception e)
+            {
+                VgsLog.Throttled("toolbar-rewrite", "could not rewrite toolbar item", e, 120);
                 return WriteResult.Rejected;
             }
         }
@@ -370,7 +466,12 @@ namespace Vgs.Game
                 {
                     return CellContents.Other(info.Kind.ToString());
                 }
-                return CellContents.BlockAction(info.BlockEntityId, info.ActionId);
+
+                // The arguments travel with the item (ADR-0050). Reading them here rather than
+                // on demand is what makes a cell edited in the vanilla terminal a *different*
+                // cell, which is how the schema notices that the connection changed.
+                return CellContents.BlockAction(info.BlockEntityId, info.ActionId,
+                                                ToolbarParameters.Read(toolbar, index));
             }
 
             if (info.Kind == MyToolbarItemKind.GroupAction)
@@ -379,7 +480,8 @@ namespace Vgs.Game
                 {
                     return CellContents.Other(info.Kind.ToString());
                 }
-                return CellContents.GroupAction(info.GroupName, info.ActionId);
+                return CellContents.GroupAction(info.GroupName, info.ActionId,
+                                                ToolbarParameters.Read(toolbar, index));
             }
 
             return CellContents.Other(info.Kind.ToString());
@@ -398,3 +500,4 @@ namespace Vgs.Game
         }
     }
 }
+

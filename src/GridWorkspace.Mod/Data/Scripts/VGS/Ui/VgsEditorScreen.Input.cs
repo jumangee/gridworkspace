@@ -30,6 +30,26 @@ namespace Vgs.Ui
 
                 if (MyAPIGateway.Input == null) return;
 
+                // The argument dialog is modal and owns both the keyboard and the pointer while
+                // it is open (ADR-0050): typing must not reach the search field behind it, and a
+                // click outside it must not pan or select. It is therefore the very first branch,
+                // before the search field, which is otherwise always the keyboard target.
+                //
+                // The pointer is still resolved, because the dialog has fields and buttons to hit
+                // — but a missing cursor is not an early return here: the dialog must keep taking
+                // keys even when the pointer is outside the window, exactly as the search field
+                // does.
+                if (_paramForm != null)
+                {
+                    Vector2 dialogMouse;
+                    _mouseValid = VgsScreenDraw.TryCursor(out dialogMouse);
+                    _mouse = dialogMouse;
+
+                    HandleParameterKeyboard();
+                    if (_paramForm != null) HandleParameterDialogInput(dialogMouse);
+                    return;
+                }
+
                 // Typing is handled before the pointer, and before the "no cursor" early return:
                 // the search field is the editor's only keyboard target, and it must keep working
                 // when the pointer happens to be outside the window.
@@ -582,10 +602,23 @@ namespace Vgs.Ui
                 // that otherwise belongs to the card, so it is resolved before anything else:
                 // a click meant to delete a connection must not select or drag the block.
                 Port removePort;
-                Node removeNode = HitTestRemoveButton(graphPos, out removePort);
+                InputBar removeBar;
+                Node removeNode = HitTestRemoveButton(graphPos, out removePort, out removeBar);
                 if (removeNode != null)
                 {
-                    RemovePortConnections(removeNode, removePort);
+                    if (removeBar != null) RemoveBarConnections(removeNode, removeBar);
+                    else RemovePortConnections(removeNode, removePort);
+                    return;
+                }
+
+                // The pen on a parameterised input bar opens the argument dialog for *that
+                // request* — the same target kind as the "x" beside it, resolved right after it
+                // (ADR-0050).
+                InputBar editBar;
+                Node editNode = HitTestEditButton(graphPos, out editBar);
+                if (editNode != null)
+                {
+                    BeginEditParameters(editNode, editBar);
                     return;
                 }
 
@@ -1028,6 +1061,11 @@ namespace Vgs.Ui
                 return;
             }
 
+            // The target is decided, so from this moment the pending line belongs to that card
+            // rather than to the pointer: the player has already answered "which block", and only
+            // "which action, with which values" is still open (ADR-0052 §5).
+            _bindTarget = target;
+
             // A click on the source itself is a legal target: a block may drive itself, and the
             // game fires such an item exactly like any other (ADR-0036). No special case is
             // needed here — the action menu below is the source's own action list, and the
@@ -1373,7 +1411,18 @@ namespace Vgs.Ui
             {
                 CloseActionMenu();
                 CancelBind();
+                return;
             }
+
+            // The dialog owns the request from here: the menu closes, the bind stays armed so that
+            // Cancel returns the player to the schema with the source still chosen, and the pending
+            // line stays anchored to the target card — it must not start following the pointer
+            // again, because the target is decided (ADR-0052 §5).
+            if (ParameterDialogOpen) return;
+
+            // Nothing was created and nothing is being asked for: the temporary line goes with the
+            // gesture, exactly as it did before there was a dialog.
+            CancelBind();
         }
 
         /// <summary>
@@ -1622,6 +1671,13 @@ namespace Vgs.Ui
                 return;
             }
 
+            // <b>Clear first, then set.</b> `_bindTarget` belongs to the previous gesture and a
+            // bind that started without it being cleared would draw its pending line to a card the
+            // player never chose (ADR-0052 §5). Today no path reaches here with a target set, and
+            // that is exactly the kind of invariant a field-by-field reset stops being true about
+            // the day a fourth field appears.
+            _bindTarget = null;
+
             _bindSource = source;
             _bindPort = port;
             _bindGroup = group;
@@ -1643,6 +1699,7 @@ namespace Vgs.Ui
             if (_bindSource != null) VgsLog.Debug("bind cancelled");
             _bindSource = null;
             _bindPort = null;
+            _bindTarget = null;
             ResetPointerOverlay();
             CloseActionMenu();
         }
@@ -1877,6 +1934,12 @@ namespace Vgs.Ui
         /// Returns true only when the block really holds the connection afterwards. A click
         /// that could not be satisfied returns false, so the menu stays open and the user can
         /// pick another action instead of wondering whether the click registered.
+        ///
+        /// <b>False also covers the one outcome that is not a failure:</b> an action that takes
+        /// arguments opens the dialog instead of writing, and the dialog — not this method — owns
+        /// the rest of the gesture (ADR-0050). It closes the menu itself and keeps the bind armed,
+        /// so the caller must do nothing in that case; that is why the answer is "was the
+        /// connection written", which is exactly what the caller acts on.
         /// </summary>
         private bool TryCompleteBind(Port action)
         {
@@ -1884,6 +1947,20 @@ namespace Vgs.Ui
             Node target = _menuTarget;
             Port port = _bindPort;
             if (source == null || target == null || action == null || port == null) return false;
+
+            // <b>An action that needs values is not written yet.</b> The item the game would run
+            // stores those values inside itself, so writing it now would create a connection that
+            // does something other than what the player asked for. The dialog opens instead, and
+            // the write happens on confirm — which is also why Cancel costs nothing (ADR-0050).
+            if (action.HasParameters)
+            {
+                BeginCreateParameters(source, port, target, action);
+
+                // The menu closes, the bind stays armed: the player is now filling the request,
+                // and Esc there returns them to the schema with the source still chosen.
+                CloseActionMenu();
+                return false;
+            }
 
             IMyTerminalBlock sourceBlock = ResolveBlock(source.EntityId);
             if (sourceBlock == null)
@@ -2112,9 +2189,7 @@ namespace Vgs.Ui
                 CellContents contents = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index);
                 if (contents.IsEmpty) return CellState.HoldsOther;
 
-                bool holdsThis = edge.TargetsGroup
-                    ? contents.HoldsGroupAction(edge.TargetGroupName, edge.TargetPortKey)
-                    : contents.HoldsBlockAction(edge.TargetEntityId, edge.TargetPortKey);
+                bool holdsThis = ToolbarParameters.SameItem(contents, edge);
 
                 return holdsThis ? CellState.HoldsThis : CellState.HoldsOther;
             }
@@ -2247,10 +2322,19 @@ namespace Vgs.Ui
             return null;
         }
 
-        /// <summary>Topmost node whose port remove button is under the pointer, and which port.</summary>
-        private Node HitTestRemoveButton(Vector2 graphPoint, out Port port)
+        /// <summary>
+        /// Topmost node whose <b>remove</b> button is under the pointer, together with what that
+        /// button belongs to: an event port, or an input bar (ADR-0050).
+        ///
+        /// <b>Two answers, one question.</b> An event port is one bar and its "x" deletes the
+        /// port's connections; an input bar is one *request* and its "x" deletes only that
+        /// request. Both are the same kind of target for the pointer, so they are resolved
+        /// together — a separate pass would let the two overlap and the later one win.
+        /// </summary>
+        private Node HitTestRemoveButton(Vector2 graphPoint, out Port port, out InputBar bar)
         {
             port = null;
+            bar = null;
             float aspect = VgsScreenDraw.ClientAspect;
 
             // Blocks first, for the same reason as in HitTest: a group's frame contains its
@@ -2258,18 +2342,70 @@ namespace Vgs.Ui
             IList<Node> nodes = _graph.Nodes;
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
-                Port hit = PortGeometry.HitPortRemoveButton(nodes[i], graphPoint, aspect);
+                Node node = nodes[i];
+
+                Port hit = PortGeometry.HitPortRemoveButton(node, graphPoint, aspect);
+                if (hit != null)
+                {
+                    port = hit;
+                    return node;
+                }
+
+                InputBar barHit = PortGeometry.HitInputBarRemoveButton(node, graphPoint, aspect);
+                if (barHit != null)
+                {
+                    bar = barHit;
+                    return node;
+                }
+            }
+
+            IList<Node> groups = _graph.Groups;
+            for (int i = groups.Count - 1; i >= 0; i--)
+            {
+                Node group = groups[i];
+
+                Port hit = PortGeometry.HitPortRemoveButton(group, graphPoint, aspect);
+                if (hit != null)
+                {
+                    port = hit;
+                    return group;
+                }
+
+                // A group has input bars only, and they are the only "x" it can carry.
+                InputBar barHit = PortGeometry.HitInputBarRemoveButton(group, graphPoint, aspect);
+                if (barHit != null)
+                {
+                    bar = barHit;
+                    return group;
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Topmost node whose input bar carries the <b>edit</b> button under the pointer, and
+        /// which bar (ADR-0050).
+        /// </summary>
+        private Node HitTestEditButton(Vector2 graphPoint, out InputBar bar)
+        {
+            bar = null;
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            IList<Node> nodes = _graph.Nodes;
+            for (int i = nodes.Count - 1; i >= 0; i--)
+            {
+                InputBar hit = PortGeometry.HitInputBarEditButton(nodes[i], graphPoint, aspect);
                 if (hit == null) continue;
-                port = hit;
+                bar = hit;
                 return nodes[i];
             }
 
             IList<Node> groups = _graph.Groups;
             for (int i = groups.Count - 1; i >= 0; i--)
             {
-                Port hit = PortGeometry.HitPortRemoveButton(groups[i], graphPoint, aspect);
+                InputBar hit = PortGeometry.HitInputBarEditButton(groups[i], graphPoint, aspect);
                 if (hit == null) continue;
-                port = hit;
+                bar = hit;
                 return groups[i];
             }
             return null;
@@ -2295,11 +2431,24 @@ namespace Vgs.Ui
             // a bar that belongs to the card. Resolving it first is what makes the highlight
             // land on the disc instead of on the whole port.
             Port removePort;
-            Node removeNode = HitTestRemoveButton(graphPos, out removePort);
+            InputBar removeBar;
+            Node removeNode = HitTestRemoveButton(graphPos, out removePort, out removeBar);
             if (removeNode != null)
             {
                 _hoverRemoveNode = removeNode;
                 _hoverRemovePort = removePort;
+                _hoverRemoveBar = removeBar;
+                return;
+            }
+
+            // The edit button is the same kind of target as the "x" beside it, and it is
+            // resolved right after it so the two cannot both claim the pointer (ADR-0050).
+            InputBar editBar;
+            Node editNode = HitTestEditButton(graphPos, out editBar);
+            if (editNode != null)
+            {
+                _hoverEditNode = editNode;
+                _hoverEditBar = editBar;
                 return;
             }
 
@@ -2511,3 +2660,8 @@ namespace Vgs.Ui
         }
     }
 }
+
+
+
+
+

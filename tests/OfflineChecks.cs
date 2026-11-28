@@ -283,6 +283,12 @@ internal static class OfflineChecks
         Console.WriteLine("=== line highlight (ADR-0049) ===");
         LineHighlight();
 
+        Console.WriteLine("=== action arguments (ADR-0050) ===");
+        ActionArguments();
+
+        Console.WriteLine("=== pending line anchor (ADR-0052) ===");
+        PendingLineAnchor();
+
         Console.WriteLine();
         Console.WriteLine(_failures == 0
             ? "OFFLINE OK — " + _checks + " checks"
@@ -578,21 +584,21 @@ internal static class OfflineChecks
 
         // One input bar per input port, however many edges arrive at it.
         Check(DrawnInputs(reactor) == 1, "reactor draws exactly one input bar for one incoming edge");
-        Check(reactor.FindAction("OnOff").Slot == 0, "reactor's OnOff sits in slot 0");
+        Check(BarSlot(reactor, "OnOff") == 0, "reactor's OnOff sits in slot 0");
         Check(graph.CountEdgesToInput(20, "OnOff") == 1, "reactor OnOff reports one source");
 
-        Check(door.FindAction("Open").Slot == 0, "door's Open sits in slot 0");
+        Check(BarSlot(door, "Open") == 0, "door's Open sits in slot 0");
 
         // A second connection to a different action of the same block stacks the next bar.
         Check(graph.TryConnect(10, "Triggered", 30, "Close", new ToolbarCell(0, 2)),
               "timer -> door Close");
         graph.LayoutPorts();
-        Check(door.FindAction("Open").Slot == 0 && door.FindAction("Close").Slot == 1,
+        Check(BarSlot(door, "Open") == 0 && BarSlot(door, "Close") == 1,
               "two input ports on one block occupy slots 0 and 1");
         Check(DrawnInputs(door) == 2, "door draws two input bars");
 
         // Ports are not renumbered when a slot is taken: order is catalog order, then edges.
-        Check(door.FindAction("OnOff").Slot < 0, "an unconnected action is not drawn");
+        Check(BarSlot(door, "OnOff") < 0, "an unconnected action is not drawn");
     }
 
     private static void Invariants()
@@ -671,7 +677,7 @@ internal static class OfflineChecks
         graph.LayoutPorts();
         Check(timer.FindEvent("Triggered").Slot == 0,
               "the self-connection's output gets the first output slot");
-        Check(timer.FindAction("TriggerNow").Slot == 0,
+        Check(BarSlot(timer, "TriggerNow") == 0,
               "the self-connection's input gets the first input slot");
         Check(DrawnOutputs(timer) == 1 && DrawnInputs(timer) == 1,
               "a self-connection draws one bar on each side of its card");
@@ -725,8 +731,10 @@ internal static class OfflineChecks
 
         // The input bar is the same width and the same left edge; only its direction differs.
         Port inPort = dst.FindAction("OnOff");
+        InputBar inBar = Bar(dst, "OnOff");
         Vector2 inTopLeft, inSize;
-        Check(PortGeometry.TryPortBarRect(dst, inPort, out inTopLeft, out inSize),
+        Check(inBar != null, "connected input action has a bar");
+        Check(PortGeometry.TryInputBarRect(dst, inBar, out inTopLeft, out inSize),
               "connected input bar has a rectangle");
         CheckClose(inTopLeft.X, dst.Position.X, "input bar starts at the card's left edge");
         CheckClose(inSize.X, cardSize.X, "input bar is as wide as the card");
@@ -742,7 +750,7 @@ internal static class OfflineChecks
         float inset = ControlOffset(aspect);
         Vector2 outDot, inDot;
         Check(PortGeometry.TryPortDot(src, outPort, aspect, out outDot), "output dot");
-        Check(PortGeometry.TryPortDot(dst, inPort, aspect, out inDot), "input dot");
+        Check(PortGeometry.TryInputBarDot(dst, inBar, aspect, out inDot), "input dot");
         CheckClose(outDot.X, outTopLeft.X + outSize.X - inset,
                    "output dot is inset from the right edge of its bar");
         CheckClose(inDot.X, inTopLeft.X + inset,
@@ -797,11 +805,11 @@ internal static class OfflineChecks
         graph.LayoutPorts();
 
         Port bothOut = both.FindEvent("Detected#true");
-        Port bothIn = both.FindAction("OnOff");
+        InputBar bothIn = Bar(both, "OnOff");
         Vector2 bothOutTopLeft, bothOutSize, bothInTopLeft, bothInSize;
         Check(PortGeometry.TryPortBarRect(both, bothOut, out bothOutTopLeft, out bothOutSize),
               "sensor output bar");
-        Check(PortGeometry.TryPortBarRect(both, bothIn, out bothInTopLeft, out bothInSize),
+        Check(PortGeometry.TryInputBarRect(both, bothIn, out bothInTopLeft, out bothInSize),
               "sensor input bar");
         Check(bothInTopLeft.Y >= bothOutTopLeft.Y + bothOutSize.Y,
               "input stack does not overlap the output stack");
@@ -1493,10 +1501,11 @@ internal static class OfflineChecks
 
         Port outPort = src.FindEvent("Triggered");
         Port inPort = dst.FindAction("OnOff");
+        InputBar inBar = Bar(dst, "OnOff");
 
         Vector2 outTopLeft, outSize, inTopLeft, inSize;
         Check(PortGeometry.TryPortBarRect(src, outPort, out outTopLeft, out outSize), "output bar");
-        Check(PortGeometry.TryPortBarRect(dst, inPort, out inTopLeft, out inSize), "input bar");
+        Check(PortGeometry.TryInputBarRect(dst, inBar, out inTopLeft, out inSize), "input bar");
 
         // One ratio for both controls: the remove button is the dot's mirror, so a different
         // size would read as two unrelated elements on one bar.
@@ -1517,8 +1526,8 @@ internal static class OfflineChecks
         Vector2 outDot, outRemove, inDot, inRemove;
         Check(PortGeometry.TryPortDot(src, outPort, aspect16By9, out outDot), "output dot");
         Check(PortGeometry.TryPortRemoveButton(src, outPort, aspect16By9, out outRemove), "output x");
-        Check(PortGeometry.TryPortDot(dst, inPort, aspect16By9, out inDot), "input dot");
-        Check(PortGeometry.TryPortRemoveButton(dst, inPort, aspect16By9, out inRemove), "input x");
+        Check(PortGeometry.TryInputBarDot(dst, inBar, aspect16By9, out inDot), "input dot");
+        Check(PortGeometry.TryInputBarRemoveButton(dst, inBar, aspect16By9, out inRemove), "input x");
 
         // The dot stays on the side the line uses; the remove button takes the other side.
         CheckClose(outDot.X, outTopLeft.X + outSize.X - ControlOffset(aspect16By9),
@@ -1560,13 +1569,64 @@ internal static class OfflineChecks
         CheckClose(labelSize.Y, outSize.Y, "the label rect is as tall as its bar");
 
         Vector2 inLabelTopLeft, inLabelSize;
-        Check(PortGeometry.TryPortLabelRect(dst, inPort, aspect16By9, out inLabelTopLeft, out inLabelSize),
+        Check(PortGeometry.TryInputBarLabelRect(dst, inBar, aspect16By9, out inLabelTopLeft,
+                                                out inLabelSize),
               "input label rect");
         Check(inLabelTopLeft.X >= inDot.X + half, "the input label starts after its dot");
         Check(inLabelTopLeft.X + inLabelSize.X <= inRemove.X - half, "the input label ends before its x");
 
-        // One control at each end means both directions reserve exactly the same span.
+        // One control at each end means both directions reserve exactly the same span — and a
+        // bar with arguments reserves one pitch more, because it carries the pen as well
+        // (ADR-0050). That is the only difference between the two label spans.
         CheckClose(labelSize.X, inLabelSize.X, "both directions reserve the same label width");
+
+        // A parameterised bar: same geometry, one control more on the right.
+        Node paramTarget = MakeTarget(7, "LargeBlockProgrammableBlock", "Run");
+        paramTarget.Actions.Clear();
+        var runTypes = new List<TypeCode[]>(1);
+        runTypes.Add(new[] { TypeCode.String });
+        BlockPortCatalog.FillActions(paramTarget, new List<string> { "Run" }, null, runTypes);
+        paramTarget.Position = new Vector2(0.2f, 0.9f);
+        graph.AddNode(paramTarget);
+
+        ParameterSet runArgs = Text("scan");
+        Check(graph.TryConnect(1, "Triggered", 7, "Run", new ToolbarCell(0, 3), runArgs),
+              "connect with arguments");
+        graph.LayoutPorts();
+
+        InputBar runBar = paramTarget.FindInputBar("Run", runArgs);
+        Check(runBar != null, "a parameterised action gets a bar of its own");
+        Check(runBar.HasValues && runBar.CanEdit,
+              "the bar knows it carries arguments and can be edited");
+        Check(runBar.Label != null && runBar.Label.IndexOf("scan", StringComparison.Ordinal) >= 0,
+              "the bar's label shows the arguments");
+
+        Vector2 runBarTopLeft, runBarSize, editCenter, runRemoveCenter, runLabelTopLeft, runLabelSize;
+        Check(PortGeometry.TryInputBarRect(paramTarget, runBar, out runBarTopLeft, out runBarSize),
+              "parameterised input bar");
+        Check(PortGeometry.TryInputBarEditButton(paramTarget, runBar, aspect16By9, out editCenter),
+              "a parameterised bar has a pen");
+        Check(PortGeometry.TryInputBarRemoveButton(paramTarget, runBar, aspect16By9,
+                                                   out runRemoveCenter),
+              "a parameterised bar keeps its x");
+        Check(PortGeometry.TryInputBarLabelRect(paramTarget, runBar, aspect16By9,
+                                                out runLabelTopLeft, out runLabelSize),
+              "parameterised input label rect");
+
+        Check(editCenter.X < runRemoveCenter.X, "the pen sits left of the x");
+        Check(editCenter.X - half > runLabelTopLeft.X + runLabelSize.X - 1e-6f,
+              "the label ends before the pen");
+        Check(runLabelSize.X < inLabelSize.X, "the pen costs the label one control's width");
+        CheckClose(runLabelSize.X, inLabelSize.X - (half * 2f + gapX),
+                   "the label loses exactly one control pitch");
+
+        // A bar without arguments has no pen: there is nothing to edit, and a control that opens
+        // an empty dialog is worse than no control (ADR-0050).
+        Vector2 unusedEdit;
+        Check(!PortGeometry.TryInputBarEditButton(dst, inBar, aspect16By9, out unusedEdit),
+              "an unparameterised bar has no pen");
+        Check(PortGeometry.HitInputBarEditButton(dst, inTopLeft + new Vector2(inSize.X - ControlOffset(aspect16By9), inSize.Y * 0.5f), aspect16By9) == null,
+              "an unparameterised bar is not an edit target");
 
         // The label sits on the bar's centre line, not on its top edge. Text is positioned by
         // its top edge, so "centred" has to be computed; this is the requirement, and the draw
@@ -1587,10 +1647,17 @@ internal static class OfflineChecks
                    outTopLeft.Y, "a line taller than its bar is pinned to its top edge");
 
         // Hit testing: the x answers for its own port and direction, and nothing else does.
+        //
+        // The bar is re-fetched first: adding the parameterised target above ran the layout pass
+        // again, and that pass rebuilds every input bar — the object held from before is stale,
+        // which is exactly what the refresh pass has to tolerate (ADR-0050).
+        inBar = Bar(dst, "OnOff");
+        Check(PortGeometry.TryInputBarRemoveButton(dst, inBar, aspect16By9, out inRemove),
+              "the input x of the re-laid-out bar");
         Check(ReferenceEquals(PortGeometry.HitPortRemoveButton(src, outRemove, aspect16By9), outPort),
               "the output x hit-tests to its own port");
-        Check(ReferenceEquals(PortGeometry.HitPortRemoveButton(dst, inRemove, aspect16By9), inPort),
-              "the input x hit-tests to its own port");
+        Check(ReferenceEquals(PortGeometry.HitInputBarRemoveButton(dst, inRemove, aspect16By9), inBar),
+              "the input x hit-tests to its own bar");
         Check(PortGeometry.HitPortRemoveButton(src, outDot, aspect16By9) == null,
               "the dot is not a remove target");
         Check(PortGeometry.HitPortRemoveButton(src, src.Position + new Vector2(0.01f, 0.01f),
@@ -1605,7 +1672,7 @@ internal static class OfflineChecks
         graph.LayoutPorts();
 
         Port idlePort = idle.FindAction("Open");
-        Check(idlePort.Slot < 0, "an unconnected port is not drawn");
+        Check(BarSlot(idle, "Open") < 0, "an unconnected port is not drawn");
         Vector2 unusedCenter;
         Check(!PortGeometry.TryPortRemoveButton(idle, idlePort, aspect16By9, out unusedCenter),
               "an undrawn port has no remove button");
@@ -1660,8 +1727,8 @@ internal static class OfflineChecks
         graph.LayoutPorts();
 
         Check(graph.CountEdgesToInput(3, "Open") == 0, "the input's edges are gone");
-        Check(door.FindAction("Open").Slot < 0, "the input bar disappears with its last connection");
-        Check(door.FindAction("Close").Slot == 0, "the other input of the same card keeps its bar");
+        Check(BarSlot(door, "Open") < 0, "the input bar disappears with its last connection");
+        Check(BarSlot(door, "Close") == 0, "the other input of the same card keeps its bar");
         Check(timer.FindEvent("Triggered").Slot == 0,
               "the source keeps its bar while it still drives something");
         Check(sensor.FindEvent("Detected#true").Slot < 0,
@@ -1675,7 +1742,7 @@ internal static class OfflineChecks
         graph.LayoutPorts();
 
         Check(timer.FindEvent("Triggered").Slot < 0, "the output bar disappears with its last connection");
-        Check(door.FindAction("Close").Slot < 0, "the target of the removed edge loses its bar");
+        Check(BarSlot(door, "Close") < 0, "the target of the removed edge loses its bar");
         Check(graph.EdgeCount == 0, "all connections are removed");
 
         collected.Clear();
@@ -1777,7 +1844,7 @@ internal static class OfflineChecks
         Vector2 outDot, inDot, cardTopLeft, cardSize;
         Check(PortGeometry.TryPortDot(selfTimer, selfTimer.FindEvent("Triggered"), 0.5625f, out outDot),
               "the self-connection's output dot exists");
-        Check(PortGeometry.TryPortDot(selfTimer, selfTimer.FindAction("TriggerNow"), 0.5625f, out inDot),
+        Check(PortGeometry.TryInputBarDot(selfTimer, Bar(selfTimer, "TriggerNow"), 0.5625f, out inDot),
               "the self-connection's input dot exists");
         PortGeometry.CardRect(selfTimer, out cardTopLeft, out cardSize);
 
@@ -1868,19 +1935,19 @@ internal static class OfflineChecks
         graph.AddNode(b);
         graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0));
         graph.LayoutPorts();
-        Check(b.FindAction("OnOff").Slot == 0, "target port is drawn while connected");
+        Check(BarSlot(b, "OnOff") == 0, "target port is drawn while connected");
 
         Check(graph.RemoveNode(1), "source node removed");
         Check(graph.EdgeCount == 0, "removing a node removes its edges");
         graph.LayoutPorts();
-        Check(b.FindAction("OnOff").Slot < 0, "the target's port is no longer drawn");
+        Check(BarSlot(b, "OnOff") < 0, "the target's port is no longer drawn");
 
         // A port shared by several edges keeps its bar until the last edge is gone.
         Node c = MakeNode(3, "LargeBlockSensor", SensorToolbar());
         graph.AddNode(c);
         graph.TryConnect(3, "Detected#true", 2, "OnOff", new ToolbarCell(0, 0));
         graph.LayoutPorts();
-        Check(b.FindAction("OnOff").Slot == 0, "port drawn again after reconnect");
+        Check(BarSlot(b, "OnOff") == 0, "port drawn again after reconnect");
         Check(graph.CountEdgesToInput(2, "OnOff") == 1, "one source");
 
         // Two connections of the same event, one per fire group, are two edges and one bar.
@@ -1923,9 +1990,9 @@ internal static class OfflineChecks
         Check(DrawnInputs(dst) == 4, "four input bars on the target");
 
         var seen = new bool[DrawnInputs(dst)];
-        for (int i = 0; i < dst.Actions.Count; i++)
+        for (int i = 0; i < dst.InputBars.Count; i++)
         {
-            int slot = dst.Actions[i].Slot;
+            int slot = dst.InputBars[i].Slot;
             if (slot < 0) continue;
             Check(slot < seen.Length, "slot within range");
             Check(!seen[slot], "slot " + slot + " is used once");
@@ -1934,16 +2001,16 @@ internal static class OfflineChecks
         for (int i = 0; i < seen.Length; i++) Check(seen[i], "slot " + i + " is contiguous from 0");
 
         // No two input bars may overlap, which is what contiguity buys.
-        for (int i = 0; i < dst.Actions.Count; i++)
+        for (int i = 0; i < dst.InputBars.Count; i++)
         {
-            if (dst.Actions[i].Slot < 0) continue;
-            for (int j = i + 1; j < dst.Actions.Count; j++)
+            if (dst.InputBars[i].Slot < 0) continue;
+            for (int j = i + 1; j < dst.InputBars.Count; j++)
             {
-                if (dst.Actions[j].Slot < 0) continue;
+                if (dst.InputBars[j].Slot < 0) continue;
 
                 Vector2 aTop, aSize, bTop, bSize;
-                PortGeometry.TryPortBarRect(dst, dst.Actions[i], out aTop, out aSize);
-                PortGeometry.TryPortBarRect(dst, dst.Actions[j], out bTop, out bSize);
+                PortGeometry.TryInputBarRect(dst, dst.InputBars[i], out aTop, out aSize);
+                PortGeometry.TryInputBarRect(dst, dst.InputBars[j], out bTop, out bSize);
 
                 bool overlap = aTop.Y < bTop.Y + bSize.Y && bTop.Y < aTop.Y + aSize.Y;
                 Check(!overlap, "input bars " + i + " and " + j + " do not overlap");
@@ -1959,7 +2026,7 @@ internal static class OfflineChecks
 
         Vector2 outTop, outSize, inTop, inSize;
         PortGeometry.TryPortBarRect(both, both.FindEvent("Detected#true"), out outTop, out outSize);
-        PortGeometry.TryPortBarRect(both, both.FindAction("OnOff"), out inTop, out inSize);
+        PortGeometry.TryInputBarRect(both, Bar(both, "OnOff"), out inTop, out inSize);
         Check(inTop.Y >= outTop.Y + outSize.Y, "input stack clears the output stack");
 
         // The same card's total height matches the bottom of its lowest bar.
@@ -1982,13 +2049,75 @@ internal static class OfflineChecks
         graph.LayoutPorts();
 
         Vector2 onlyTop, onlySize;
-        PortGeometry.TryPortBarRect(inOnly, inOnly.FindAction("OnOff"), out onlyTop, out onlySize);
+        PortGeometry.TryInputBarRect(inOnly, Bar(inOnly, "OnOff"), out onlyTop, out onlySize);
         CheckClose(PortGeometry.TotalHeight(inOnly), onlyTop.Y + onlySize.Y - inOnly.Position.Y,
                    "input-only total height");
 
         PortGeometry.TryPortBarRect(outOnly, outOnly.FindEvent("Triggered"), out onlyTop, out onlySize);
         CheckClose(PortGeometry.TotalHeight(outOnly), onlyTop.Y + onlySize.Y - outOnly.Position.Y,
                    "output-only total height");
+    }
+
+    /// <summary>
+    /// Where the pending line ends while a connection is being made (ADR-0052 §5).
+    ///
+    /// The gesture has two halves: "which block", then "which action, with which values". The line
+    /// follows the pointer only during the first; once a card is chosen it ends at that card, and
+    /// the property that matters is that the end point is *inside the target card* — a line that
+    /// ended anywhere else (at the source, at the pointer, at a neighbouring card) would claim the
+    /// wrong target while the action menu named the right one.
+    ///
+    /// The draw pass computes this as `CardRect`'s centre, so the assertion is the arithmetic that
+    /// the pass performs: if the centre formula ever changes, the line stops landing on the card
+    /// and this check says so without the game.
+    /// </summary>
+    private static void PendingLineAnchor()
+    {
+        var graph = new GridGraph(4);
+        Node source = MakeNode(1, "LargeBlockTimerBlock");
+        Node target = MakeTarget(2, "LargeBlockSmallGenerator", "OnOff");
+        Node other = MakeTarget(3, "LargeBlockDoor", "Open");
+        source.Position = new Vector2(0.10f, 0.10f);
+        target.Position = new Vector2(0.55f, 0.45f);
+        other.Position = new Vector2(0.10f, 0.75f);
+        graph.AddNode(source);
+        graph.AddNode(target);
+        graph.AddNode(other);
+
+        // The anchor the draw pass uses once the target is chosen.
+        Vector2 cardTopLeft, cardSize;
+        PortGeometry.CardRect(target, out cardTopLeft, out cardSize);
+        var anchor = new Vector2(cardTopLeft.X + cardSize.X * 0.5f,
+                                 cardTopLeft.Y + cardSize.Y * 0.5f);
+
+        Check(anchor.X > cardTopLeft.X && anchor.X < cardTopLeft.X + cardSize.X,
+              "the pending line's anchor is inside the target card (x)");
+        Check(anchor.Y > cardTopLeft.Y && anchor.Y < cardTopLeft.Y + cardSize.Y,
+              "the pending line's anchor is inside the target card (y)");
+
+        // And it is that card's centre, not another card's: two cards on the canvas must not
+        // produce the same anchor, or the line would be ambiguous between them.
+        Vector2 otherTopLeft, otherSize;
+        PortGeometry.CardRect(other, out otherTopLeft, out otherSize);
+        var otherAnchor = new Vector2(otherTopLeft.X + otherSize.X * 0.5f,
+                                      otherTopLeft.Y + otherSize.Y * 0.5f);
+        Check(anchor.X != otherAnchor.X || anchor.Y != otherAnchor.Y,
+              "two different cards get two different anchors");
+
+        // The anchor is *not* the source's dot: the whole point of the change is that the line
+        // stops leaving the source's port for the pointer, and a formula that accidentally
+        // resolved to the source would still pass an "inside the card" test if the two overlapped.
+        Port outPort = source.FindEvent("Triggered");
+        graph.TryConnect(1, "Triggered", 2, "OnOff", new ToolbarCell(0, 0));
+        graph.LayoutPorts();
+        outPort = source.FindEvent("Triggered");
+
+        Vector2 dot;
+        if (PortGeometry.TryPortDot(source, outPort, 0.5625f, out dot))
+        {
+            Check(dot.X != anchor.X || dot.Y != anchor.Y,
+                  "the anchor is the target's centre, not the source's dot");
+        }
     }
 
     private static void CheckAllAxisAligned(List<Vector4> route, string what)    {
@@ -2102,6 +2231,86 @@ internal static class OfflineChecks
     private static int DrawnInputs(Node node)
     {
         return PortGeometry.DrawnPortCount(node, PortDirection.Input);
+    }
+
+    /// <summary>
+    /// The drawn bar of one action asked with no arguments — the ordinary case, and the one most
+    /// of these checks are about (ADR-0050). Null means nothing is connected to that action,
+    /// which is exactly what "the port has no bar" meant before bars became per-request.
+    /// </summary>
+    private static InputBar Bar(Node node, string actionKey)
+    {
+        return node.FindInputBar(actionKey, ParameterSet.None);
+    }
+
+    /// <summary>The slot of an action's unparameterised bar, or -1 when it has none.</summary>
+    private static int BarSlot(Node node, string actionKey)
+    {
+        InputBar bar = Bar(node, actionKey);
+        return bar != null ? bar.Slot : -1;
+    }
+
+    /// <summary>A parameter set of one string value, for the argument checks.</summary>
+    private static ParameterSet Text(string value)
+    {
+        var items = new List<ActionParameter>(1);
+        ActionParameter p;
+        ParameterError error;
+        if (!ActionParameter.TryCreate(TypeCode.String, value, out p, out error))
+        {
+            throw new InvalidOperationException("the check itself asked for an invalid string");
+        }
+        items.Add(p);
+        return ParameterSet.Of(items);
+    }
+
+    /// <summary>A parameter set of one number of the given type.</summary>
+    private static ParameterSet Number(TypeCode code, string value)
+    {
+        var items = new List<ActionParameter>(1);
+        ActionParameter p;
+        ParameterError error;
+        if (!ActionParameter.TryCreate(code, value, out p, out error))
+        {
+            throw new InvalidOperationException("the check itself asked for an invalid number: " + value);
+        }
+
+        items.Add(p);
+        return ParameterSet.Of(items);
+    }
+
+    /// <summary>
+    /// One argument, for the checks that build a parameter set position by position. A position
+    /// with no value is written as <c>default(ActionParameter)</c>, which is what the defaults pass
+    /// leaves behind.
+    /// </summary>
+    /// <summary>
+    /// The types the game declares for an action's arguments, as the editor receives them.
+    ///
+    /// For the built-in actions that list is a placeholder — `TerminalActionParameter.Empty`, whose
+    /// type is not the type the handler reads (ADR-0052 §1) — so the only thing worth reproducing
+    /// here is its length: the arity is the game's, and the table describes it rather than
+    /// replacing it. The type is filled with the placeholder's own, so a check that passes can only
+    /// have passed because the description supplied the real one.
+    /// </summary>
+    private static List<TypeCode> DeclaredFor(string actionId)
+    {
+        var types = new List<TypeCode>();
+        ActionParameterTable.Row row = ActionParameterTable.Get(actionId);
+        int count = row == null ? 0 : row.Types.Length;
+        for (int i = 0; i < count; i++) types.Add(TypeCode.String);
+        return types;
+    }
+
+    private static ActionParameter Value(TypeCode code, string value)
+    {
+        ActionParameter p;
+        ParameterError error;
+        if (!ActionParameter.TryCreate(code, value, out p, out error))
+        {
+            throw new InvalidOperationException("the check itself asked for an invalid value: " + value);
+        }
+        return p;
     }
 
     /// <summary>Horizontal half-extent of a port control, the same arithmetic PortGeometry uses.</summary>
@@ -3111,7 +3320,7 @@ internal static class OfflineChecks
         Check(graph.TryConnectToGroup(1, "Triggered", "Doors", "OnOff", new ToolbarCell(0, 4)),
               "a connection to the new port");
         graph.LayoutPorts();
-        Check(graph.GetGroup("Doors").FindAction("OnOff").Slot == 0, "the OnOff port is drawn");
+        Check(BarSlot(graph.GetGroup("Doors"), "OnOff") == 0, "the OnOff port is drawn");
         Check(graph.EdgeCount == 1, "the connection to the new port exists");
 
         graph.SyncGroup("Doors", members,
@@ -3122,7 +3331,7 @@ internal static class OfflineChecks
                         });
         Check(graph.GetGroup("Doors").FindAction("OnOff") == null, "OnOff is no longer offered");
         Check(graph.EdgeCount == 0, "the edge to the vanished port is gone");
-        Check(graph.GetGroup("Doors").FindAction("Open").Slot < 0,
+        Check(BarSlot(graph.GetGroup("Doors"), "Open") < 0,
               "the surviving port has no edge, so it draws no bar");
     }
 
@@ -3149,7 +3358,7 @@ internal static class OfflineChecks
               "a block connects to a group");
         graph.LayoutPorts();
         Check(graph.EdgeCount == 1, "the edge exists");
-        Check(group.FindAction("Open").Slot == 0, "the group's port gets a bar");
+        Check(BarSlot(group, "Open") == 0, "the group's port gets a bar");
         Check(timer.FindEvent("Triggered").Slot == 0, "the source's port gets a bar");
         Check(graph.CountEdgesToInput(group, "Open") == 1, "the group's fan-in counts its own edges");
         Check(graph.CountEdgesToInput(2, "Open") == 0, "a group edge is not counted as a block edge");
@@ -3170,7 +3379,7 @@ internal static class OfflineChecks
               "a second source joins the same group port");
         graph.LayoutPorts();
         Check(graph.CountEdgesToInput(group, "Open") == 2, "two sources on the group's port");
-        Check(group.FindAction("Open").Slot == 0, "the shared group port still draws one bar");
+        Check(BarSlot(group, "Open") == 0, "the shared group port still draws one bar");
 
         // A group has no outputs, so nothing can start from it.
         Check(!graph.TryConnect(group.EntityId, "Triggered", 2, "Open", new ToolbarCell(0, 0)),
@@ -3208,7 +3417,7 @@ internal static class OfflineChecks
         Check(groupBuffer.Count == 2, "both group edges are collected");
         for (int i = 0; i < groupBuffer.Count; i++) graph.RemoveEdge(groupBuffer[i]);
         graph.LayoutPorts();
-        Check(graph.GetGroup("Doors").FindAction("Open").Slot < 0,
+        Check(BarSlot(graph.GetGroup("Doors"), "Open") < 0,
               "the group's port is no longer drawn once its last edge is gone");
     }
 
@@ -3271,7 +3480,7 @@ internal static class OfflineChecks
         Check(!PortGeometry.HitNode(group, new Vector2(0.5f, 0.5f)), "a point outside the frame misses");
 
         Vector2 barTopLeft, barSize;
-        Check(PortGeometry.TryPortBarRect(group, group.FindAction("OnOff"), out barTopLeft, out barSize),
+        Check(PortGeometry.TryInputBarRect(group, Bar(group, "OnOff"), out barTopLeft, out barSize),
               "the group's port bar has a rectangle");
         CheckClose(barTopLeft.Y, frameTopLeft.Y + frameSize.Y,
                    "the group's port bar hangs from the frame's bottom edge");
@@ -6543,7 +6752,11 @@ internal static class OfflineChecks
         int nodeCount = graph.NodeCount;
         int groupCount = graph.GroupCount;
         int edgeCount = graph.EdgeCount;
-        int firstActionSlot = firstAction.Slot;
+
+        // The bar of the *target's* connected action: that is the object the draw path holds a
+        // slot for (ADR-0050 — an action port has no slot of its own any more).
+        InputBar firstBar = Bar(target, target.Actions[0].Key);
+        int firstActionSlot = firstBar != null ? firstBar.Slot : -2;
         Vector2 frameBefore = group.FrameSize;
 
         Check(graph.ApplyIntegrity(1, 0.4f), "an integrity reading for a node in the graph is applied");
@@ -6555,7 +6768,8 @@ internal static class OfflineChecks
               "the state pass does not replace the event ports");
         Check(block.Actions.Count == actionCount && block.Events.Count == eventCount,
               "the state pass does not add or drop ports");
-        Check(firstAction.Slot == firstActionSlot, "the state pass does not move a port's slot");
+        Check(firstBar != null && firstBar.Slot == firstActionSlot,
+              "the state pass does not move a port's slot");
         Check(graph.NodeCount == nodeCount && graph.EdgeCount == edgeCount,
               "the state pass does not add or drop nodes or edges");
         Check(graph.GroupCount == groupCount, "the state pass does not add or drop groups");
@@ -7803,5 +8017,564 @@ internal static class OfflineChecks
         if (string.IsNullOrEmpty(text)) return false;
         for (int i = 0; i < text.Length; i++) if (text[i] > 127) return false;
         return true;
+    }
+
+    // ------------------------------------------------------------------ action arguments (ADR-0050)
+    //
+    // An action may take arguments, the game stores them inside the toolbar item, and the editor
+    // has to read, validate and draw them. Every rule below is a decision that is invisible in a
+    // compile and expensive to discover in the game: "is this text a number of that type", "are
+    // these two requests the same request", "which field is wrong", "does an argument change what
+    // the bar says". The game half — reading the types from the block and writing the values into
+    // the item — needs the game and is on the human acceptance list.
+    private static void ActionArguments()
+    {
+        // ---- the game's metadata is a placeholder, the derived table is not (ADR-0052) ----
+        //
+        // This is the defect the first in-game run found: a rotor's RotateToAngle declares three
+        // *String* arguments, its own handler reads Single/Single/Int64, and an item written from
+        // the declared types is a connection that exists in the toolbar and never fires. The
+        // checks below are the ones that keep the editor from writing such an item again.
+        var rotorDeclared = new List<TypeCode> { TypeCode.String, TypeCode.String, TypeCode.String };
+        ParameterSpec[] rotor = ActionParameterHints.For("RotateToAngle", rotorDeclared,
+                                                         VgsLanguage.English);
+
+        Check(rotor.Length == 3, "the rotor's rotate-to action takes three arguments");
+        Check(rotor[0].Type == TypeCode.Single, "the angle is stored as a single, not as text");
+        Check(rotor[1].Type == TypeCode.Single, "the speed is stored as a single");
+        Check(rotor[2].Type == TypeCode.Int64, "the direction is stored as an integer");
+        Check(rotor[2].Kind == ParameterKind.Choice, "the direction is a fixed list");
+        Check(rotor[2].IsChoice && rotor[2].ChoiceCount == 3,
+              "the direction offers exactly the three values the game's enum has");
+        Check(rotor[2].ChoiceAt(0) == "0" && rotor[2].ChoiceAt(1) == "1" && rotor[2].ChoiceAt(2) == "2",
+              "the direction values are the ones the player types");
+        Check(rotor[2].ChoiceKeyOf("1") != null && rotor[2].ChoiceKeyOf("7") == null,
+              "only a listed direction has a meaning");
+
+        // The arity is always the game's, never the table's: an action that declared two arguments
+        // gets two specifications even though the table describes three.
+        ParameterSpec[] shorter = ActionParameterHints.For(
+            "RotateToAngle", new List<TypeCode> { TypeCode.String, TypeCode.String },
+            VgsLanguage.English);
+        Check(shorter.Length == 2, "the table never changes how many arguments the game asks for");
+
+        // The angle carries the game's own caption, in both languages — the name is the text of the
+        // dialog the game shows, not a key and not an invention.
+        Check(rotor[0].Name == "Set Angle",
+              "the angle is named after the game's own dialog caption (got \"" + rotor[0].Name + "\")");
+
+        ParameterSpec[] rotorRu = ActionParameterHints.For("RotateToAngle", rotorDeclared,
+                                                           VgsLanguage.Russian);
+        Check(!string.IsNullOrEmpty(rotorRu[0].Name) && rotorRu[0].Name != rotor[0].Name,
+              "the same caption is available in Russian");
+
+        for (int i = 0; i < rotor[2].ChoiceCount; i++)
+        {
+            string meaning = VgsText.ParameterChoice(rotor[2].ChoiceKeyAt(i));
+            Check(!string.IsNullOrEmpty(meaning) && !LooksLikeKey(meaning),
+                  "direction value " + rotor[2].ChoiceAt(i) + " has a translated meaning");
+        }
+
+        // The programmable block: one argument, and it really is text.
+        ParameterSpec[] run = ActionParameterHints.For("Run", new List<TypeCode> { TypeCode.String },
+                                                       VgsLanguage.English);
+        Check(run.Length == 1 && run[0].Type == TypeCode.String && run[0].Kind == ParameterKind.Text,
+              "the programmable block's argument is text");
+        Check(run[0].DefaultFrom == ParameterDefault.ProgrammableBlockArgument,
+              "it starts at the argument the script ran last");
+
+        // ---- every field is named by the game, never numbered (ADR-0052 §2) ----
+        //
+        // The defect this replaced: the rotor showed "Number 2" and "Number 3" for its speed and
+        // its direction, and the relay showed the action's own name for its channel. Both were the
+        // editor inventing a name because it had not read the one the game shows. So the assertion
+        // is not "the names look reasonable" — it is that no described action produces a field
+        // whose name is missing, or is the action's own caption standing in for a parameter.
+        foreach (string id in ActionParameterHints.Described)
+        {
+            ParameterSpec[] fields = ActionParameterHints.For(
+                id, DeclaredFor(id), VgsLanguage.English);
+            if (fields.Length == 0) continue;
+
+            for (int f = 0; f < fields.Length; f++)
+            {
+                Check(!string.IsNullOrEmpty(fields[f].Name),
+                      "action '" + id + "' names field " + (f + 1) + " with the game's own caption");
+            }
+        }
+
+        // The rotor is the case that was wrong: three questions, three different names.
+        Check(rotor[0].Name != rotor[1].Name && rotor[1].Name != rotor[2].Name,
+              "the rotor's three fields have three different names");
+
+        // The relay is the other case: the parameter is not the action.
+        ParameterSpec[] relay = ActionParameterHints.For(
+            "SetChannelValue", new List<TypeCode> { TypeCode.String }, VgsLanguage.English);
+        Check(relay[0].Name == "Set Channel" && relay[0].Name != "Set Channel and Send Signal",
+              "the relay's field is the parameter's name, not the action's (got '"
+              + relay[0].Name + "')");
+
+        // ---- one dialog, one field, however many parameters it fills (ADR-0052 §2) ----
+        //
+        // `SetColor` declares three integers but asks for them with one colour picker. Rendering
+        // three fields would force two invented names, so the form follows the dialogs: one field
+        // named "Set Color" that carries all three values.
+        ParameterSpec[] colour = ActionParameterHints.For(
+            "SetColor", DeclaredFor("SetColor"), VgsLanguage.English);
+        Check(colour.Length == 1, "a colour is one field, not three (got " + colour.Length + ")");
+        Check(colour[0].Slots == 3, "and that field fills three parameters (got "
+              + colour[0].Slots + ")");
+        Check(colour[0].Name == "Set Color", "named with the game's caption");
+
+        // The field must be able to say how many values it takes, in both languages: a field that
+        // silently refuses "10, 20" is worse than one that explains itself. The sentence lives in
+        // the text tables, so what is checked here is that it exists and takes a number — the
+        // drawing side belongs to the screen, which is not compiled without the game.
+        Check(!string.IsNullOrEmpty(VgsText.ParameterHintSeveralFormat)
+              && VgsText.ParameterHintSeveralFormat.Contains("{0}"),
+              "there is a sentence for a field that takes several values, and it takes the count");
+
+        var colourForm = new ParameterForm("SetColor", "Set Color", VgsLanguage.English,
+                                           DeclaredFor("SetColor"), ParameterSet.None);
+        colourForm.EditorAt(0).SetText("10, 20, 30");
+        ParameterSet colourSet;
+        Check(colourForm.TryBuild(out colourSet) && colourSet.Count == 3,
+              "typing three values fills the three parameters the game declares");
+        Check(colourSet[0].Text == "10" && colourSet[2].Text == "30",
+              "in the order the colour dialog writes them");
+
+        colourForm.EditorAt(0).SetText("10, 20");
+        ParameterSet shortSet;
+        Check(!colourForm.TryBuild(out shortSet),
+              "two values for three parameters is refused, not padded");
+        Check(colourForm.Error == ParameterError.Invalid, "and the refusal says the value is wrong");
+        Check(colourForm.ErrorIndex == 0, "and points at the field that was wrong");
+
+        colourForm.EditorAt(0).SetText("10,,30");
+        Check(!colourForm.TryBuild(out shortSet), "an empty value among them is refused too");
+
+        // ---- the coverage is a fact, not a claim (ADR-0052 §4) ----
+        //
+        // The requirement asked which actions are not covered. The table answers with a list, and
+        // `HasKnownTypes` is what the screen logs — so an action that declares arguments and is not
+        // described is reported once, by id, instead of silently getting the placeholder type.
+        Check(ActionParameterHints.IsDescribed("SetChannelValue"),
+              "the Action Relay's channel action is described");
+        Check(ActionParameterHints.HasKnownTypes("SetChannelValue"),
+              "and its argument type is known: the scan read it from the handler");
+
+        ParameterSpec[] channel = ActionParameterHints.For(
+            "SetChannelValue", new List<TypeCode> { TypeCode.String }, VgsLanguage.English);
+        Check(channel.Length == 1 && channel[0].Type == TypeCode.Int32,
+              "the channel is a whole number, not the declared text (got "
+              + channel[0].Type + ")");
+
+        ParameterSpec[] relaySend = ActionParameterHints.For(
+            "SetChannelValue_SendSignal", new List<TypeCode> { TypeCode.String },
+            VgsLanguage.English);
+        Check(relaySend.Length == 1 && relaySend[0].Type == TypeCode.Int32,
+              "set-and-send asks for one whole number, the channel");
+        Check(relaySend[0].Name == "Set Channel",
+              "and the field is named with the game's own caption, not the action's name "
+              + "(got '" + relaySend[0].Name + "')");
+
+        Check(ActionParameterHints.HasKnownTypes("SetColor"), "a light's colour is described");
+        Check(ActionParameterHints.HasKnownTypes("SetAndMove"), "a piston's set-and-move is described");
+
+        // An action nobody described keeps working exactly as before: the declared type, and no
+        // invented name — the label falls back to the action's own caption, which is honest.
+        ParameterSpec[] unknown = ActionParameterHints.For(
+            "SomeOtherAction", new List<TypeCode> { TypeCode.Single }, VgsLanguage.English);
+        Check(unknown.Length == 1 && unknown[0].Type == TypeCode.Single,
+              "an unknown action keeps the type the game declared");
+        Check(unknown[0].Name == null, "and gets no invented name");
+        Check(!ActionParameterHints.IsDescribed("SomeOtherAction"),
+              "the table says it does not describe it");
+        Check(!ActionParameterHints.HasKnownTypes("SomeOtherAction"),
+              "and the screen will report it as uncovered");
+
+        // ---- what a value is allowed to be (ADR-0051 §3) ----
+        //
+        // The refusal has to happen here, before the write: this is the check that keeps a dead
+        // connection out of the toolbar.
+        ActionParameter value;
+        ParameterError bad;
+
+        Check(rotor[0].TryValidate("45", out value, out bad) && value.Code == TypeCode.Single,
+              "an angle of 45 is a value of the argument's own type");
+        Check(!rotor[0].TryValidate("abc", out value, out bad) && bad == ParameterError.Invalid,
+              "a word in the angle field is refused");
+        Check(!rotor[0].TryValidate("1000", out value, out bad) && bad == ParameterError.OutOfRange,
+              "an angle outside the rotor's own range is refused");
+        Check(rotor[0].TryValidate("-360", out value, out bad)
+              && rotor[0].TryValidate("360", out value, out bad),
+              "the ends of the range are inside it");
+
+        Check(!rotor[1].TryValidate("-1", out value, out bad) && bad == ParameterError.OutOfRange,
+              "a negative speed is refused: the game takes the absolute value, so the sign is noise");
+
+        Check(rotor[2].TryValidate("2", out value, out bad) && value.Code == TypeCode.Int64,
+              "a listed direction is accepted, stored as an integer");
+        Check(!rotor[2].TryValidate("7", out value, out bad) && bad == ParameterError.NotAllowed,
+              "a direction of 7 is refused as not allowed, not as the wrong type");
+        Check(!rotor[2].TryValidate("cw", out value, out bad) && bad == ParameterError.Invalid,
+              "the word is refused as unreadable, which is a different mistake");
+
+        // A text argument takes anything, including an empty string: a script may be written to run
+        // with no argument, and refusing that would forbid a legal request.
+        Check(run[0].TryValidate("", out value, out bad), "an empty script argument is allowed");
+        Check(run[0].TryValidate("scan all", out value, out bad),
+              "a script argument with a space is allowed");
+
+        // ---- the form fills itself in (ADR-0051 §2) ----
+        //
+        // A new connection starts from the block's own state, not from empty fields. The offline
+        // gate cannot read a block, so it checks what the specification says the default is and
+        // that the form honours it — the reading itself is the game layer's job.
+        var rotorForm = new ParameterForm("RotateToAngle", "Set Angle", VgsLanguage.English, rotorDeclared, ParameterSet.None);
+        Check(rotorForm.Count == 3, "the rotor's form asks for three values");
+        Check(rotorForm.ValueAt(2) == "0", "the direction starts at auto, not empty");
+        Check(rotorForm.ValueAt(0) == "0", "the angle starts at zero, which is a valid value");
+
+        // The form is not self-sufficient, and that is deliberate: the angle and the direction have
+        // defaults, the speed does not, because the only sensible speed is the one the rotor is
+        // already turning at — a fact that lives on the block, not in the table. The refusal names
+        // that field instead of quietly writing a request the action would ignore.
+        ParameterSet filled;
+        Check(!rotorForm.TryBuild(out filled), "a form with an empty speed is refused");
+        Check(rotorForm.ErrorIndex == 1, "the refusal names the speed field");
+        Check(rotorForm.Focus == 1, "and puts the caret there");
+
+        rotorForm.EditorAt(1).SetText("5");
+        Check(rotorForm.TryBuild(out filled), "a filled form is a valid request");
+        Check(filled.Count == 3 && filled[2].Text == "0", "and the default direction survives the build");
+        Check(filled[0].Code == TypeCode.Single && filled[2].Code == TypeCode.Int64,
+              "the request carries the real types, not the declared ones");
+
+        // A value the block supplied overrides the literal default: the speed field starts at what
+        // the rotor is actually doing.
+        var withSpeed = new ParameterForm("RotateToAngle", "Set Angle", VgsLanguage.English, rotorDeclared,
+                                          ParameterSet.Of(new List<ActionParameter>
+                                          {
+                                              default(ActionParameter),
+                                              Value(TypeCode.Single, "12.5"),
+                                              default(ActionParameter)
+                                          }));
+        Check(withSpeed.ValueAt(1) == "12.5", "a supplied default fills its own field");
+        Check(withSpeed.ValueAt(2) == "0", "and does not disturb the literal default of another");
+
+        // An edit still starts from the connection's own values, including a direction that is not
+        // the default one.
+        var rotorEdit = new ParameterForm("RotateToAngle", "Set Angle", VgsLanguage.English, rotorDeclared,
+                                          ParameterSet.Of(new List<ActionParameter>
+                                          {
+                                              Value(TypeCode.Single, "90"),
+                                              Value(TypeCode.Single, "5"),
+                                              Value(TypeCode.Int64, "2")
+                                          }));
+        Check(rotorEdit.ValueAt(0) == "90" && rotorEdit.ValueAt(1) == "5" && rotorEdit.ValueAt(2) == "2",
+              "editing starts from what the connection passes, not from the defaults");
+
+        // A connection written by the broken version carries text where a number belongs; its
+        // fields open at the defaults rather than pretending the text is a number.
+        var legacy = new ParameterForm("RotateToAngle", "Set Angle", VgsLanguage.English, rotorDeclared,
+                                       ParameterSet.Of(new List<ActionParameter>
+                                       {
+                                           Value(TypeCode.String, "abc"),
+                                           Value(TypeCode.String, "abc"),
+                                           Value(TypeCode.String, "abc")
+                                       }));
+        Check(legacy.ValueAt(0) == "0",
+              "a value of the wrong type is dropped, not shown as if it were valid");
+
+        // ---- the hint line says what the field accepts ----
+        //
+        // The player types "0", "1" or "2" for a direction; the window has to say what those mean,
+        // or the value is a magic number (ADR-0051 §4).
+        var hints = new ParameterForm("RotateToAngle", "Set Angle", VgsLanguage.English, rotorDeclared, ParameterSet.None);
+        Check(string.IsNullOrEmpty(hints.HintAt(0)), "an unconstrained number needs no hint line");
+
+        // The screen builds the hint, so the gate checks the parts it is built from.
+        Check(!string.IsNullOrEmpty(VgsText.ParameterHintChoiceFormat),
+              "there is a phrase for the list of allowed values");
+        Check(!string.IsNullOrEmpty(VgsText.ParameterHintMeaningFormat),
+              "and a phrase for a value and its meaning");
+        Check(!string.IsNullOrEmpty(VgsText.WarnParameterNotAllowedFormat),
+              "and a refusal for a value that is not allowed");
+
+        // ---- what counts as a value ----
+        //
+        // Text is taken verbatim: a script argument really is arbitrary text, and trimming or
+        // quoting it would change what the script receives.
+        ActionParameter p;
+        ParameterError error;
+
+        Check(ActionParameter.TryCreate(TypeCode.String, "scan", out p, out error)
+              && p.Text == "scan" && p.IsTextual && !p.IsNumeric,
+              "a string argument keeps its text");
+        Check(ActionParameter.TryCreate(TypeCode.String, "", out p, out error) && p.Text == "",
+              "an empty string is a value, not a refusal (Run with no argument)");
+        Check(ActionParameter.TryCreate(TypeCode.String, null, out p, out error) && p.Text == "",
+              "a null string is read as an empty one rather than throwing");
+
+        // A number is canonicalised through the invariant culture, so the same value read back
+        // from the toolbar compares equal to the one that was written.
+        Check(ActionParameter.TryCreate(TypeCode.Int32, " 45 ", out p, out error)
+              && p.Text == "45" && p.IsNumeric,
+              "an integer is trimmed and stored in its canonical text");
+        Check(ActionParameter.TryCreate(TypeCode.Single, "45,5", out p, out error) == false,
+              "a comma decimal separator is refused: the value is invariant, not localised");
+        Check(ActionParameter.TryCreate(TypeCode.Single, "45.5", out p, out error)
+              && p.Text == "45.5",
+              "a point decimal separator is the one the game stores");
+
+        // Two kinds of refusal, told apart because the player's next move differs.
+        Check(!ActionParameter.TryCreate(TypeCode.Int32, "abc", out p, out error)
+              && error == ParameterError.Invalid,
+              "a word in a number field is invalid, not out of range");
+        Check(!ActionParameter.TryCreate(TypeCode.Int32, "99999999999", out p, out error)
+              && error == ParameterError.OutOfRange,
+              "a number too large for the type is out of range");
+        Check(!ActionParameter.TryCreate(TypeCode.Byte, "300", out p, out error)
+              && error == ParameterError.OutOfRange,
+              "the range is the type's own, not the widest one");
+        Check(!ActionParameter.TryCreate(TypeCode.Int32, "", out p, out error)
+              && error == ParameterError.Invalid,
+              "an empty number field is invalid");
+        Check(!ActionParameter.TryCreate(TypeCode.Int32, "45.5", out p, out error)
+              && error == ParameterError.Invalid,
+              "a fractional value for an integer type is refused");
+
+        // The types the game's own parameter list can carry, and the ones it cannot.
+        Check(ActionParameter.TryCreate(TypeCode.Boolean, "true", out p, out error)
+              && p.Text == "True",
+              "a boolean is canonicalised to the game's own spelling");
+        Check(!ActionParameter.TryCreate(TypeCode.Boolean, "maybe", out p, out error),
+              "a word that is not a boolean is refused");
+        Check(!ActionParameter.TryCreate(TypeCode.Empty, "1", out p, out error),
+              "the empty type code is not a value the game can deserialise");
+        Check(!ActionParameter.TryCreate(TypeCode.DBNull, "1", out p, out error),
+              "DBNull is not a value either");
+
+        // Infinity and NaN are floats but not values an action can act on.
+        Check(!ActionParameter.TryCreate(TypeCode.Single, "NaN", out p, out error),
+              "NaN is refused: a rotor asked to turn to it does nothing");
+        Check(!ActionParameter.TryCreate(TypeCode.Single, "Infinity", out p, out error),
+              "infinity is refused for the same reason");
+
+        // ---- the identity of a request ----
+        //
+        // Two connections that ask the same action for the same thing are one request and share
+        // one bar; anything else is two requests and two bars. The comparison has to be exact,
+        // including the type, because 45 as an int and 45 as a string are different arguments.
+        Check(ParameterSet.None.IsEmpty && ParameterSet.None.Count == 0,
+              "the empty set is empty");
+        Check(ParameterSet.None.SameAs(null), "no arguments and a null set are the same request");
+        Check(Text("scan").SameAs(Text("scan")), "the same text is the same request");
+        Check(!Text("scan").SameAs(Text("build")), "different text is a different request");
+        Check(!Text("45").SameAs(Number(TypeCode.Int32, "45")),
+              "the text 45 and the number 45 are different arguments");
+        Check(!Text("scan").SameAs(ParameterSet.None),
+              "a request with an argument is not the request without one");
+        Check(!ParameterSet.None.SameAs(Text("scan")),
+              "the comparison is symmetric");
+
+        // The signature must not be forgeable by the values themselves: a script argument can
+        // contain any character, including whatever separator a naive scheme would use.
+        Check(!Text("a;b").SameAs(Text("a")), "a separator inside a value does not merge two requests");
+        Check(!Text("a, b").SameAs(Text("a")).Equals(false) || !Text("a, b").SameAs(Text("a")),
+              "a comma inside a value does not merge two requests");
+
+        // The label is what the bar says, and it has to show both the action and its values.
+        InputBar bar = new InputBar(
+            new Port("Run", "Run", PortKind.Action, PortDirection.Input, 0.5f, PortGroup.Single,
+                     new[] { TypeCode.String }), Text("scan"));
+        Check(bar.Label != null && bar.Label.IndexOf("Run", StringComparison.Ordinal) == 0,
+              "a bar's label starts with the action's name");
+        Check(bar.Label.IndexOf("scan", StringComparison.Ordinal) > 0,
+              "a bar's label carries the arguments");
+        Check(bar.HasValues && bar.CanEdit,
+              "a bar with arguments knows it has them and can be edited");
+
+        InputBar plain = new InputBar(
+            new Port("OnOff", "OnOff", PortKind.Action, PortDirection.Input, 0.5f), ParameterSet.None);
+        Check(!plain.HasValues && !plain.CanEdit,
+              "a bar without arguments says so and offers no pen");
+        Check(plain.Label == "OnOff", "a bar without arguments keeps the bare action name");
+
+        // ---- the form ----
+        //
+        // One window for every value, validated as a whole. The three properties that matter:
+        // it refuses the whole request when any field is wrong, it names the field, and it
+        // pre-fills from what the connection already passes.
+        var types = new List<TypeCode> { TypeCode.Single, TypeCode.Single, TypeCode.Int64 };
+        var form = new ParameterForm(types, ParameterSet.None);
+        Check(form.Count == 3, "the form asks for one field per argument");
+
+        ParameterSet built;
+        Check(!form.TryBuild(out built) && form.Error != ParameterError.None,
+              "an empty form cannot be built: every argument is required");
+        Check(form.ErrorIndex == 0, "the first bad field is the one reported");
+        Check(form.Focus == 0, "the caret goes to the bad field");
+
+        form.EditorAt(0).SetText("45");
+        form.EditorAt(1).SetText("10");
+        form.EditorAt(2).SetText("1");
+        Check(form.TryBuild(out built) && built.Count == 3, "a complete form builds");
+        Check(built[0].Text == "45" && built[1].Text == "10" && built[2].Text == "1",
+              "the values keep their order, which is the order the action consumes them in");
+
+        form.EditorAt(1).SetText("fast");
+        Check(!form.TryBuild(out built) && form.ErrorIndex == 1,
+              "the middle field is named when it is the bad one");
+        Check(form.Focus == 1, "the caret moves to the middle field");
+
+        // Pre-fill: an edit starts from what the connection already passes, so changing one
+        // number does not mean retyping the other two.
+        var edit = new ParameterForm(types, built2());
+        Check(edit.ValueAt(0) == "45" && edit.ValueAt(1) == "10" && edit.ValueAt(2) == "1",
+              "editing starts from the values the connection already has");
+
+        // A value of the wrong type in the initial set is dropped rather than shown as if it
+        // were valid: the form asks for the type the game declares, not the one the old item had.
+        var mixed = ParameterSet.Of(new List<ActionParameter>
+        {
+            ActionParameter.FromValue(TypeCode.String, "scan")
+        });
+        var typedForm = new ParameterForm(new List<TypeCode> { TypeCode.Int32 }, mixed);
+        Check(typedForm.ValueAt(0) == "", "an initial value of the wrong type is not shown");
+
+        // Focus wraps in both directions, which is what Tab and Shift+Tab rely on.
+        form.FocusAt(0);
+        form.FocusPrevious();
+        Check(form.Focus == 2, "focus wraps backwards");
+        form.FocusNext();
+        Check(form.Focus == 0, "focus wraps forwards");
+        form.FocusAt(99);
+        Check(form.Focus == 2, "an out-of-range focus is clamped");
+
+        // ---- the bar is the unit of the picture ----
+        //
+        // Two requests of one action are two bars with two slots, and removing one leaves the
+        // other. This is the property that makes arguments visible on the canvas at all.
+        var graph = new GridGraph(50);
+        Node timer = MakeNode(1, "LargeBlockTimerBlock");
+        Node pb = MakeTarget(2, "LargeBlockProgrammableBlock", "Run");
+        pb.Actions.Clear();
+        BlockPortCatalog.FillActions(pb, new List<string> { "Run" }, null,
+                                     new List<TypeCode[]> { new[] { TypeCode.String } });
+        graph.AddNode(timer);
+        graph.AddNode(pb);
+
+        ParameterSet scan = Text("scan");
+        ParameterSet build = Text("build");
+
+        Check(graph.TryConnect(1, "Triggered", 2, "Run", new ToolbarCell(0, 0), scan),
+              "connect Run with \"scan\"");
+        Check(graph.TryConnect(1, "Triggered", 2, "Run", new ToolbarCell(0, 1), build),
+              "connect Run with \"build\" — the same action, a different request");
+        graph.LayoutPorts();
+
+        Check(pb.InputBars.Count == 2, "two requests of one action draw two bars");
+        Check(pb.FindInputBar("Run", scan) != null && pb.FindInputBar("Run", build) != null,
+              "each request has its own bar");
+        Check(pb.FindInputBar("Run", scan).Slot != pb.FindInputBar("Run", build).Slot,
+              "the two bars do not share a slot");
+        Check(pb.FindInputBar("Run", Text("nothing")) == null,
+              "a request nobody made has no bar");
+
+        // The two bars do not overlap, which is what their separate slots buy.
+        Vector2 scanTop, scanSize, buildTop, buildSize;
+        Check(PortGeometry.TryInputBarRect(pb, pb.FindInputBar("Run", scan), out scanTop, out scanSize),
+              "the first request's bar has a rectangle");
+        Check(PortGeometry.TryInputBarRect(pb, pb.FindInputBar("Run", build), out buildTop, out buildSize),
+              "the second request's bar has a rectangle");
+        Check(scanTop.Y + scanSize.Y <= buildTop.Y || buildTop.Y + buildSize.Y <= scanTop.Y,
+              "two bars of one action do not overlap");
+
+        // One line per request: the same source, the same target and the same arguments is one
+        // line even when it sits in two cells (a repeat on another page).
+        Check(graph.Lines.Count == 2, "two different requests draw two lines");
+
+        Check(graph.TryConnect(1, "Triggered", 2, "Run", new ToolbarCell(0, 2), scan),
+              "the same request repeated on another page is a separate edge");
+        graph.LayoutPorts();
+        Check(graph.Lines.Count == 2, "a repeated request still draws one line, not two");
+        Check(pb.InputBars.Count == 2, "a repeated request does not add a third bar");
+
+        // Removing one request leaves the other — the whole point of a bar being the unit.
+        var buffer = new List<Edge>();
+        graph.CollectEdgesForBar(pb, pb.FindInputBar("Run", scan), buffer);
+        Check(buffer.Count == 2, "a bar collects only the edges of its own request");
+        for (int i = 0; i < buffer.Count; i++) graph.RemoveEdge(buffer[i]);
+        graph.LayoutPorts();
+
+        Check(pb.FindInputBar("Run", scan) == null, "the removed request's bar is gone");
+        Check(pb.FindInputBar("Run", build) != null,
+              "the other request of the same action keeps its bar");
+        Check(pb.InputBars.Count == 1, "one request left, one bar left");
+
+        // Replacing a connection's arguments keeps everything else about it.
+        Edge only = graph.Edges[0];
+        Check(graph.TryReplaceEdgeParameters(only, Text("deploy")),
+              "a connection's arguments can be replaced");
+        graph.LayoutPorts();
+        Check(pb.FindInputBar("Run", Text("deploy")) != null,
+              "the bar follows the new arguments");
+        Check(pb.FindInputBar("Run", build) == null,
+              "the bar of the old arguments is gone");
+        Check(graph.EdgeCount == 1 && graph.Edges[0].Cell.SameAs(only.Cell),
+              "the replaced connection keeps its cell");
+        Check(!graph.TryReplaceEdgeParameters(graph.Edges[0], Text("deploy")),
+              "replacing with the same arguments is a no-op, not a second write");
+
+        // A cell is only "this connection" when the arguments match as well: an item edited in
+        // the vanilla terminal is a different item, and the reconcile pass has to notice.
+        CellContents cell = CellContents.BlockAction(2, "Run", scan);
+        Check(cell.HoldsBlockAction(2, "Run", scan), "a cell holds its own request");
+        Check(!cell.HoldsBlockAction(2, "Run", build),
+              "a cell with other arguments does not hold this request");
+        Check(!cell.HoldsBlockAction(2, "Run"),
+              "a cell with arguments does not match a connection without them");
+        Check(CellContents.BlockAction(2, "Run").HoldsBlockAction(2, "Run"),
+              "a cell without arguments matches the plain form");
+
+        // A parameterised port declares its types; a plain one does not. The draw path asks this
+        // to decide whether the bar carries a pen.
+        Port runPort = pb.FindAction("Run");
+        Check(runPort.HasParameters && runPort.ParameterTypes.Count == 1,
+              "the port carries the argument types the game reported");
+        Port onOff = MakeTarget(3, "LargeBlockSmallGenerator", "OnOff").FindAction("OnOff");
+        Check(!onOff.HasParameters, "an action without arguments declares none");
+        Check(onOff.ParameterTypes != null, "the parameter list is never null");
+
+        // A connection whose item carries no values — one wired in the vanilla terminal, or one
+        // written before ADR-0050 — still gets the pen: the action needs values, so filling them
+        // in is exactly what the player has to do, and hiding the button would hide the only way
+        // to fix it.
+        InputBar empty = new InputBar(runPort, ParameterSet.None);
+        Check(!empty.HasValues, "a request without values shows none");
+        Check(empty.CanEdit, "but its bar still offers the pen, because the action needs values");
+        Check(empty.Label == "Run", "and its label is the bare action name");
+    }
+
+    /// <summary>A three-value set matching the form's types, built through the same validator.</summary>
+    private static ParameterSet built2()
+    {
+        var items = new List<ActionParameter>(3);
+        TypeCode[] codes = { TypeCode.Single, TypeCode.Single, TypeCode.Int64 };
+        string[] texts = { "45", "10", "1" };
+
+        for (int i = 0; i < codes.Length; i++)
+        {
+            ActionParameter p;
+            ParameterError error;
+            if (!ActionParameter.TryCreate(codes[i], texts[i], out p, out error))
+            {
+                throw new InvalidOperationException("the check itself asked for an invalid value");
+            }
+            items.Add(p);
+        }
+        return ParameterSet.Of(items);
     }
 }

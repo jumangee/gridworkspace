@@ -35,6 +35,8 @@ namespace Vgs.Ui
         ToggleOff = 9,
         /// <summary>bolt (Solid): a battery's charge mode — yellow while recharging, red while discharging</summary>
         Bolt = 10,
+        /// <summary>pen-to-square (Solid): the edit-arguments button of an input port bar</summary>
+        PenToSquare = 11,
     }
 
     /// <summary>
@@ -59,7 +61,7 @@ namespace Vgs.Ui
         public const int TextureSize = 256;
 
         /// <summary>Number of icons the build produced.</summary>
-        public const int Count = 11;
+        public const int Count = 12;
 
         /// <summary>
         /// SubtypeName of <paramref name="icon"/> in Data\GuiTextures.sbc, and therefore the
@@ -81,6 +83,7 @@ namespace Vgs.Ui
                 case VgsIcon.ToggleOn: return "VGS_ToggleOn";
                 case VgsIcon.ToggleOff: return "VGS_ToggleOff";
                 case VgsIcon.Bolt: return "VGS_Bolt";
+                case VgsIcon.PenToSquare: return "VGS_PenToSquare";
                 default: return "";
             }
         }
@@ -123,6 +126,7 @@ namespace Vgs.Ui
                 case VgsIcon.ToggleOn: return 1.6f;
                 case VgsIcon.ToggleOff: return 1.6f;
                 case VgsIcon.Bolt: return 1.066667f;
+                case VgsIcon.PenToSquare: return 1.066667f;
                 default: return 1f;
             }
         }
@@ -152,6 +156,7 @@ namespace Vgs.Ui
                 case VgsIcon.ToggleOn: return 1.5f;
                 case VgsIcon.ToggleOff: return 1.5f;
                 case VgsIcon.Bolt: return 0.823489f;
+                case VgsIcon.PenToSquare: return 1f;
                 default: return 1f;
             }
         }

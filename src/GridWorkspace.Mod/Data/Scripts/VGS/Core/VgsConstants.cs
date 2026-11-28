@@ -1061,6 +1061,45 @@ namespace Vgs.Core
         /// <summary>Rows shown at once. Longer action lists are scrolled with the wheel.</summary>
         public const int ActionMenuMaxRows = 9;
 
+        // ---- Argument dialog (ADR-0050) ----
+        //
+        // One window for every value an action needs: a title, one row per argument, a line that
+        // carries a refusal, and two buttons. The numbers are the whole of its look, so they are
+        // here rather than inline in the screen — the same rule the action menu follows.
+
+        /// <summary>Width of the dialog. Wider than the action menu: it holds typed values.</summary>
+        public const float ParameterDialogWidth = 0.36f;
+
+        /// <summary>Height of the dialog's title line: the action's own caption.</summary>
+        public const float ParameterTitleHeight = 0.028f;
+
+        /// <summary>
+        /// Width of the label column, left of every field. Fixed rather than measured per label:
+        /// the fields then line up, which is what makes a three-argument form readable at all.
+        ///
+        /// <b>Wide enough for a real name, not just for "Text".</b> Once the arguments are named
+        /// after the game's own captions (ADR-0051) the widest is "Направление" / "Нижний предел",
+        /// which needs about a tenth of the window; at the old 0.085 they were truncated and the
+        /// player saw "Направл…", which is no better than "Text 3".
+        /// </summary>
+        public const float ParameterLabelWidth = 0.105f;
+
+        /// <summary>
+        /// How long, in attempts, the coverage report stays quiet about one action id.
+        ///
+        /// The report is a fact about this build, not about the player's session: a block that
+        /// opens the dialog ten times must produce one line, and the next action the player tries
+        /// must produce its own line immediately (ADR-0052 §4).
+        /// </summary>
+        public const int ParameterCoverageLogInterval = 600;
+
+        /// <summary>
+        /// Height of the ink of an input bar's edit button, as a fraction of the button's
+        /// diameter. The pen's ink is square, and it is drawn as a bare mark like the dot and the
+        /// cross beside it, so it takes the same share the remove mark does.
+        /// </summary>
+        public const float PortEditIconRatio = 0.66f;
+
         /// <summary>
         /// How far the pointer may travel between a right press on a card and its release for
         /// that press to still count as a click — the click that opens the manual action menu
@@ -1272,4 +1311,5 @@ namespace Vgs.Core
     }
 
 }
+
 

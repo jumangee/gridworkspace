@@ -279,6 +279,88 @@ namespace Vgs.Core
 
         public static string ActionMenuTitleFormat { get { return S("ACTION_MENU_TITLE_FORMAT"); } }
         public static string ActionMenuEmpty { get { return S("ACTION_MENU_EMPTY"); } }
+
+        // ---- Action arguments (ADR-0050) ----
+
+        /// <summary>Caption of the argument dialog when the action reports no name of its own.</summary>
+        public static string ParameterDialogTitle { get { return S("PARAMETER_DIALOG_TITLE"); } }
+
+        /// <summary>Caption of the dialog's primary button.</summary>
+        public static string ParameterConfirm { get { return S("PARAMETER_CONFIRM"); } }
+
+        /// <summary>Caption of the dialog's cancel button.</summary>
+        public static string ParameterCancel { get { return S("PARAMETER_CANCEL"); } }
+
+        /// <summary>Name of a free-text argument, used as its field's label.</summary>
+        public static string ParameterKindText { get { return S("PARAMETER_KIND_TEXT"); } }
+
+        /// <summary>Name of a numeric argument.</summary>
+        public static string ParameterKindNumber { get { return S("PARAMETER_KIND_NUMBER"); } }
+
+        /// <summary>Name of a boolean argument.</summary>
+        public static string ParameterKindSwitch { get { return S("PARAMETER_KIND_SWITCH"); } }
+
+        /// <summary>Refusal for a value that is not of the declared type. Takes the action's name.</summary>
+        public static string WarnParameterInvalidFormat { get { return S("WARN_PARAMETER_INVALID_FORMAT"); } }
+
+        /// <summary>Refusal for a value outside the type's range. Takes the action's name.</summary>
+        public static string WarnParameterRangeFormat { get { return S("WARN_PARAMETER_RANGE_FORMAT"); } }
+
+        /// <summary>
+        /// Refusal for a number that is not one of the values the argument accepts. Takes the
+        /// action's name and the list of allowed values (ADR-0051).
+        /// </summary>
+        public static string WarnParameterNotAllowedFormat { get { return S("WARN_PARAMETER_NOT_ALLOWED_FORMAT"); } }
+
+        /// <summary>
+        /// The meaning of one value of a choice argument, by the key the specification carries:
+        /// "auto" for a rotor direction of 0. Null for an unknown key.
+        ///
+        /// The values themselves are the game's (its enum), the words are ours: the game names the
+        /// list only in its own dropdown, which a mod cannot reach (ADR-0052 §4).
+        /// </summary>
+        public static string ParameterChoice(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return null;
+
+            switch (key)
+            {
+                case "PARAM_CHOICE_AUTO": return ParameterChoiceAuto;
+                case "PARAM_CHOICE_CW": return ParameterChoiceCw;
+                case "PARAM_CHOICE_CCW": return ParameterChoiceCcw;
+                default: return null;
+            }
+        }
+
+        /// <summary>Meaning of the rotor direction value 0.</summary>
+        public static string ParameterChoiceAuto { get { return S("PARAMETER_CHOICE_AUTO"); } }
+
+        /// <summary>Meaning of the rotor direction value 1.</summary>
+        public static string ParameterChoiceCw { get { return S("PARAMETER_CHOICE_CW"); } }
+
+        /// <summary>Meaning of the rotor direction value 2.</summary>
+        public static string ParameterChoiceCcw { get { return S("PARAMETER_CHOICE_CCW"); } }
+        /// <summary>Hint under a field that takes a whole number.</summary>
+        public static string ParameterHintWholeNumber { get { return S("PARAMETER_HINT_WHOLE_NUMBER"); } }
+
+        /// <summary>
+        /// Hint under a field that fills several parameters at once — the game asks for a colour
+        /// as three integers in one dialog. Takes the number of values.
+        /// </summary>
+        public static string ParameterHintSeveralFormat { get { return S("PARAMETER_HINT_SEVERAL_FORMAT"); } }
+
+        /// <summary>Hint under a choice field. Takes the list of allowed values.</summary>
+        public static string ParameterHintChoiceFormat { get { return S("PARAMETER_HINT_CHOICE_FORMAT"); } }
+
+        /// <summary>One entry of a choice list: the value and what it means.</summary>
+        public static string ParameterHintMeaningFormat { get { return S("PARAMETER_HINT_MEANING_FORMAT"); } }
+
+        /// <summary>
+        /// Fallback glyph of an input bar's edit button, used only when the icon atlas is
+        /// unavailable (ADR-0019). The button is drawn as a <c>pen-to-square</c> icon; "/" is the
+        /// ASCII mark closest to a nib, and it is not translated.
+        /// </summary>
+        public const string PortEditGlyph = "/";
         public static string ActionMenuFanInFormat { get { return S("ACTION_MENU_FAN_IN_FORMAT"); } }
 
         /// <summary>
@@ -328,3 +410,7 @@ namespace Vgs.Core
         public static string ErrNoAccess { get { return S("ERR_NO_ACCESS"); } }
     }
 }
+
+
+
+

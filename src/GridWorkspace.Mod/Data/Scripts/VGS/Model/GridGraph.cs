@@ -81,6 +81,13 @@ namespace Vgs.Model
         /// </summary>
         private readonly List<string> _groupActionNames = new List<string>(16);
 
+        /// <summary>
+        /// Argument types parallel to <see cref="_groupActionIds"/> (ADR-0050). A group's port has
+        /// to declare the same arguments as the member's own port: the item names the group and
+        /// one action, and an item without the values that action needs does nothing.
+        /// </summary>
+        private readonly List<TypeCode[]> _groupActionParameterTypes = new List<TypeCode[]>(16);
+
 
         /// <summary>
         /// Next cell of the automatic layout. Monotonic for the graph's lifetime so that a block
@@ -378,10 +385,12 @@ namespace Vgs.Model
             node.Members.Clear();
             for (int i = 0; i < members.Count; i++) node.Members.Add(members[i]);
 
-            BlockPortCatalog.ComputeGroupActionIds(memberActions, _groupActionIds, _groupActionNames);
+            BlockPortCatalog.ComputeGroupActionIds(memberActions, _groupActionIds, _groupActionNames,
+                                                   _groupActionParameterTypes);
             if (!SamePortKeys(node.Actions, _groupActionIds))
             {
-                BlockPortCatalog.FillActions(node, _groupActionIds, _groupActionNames);
+                BlockPortCatalog.FillActions(node, _groupActionIds, _groupActionNames,
+                                             _groupActionParameterTypes);
 
                 // An action that dropped out of the group's list — the composition changed, so
                 // it is no longer the intersection — cannot be executed any more. Its edges go
@@ -508,11 +517,24 @@ namespace Vgs.Model
         public bool TryConnect(long sourceEntityId, string sourcePortKey, long targetEntityId,
                                string targetPortKey, ToolbarCell cell)
         {
+            return TryConnect(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell,
+                              ParameterSet.None);
+        }
+
+        /// <summary>
+        /// The same, with the arguments the connection passes to the target's action
+        /// (ADR-0050). Two connections to one action with different arguments are both legal and
+        /// are two requests: they take two cells of the source's toolbar and they draw as two
+        /// input bars on the target.
+        /// </summary>
+        public bool TryConnect(long sourceEntityId, string sourcePortKey, long targetEntityId,
+                               string targetPortKey, ToolbarCell cell, ParameterSet parameters)
+        {
             Node source = GetNode(sourceEntityId);
             Node target = GetNode(targetEntityId);
             if (source == null || target == null) return false;
 
-            return Connect(source, sourcePortKey, target, targetPortKey, cell, null);
+            return Connect(source, sourcePortKey, target, targetPortKey, cell, parameters, null);
         }
 
         /// <summary>
@@ -527,15 +549,23 @@ namespace Vgs.Model
         public bool TryConnectToGroup(long sourceEntityId, string sourcePortKey, string groupName,
                                       string targetPortKey, ToolbarCell cell)
         {
+            return TryConnectToGroup(sourceEntityId, sourcePortKey, groupName, targetPortKey, cell,
+                                     ParameterSet.None);
+        }
+
+        /// <summary>The same, with the arguments the group item carries (ADR-0050).</summary>
+        public bool TryConnectToGroup(long sourceEntityId, string sourcePortKey, string groupName,
+                                      string targetPortKey, ToolbarCell cell, ParameterSet parameters)
+        {
             Node source = GetNode(sourceEntityId);
             Node target = GetGroup(groupName);
             if (source == null || target == null) return false;
 
-            return Connect(source, sourcePortKey, target, targetPortKey, cell, groupName);
+            return Connect(source, sourcePortKey, target, targetPortKey, cell, parameters, groupName);
         }
 
         private bool Connect(Node source, string sourcePortKey, Node target, string targetPortKey,
-                             ToolbarCell cell, string groupName)
+                             ToolbarCell cell, ParameterSet parameters, string groupName)
         {
             Port outPort = source.FindEvent(sourcePortKey);
             if (outPort == null) return false;
@@ -545,8 +575,8 @@ namespace Vgs.Model
             if (FindEdgeInCell(source.EntityId, cell) != null) return false;
 
             _edges.Add(groupName == null
-                ? new Edge(source.EntityId, sourcePortKey, target.EntityId, targetPortKey, cell)
-                : Edge.ToGroup(source.EntityId, sourcePortKey, groupName, targetPortKey, cell));
+                ? new Edge(source.EntityId, sourcePortKey, target.EntityId, targetPortKey, cell, parameters)
+                : Edge.ToGroup(source.EntityId, sourcePortKey, groupName, targetPortKey, cell, parameters));
             return true;
         }
 
@@ -621,7 +651,64 @@ namespace Vgs.Model
             return false;
         }
 
-        /// <summary>Number of edges that end on the given input port of a block.</summary>
+        /// <summary>
+        /// Copies into <paramref name="into"/> every edge that the given input bar carries: the
+        /// connections of one action asked with one set of arguments (ADR-0050).
+        ///
+        /// <b>Why a bar rather than a port.</b> "Delete this input" used to mean "every
+        /// connection of this action". With arguments, one action can be asked two different
+        /// things, and the player's "x" is on one of the two bars — deleting both would throw
+        /// away a connection the player never pointed at. A bar is therefore the unit of removal,
+        /// exactly as it is the unit of drawing.
+        /// </summary>
+        public void CollectEdgesForBar(Node node, InputBar bar, List<Edge> into)
+        {
+            if (node == null || bar == null || bar.Port == null || into == null) return;
+
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                Edge e = _edges[i];
+
+                Node target = GetTargetNode(e);
+                if (!ReferenceEquals(target, node)) continue;
+                if (!string.Equals(e.TargetPortKey, bar.Port.Key, StringComparison.Ordinal)) continue;
+                if (!e.Parameters.SameAs(bar.Parameters)) continue;
+
+                into.Add(e);
+            }
+        }
+
+        /// <summary>
+        /// Replaces a connection's arguments, keeping everything else about it: same event, same
+        /// target, same cell. Returns false when the edge is not in this graph, or when the
+        /// arguments are already what was asked for (in which case there is nothing to do and no
+        /// toolbar write should happen either).
+        ///
+        /// <b>The graph is not the source of truth here either.</b> The caller writes the new
+        /// item into the block's toolbar first and calls this to keep the picture in step; the
+        /// next reconcile pass would produce the same result from the toolbar alone
+        /// (ADR-0011, ADR-0018). Doing it immediately is what keeps the bar from jumping back to
+        /// the old arguments for a second and a half.
+        /// </summary>
+        public bool TryReplaceEdgeParameters(Edge edge, ParameterSet parameters)
+        {
+            if (edge == null) return false;
+            if (edge.Parameters.SameAs(parameters)) return false;
+
+            for (int i = 0; i < _edges.Count; i++)
+            {
+                if (!ReferenceEquals(_edges[i], edge)) continue;
+
+                _edges[i] = edge.WithParameters(parameters);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Number of edges that end on the given input port of a block.
+        /// </summary>
         public int CountEdgesToInput(long targetEntityId, string targetPortKey)
         {
             int count = 0;
@@ -986,12 +1073,14 @@ namespace Vgs.Model
         }
 
         /// <summary>
-        /// Assigns every port its drawing slot: which stacked bar under the card it occupies.
+        /// Assigns every port and every input bar its drawing slot: which stacked bar under the
+        /// card it occupies.
         ///
         /// This is a *derived* view of the edges, recomputed after any change, and it lives
         /// here rather than in the UI for one reason: the slot of a port depends on the edges
         /// of the whole graph, and only this type owns them. The UI reads <see cref="Port.Slot"/>
-        /// and never decides it. The same pass also rebuilds <see cref="Lines"/>.
+        /// and <see cref="InputBar.Slot"/> and never decides them. The same pass also rebuilds
+        /// <see cref="Lines"/>.
         ///
         /// Rules, in the order they matter:
         ///
@@ -1003,8 +1092,11 @@ namespace Vgs.Model
         ///  3. Slots are assigned in catalog order (the order the ports appear in
         ///     <see cref="Node.Actions"/> / <see cref="Node.Events"/>), which is stable, so the
         ///     same graph always produces the same picture.
-        ///  4. An input port shared by several edges is one bar: the first edge to reach it
-        ///     gives it a slot and the rest only add lines to its dot.
+        ///  4. An input port shared by several edges that ask for <em>the same</em> arguments is
+        ///     one bar: the edges only add lines to its dot. Edges that ask for different
+        ///     arguments get a bar each, because they are different requests — otherwise the
+        ///     picture could not say which line carries which argument, and the bar's "x" would
+        ///     have to delete both (ADR-0050).
         ///
         /// Everything is cleared first. A partial reset would let a port keep a slot that
         /// another port has since taken, and the two bars would be drawn on top of each other.
@@ -1015,6 +1107,7 @@ namespace Vgs.Model
             {
                 ClearSlots(_nodeList[i].Actions);
                 ClearSlots(_nodeList[i].Events);
+                _nodeList[i].InputBars.Clear();
                 ClearWatchSlots(_nodeList[i]);
             }
             for (int i = 0; i < _groupList.Count; i++)
@@ -1023,6 +1116,7 @@ namespace Vgs.Model
                 // group port that lost its last connection must lose its bar like any other.
                 ClearSlots(_groupList[i].Actions);
                 ClearSlots(_groupList[i].Events);
+                _groupList[i].InputBars.Clear();
                 ClearWatchSlots(_groupList[i]);
             }
 
@@ -1042,19 +1136,67 @@ namespace Vgs.Model
                 }
 
                 Node target = GetTargetNode(e);
-                if (target != null)
-                {
-                    Port inPort = target.FindAction(e.TargetPortKey);
-                    if (inPort != null) TakeSlot(target.Actions, inPort);
-                }
+                if (target != null) TakeInputBar(target, e);
 
                 if (!HasLineFor(e, i)) _lines.Add(e);
+            }
+
+            // Slots are handed out in a second pass, in catalog order, so the picture does not
+            // depend on the order the edges happen to sit in the list: a bar is where its action
+            // is in the block's own action list, not where the player happened to connect it.
+            for (int i = 0; i < _nodeList.Count; i++) AssignInputBarSlots(_nodeList[i]);
+            for (int i = 0; i < _groupList.Count; i++) AssignInputBarSlots(_groupList[i]);
+        }
+
+        /// <summary>
+        /// Finds or creates the input bar this edge belongs to: the target's bar for the same
+        /// action and the same arguments, or a new one (ADR-0050).
+        ///
+        /// The bar is found by <em>request</em>, not by port: two edges of one action that pass
+        /// different arguments are two requests and get two bars, which is what makes the
+        /// arguments readable on the canvas and lets each line end on its own dot.
+        /// </summary>
+        private static void TakeInputBar(Node target, Edge edge)
+        {
+            Port port = target.FindAction(edge.TargetPortKey);
+            if (port == null) return;
+
+            if (target.FindInputBar(port.Key, edge.Parameters) != null) return;
+
+            target.InputBars.Add(new InputBar(port, edge.Parameters));
+        }
+
+        /// <summary>
+        /// Numbers the input bars of one node: catalog order of the actions, then the order the
+        /// requests were first seen, from zero outwards. Bars beyond
+        /// <see cref="MaxPortsPerSide"/> keep -1 and are not drawn — their connections still
+        /// exist and still fire.
+        /// </summary>
+        private static void AssignInputBarSlots(Node node)
+        {
+            List<InputBar> bars = node.InputBars;
+            for (int i = 0; i < bars.Count; i++) bars[i].Slot = -1;
+
+            int next = 0;
+            for (int a = 0; a < node.Actions.Count && next < MaxPortsPerSide; a++)
+            {
+                Port port = node.Actions[a];
+                for (int b = 0; b < bars.Count && next < MaxPortsPerSide; b++)
+                {
+                    if (!ReferenceEquals(bars[b].Port, port)) continue;
+                    bars[b].Slot = next++;
+                }
             }
         }
 
         /// <summary>
         /// True when an edge earlier in the list already draws the same line. Edges are
         /// appended in order, so "earlier" is exactly "was drawn first".
+        ///
+        /// <b>The arguments are part of the line's identity.</b> Two edges of one action that
+        /// pass different arguments end on different bars, so they are different lines; two that
+        /// pass the same arguments end on the same dot and are one line, drawn once
+        /// (ADR-0050).
         /// </summary>
         private bool HasLineFor(Edge edge, int index)
         {
@@ -1066,6 +1208,7 @@ namespace Vgs.Model
                 if (!string.Equals(other.TargetGroupName, edge.TargetGroupName, StringComparison.Ordinal)) continue;
                 if (!string.Equals(other.SourcePortKey, edge.SourcePortKey, StringComparison.Ordinal)) continue;
                 if (!string.Equals(other.TargetPortKey, edge.TargetPortKey, StringComparison.Ordinal)) continue;
+                if (!other.Parameters.SameAs(edge.Parameters)) continue;
                 return true;
             }
             return false;
@@ -1102,7 +1245,11 @@ namespace Vgs.Model
             for (int i = 0; i < count; i++) watched[i].Slot = i;
         }
 
-        /// <summary>Gives the port the lowest free slot, if any is left.</summary>
+        /// <summary>
+        /// Gives the port the lowest free slot, if any is left. Used for <b>event</b> ports only:
+        /// an event port has exactly one bar, so a slot on the port is enough. An action port's
+        /// bars are <see cref="InputBar"/>s, numbered by <see cref="AssignInputBarSlots"/>.
+        /// </summary>
         private static void TakeSlot(List<Port> ports, Port port)
         {
             if (port.Slot >= 0) return;

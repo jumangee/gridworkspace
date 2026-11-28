@@ -277,5 +277,35 @@ namespace Vgs.Ui
         /// the schema before this feature existed.
         /// </summary>
         public static readonly Color ColGridFrameSub = new Color(126, 158, 194, 185);
+
+        /// <summary>
+        /// Fill of a text field's box, in the argument dialog (ADR-0050): darker than the panel
+        /// it sits on, so the box reads as a place to type rather than as a label. The same value
+        /// the canvas uses, because a field and the canvas are both "behind the interface".
+        /// </summary>
+        public static readonly Color ColField = new Color(18, 22, 29, 255);
+
+        /// <summary>
+        /// Fill of the dialog's primary button — the one that confirms. The accent orange is the
+        /// same colour the editor uses for "this is the thing you are acting on" (selection,
+        /// marquee, pending line), which is what makes the right answer obvious at a glance.
+        /// </summary>
+        public static readonly Color ColButtonPrimary = new Color(184, 116, 30, 255);
+
+        /// <summary>The primary button under the pointer: the same hue, one step brighter.</summary>
+        public static readonly Color ColButtonPrimaryHot = new Color(224, 148, 46, 255);
+
+        /// <summary>
+        /// Text on the primary button. Near-black rather than white: the fill is bright, and a
+        /// white caption on it would be the lowest-contrast pair in the whole editor.
+        /// </summary>
+        public static readonly Color ColButtonPrimaryText = new Color(24, 18, 10, 255);
+
+        /// <summary>
+        /// Colour of a refusal inside the argument dialog — the wrong field's frame and the line
+        /// under the fields (ADR-0050). The same red the watch refusal uses, because both mean
+        /// "the game will not take this", and one meaning gets one colour.
+        /// </summary>
+        public static readonly Color ColWarn = new Color(255, 90, 90, 245);
     }
 }

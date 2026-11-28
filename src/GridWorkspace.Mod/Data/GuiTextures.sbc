@@ -52,6 +52,10 @@
         <SubtypeName>VGS_Bolt</SubtypeName>
         <Path>Textures\VGS\Icons\Bolt.png</Path>
       </Texture>
+      <Texture>
+        <SubtypeName>VGS_PenToSquare</SubtypeName>
+        <Path>Textures\VGS\Icons\PenToSquare.png</Path>
+      </Texture>
     </Textures>
   </Definition>
 </Definitions>

@@ -69,6 +69,12 @@ namespace Vgs.Model
     /// <see cref="Key"/> is the stable identity used in save data and in the graph; it must
     /// never be renumbered, only added to. <see cref="DisplayName"/> is what the user sees.
     ///
+    /// <b>An action port may declare arguments</b> (<see cref="ParameterTypes"/>). That is a fact
+    /// about the block's type — a programmable block's <c>Run</c> always takes a string — read
+    /// from the game when the port list is built, never guessed from the subtype. The *values*
+    /// are not here: they belong to a connection, because two connections may ask the same action
+    /// for different things (ADR-0050, <see cref="InputBar"/>).
+    ///
     /// <see cref="Anchor"/> and <see cref="Slot"/> are two different things on purpose:
     ///
     ///  * <see cref="Anchor"/> is a *derived* position on the card edge, kept only so the
@@ -104,8 +110,37 @@ namespace Vgs.Model
         /// Drawing slot: index of the stacked port bar this port occupies under its card,
         /// counted from the card outwards. Negative means "not drawn" (no connection, so the
         /// bar would be noise). Assigned by <see cref="GridGraph.LayoutPorts"/>.
+        ///
+        /// <b>An event port's bar is this slot. An action port's bar is not.</b> Since an action
+        /// can be asked with arguments, one action port may need several bars — one per distinct
+        /// request — and a single integer cannot describe that. The input stack is therefore
+        /// built from <see cref="Node.InputBars"/>, each carrying its own
+        /// <see cref="InputBar.Slot"/>; this field stays -1 for every action port, and the
+        /// geometry of an input bar is asked of <c>PortGeometry.TryInputBarRect</c> with the bar
+        /// rather than with the port (ADR-0050).
         /// </summary>
         public int Slot; // review:allow R009 assigned only by GridGraph.LayoutPorts, for the whole node at once
+
+        /// <summary>
+        /// The types of the arguments this action requires, in the order the game asks for them,
+        /// or an empty list for an action that takes none. <b>Read from the game</b>
+        /// (<c>MyToolbarApiExtensions.GetActionParameterDefinitions</c>) when the port list is
+        /// built — it is a property of the block's type, not of an instance, and it is the only
+        /// thing the game publishes about arguments: types, never bounds (ADR-0050,
+        /// <c>docs/01-research/api-action-parameters.md</c>).
+        ///
+        /// Always non-null, so a caller never has to ask whether arguments were read before it
+        /// can ask how many there are.
+        /// </summary>
+        public readonly IList<TypeCode> ParameterTypes;
+
+        private static readonly TypeCode[] NoParameters = new TypeCode[0];
+
+        /// <summary>True when the action cannot run without arguments, i.e. the editor must ask for them.</summary>
+        public bool HasParameters
+        {
+            get { return ParameterTypes != null && ParameterTypes.Count > 0; }
+        }
 
         public Port(string key, string displayName, PortKind kind, PortDirection direction, float anchor)
             : this(key, displayName, kind, direction, anchor, PortGroup.Single)
@@ -114,6 +149,17 @@ namespace Vgs.Model
 
         public Port(string key, string displayName, PortKind kind, PortDirection direction,
                     float anchor, PortGroup group)
+            : this(key, displayName, kind, direction, anchor, group, null)
+        {
+        }
+
+        /// <summary>
+        /// The full form, with the argument types the game reports for this action.
+        /// <paramref name="parameterTypes"/> may be null, which means "this action takes none" —
+        /// the case of every event port and of the actions of most blocks.
+        /// </summary>
+        public Port(string key, string displayName, PortKind kind, PortDirection direction,
+                    float anchor, PortGroup group, IList<TypeCode> parameterTypes)
         {
             Key = key;
             DisplayName = displayName;
@@ -121,6 +167,7 @@ namespace Vgs.Model
             Direction = direction;
             Anchor = anchor;
             Group = group;
+            ParameterTypes = parameterTypes ?? NoParameters;
             Slot = -1;
         }
 

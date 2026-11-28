@@ -255,6 +255,19 @@ namespace Vgs.Ui
         private PortGroup _bindGroup;
 
         /// <summary>
+        /// The card the bind has already been pointed at, or null while the player is still
+        /// choosing one.
+        ///
+        /// <b>This is what stops the pending line from following the pointer.</b> The gesture has
+        /// two halves — "which block" and then "which action, with which values" — and once the
+        /// first is answered, a line that still tracked the cursor would claim the target was
+        /// undecided. The line therefore snaps to the chosen card and stays there while the action
+        /// menu and the argument dialog are open; it disappears with the bind, which is what
+        /// happens when no connection is created (ADR-0052 §5).
+        /// </summary>
+        private Node _bindTarget;
+
+        /// <summary>
         /// Controller whose watch list is being extended, or null. Non-null means watch mode is
         /// active (ADR-0017).
         ///
@@ -376,6 +389,21 @@ namespace Vgs.Ui
 
         /// <summary>Port whose remove button is under the pointer, or null.</summary>
         private Port _hoverRemovePort;
+
+        /// <summary>
+        /// Input bar whose remove button is under the pointer, or null (ADR-0050).
+        ///
+        /// A separate field from <see cref="_hoverRemovePort"/> because an input bar is not a
+        /// port: two requests of one action are two bars, and the highlight must land on the one
+        /// under the pointer — pressing its "x" deletes that request and leaves the other.
+        /// </summary>
+        private InputBar _hoverRemoveBar;
+
+        /// <summary>Node whose input bar carries the edit button under the pointer, or null.</summary>
+        private Node _hoverEditNode;
+
+        /// <summary>Input bar whose edit button is under the pointer, or null.</summary>
+        private InputBar _hoverEditBar;
 
         /// <summary>Controller whose watch port carries the "x" under the pointer, or null.</summary>
         private Node _hoverWatchRemoveNode;
@@ -905,9 +933,17 @@ namespace Vgs.Ui
         {
             try
             {
-                // Esc exits the deepest mode first — closing the action menu (and the bind it
-                // belongs to) or cancelling a watch is what the player expects from Escape — and
-                // only closes the editor when there is none.
+                // Esc exits the deepest mode first — the argument dialog, then the action menu
+                // (and the bind it belongs to), then a watch — and only closes the editor when
+                // there is none. The dialog is the deepest because it was opened last, from a
+                // menu row: each press cancels exactly what the player started most recently
+                // (ADR-0050).
+                if (_paramForm != null)
+                {
+                    CancelParameters();
+                    return false;
+                }
+
                 if (_menuTarget != null || _bindSource != null)
                 {
                     DismissActionMenu();
@@ -1633,6 +1669,9 @@ namespace Vgs.Ui
             _hoverButton = null;
             _hoverRemoveNode = null;
             _hoverRemovePort = null;
+            _hoverRemoveBar = null;
+            _hoverEditNode = null;
+            _hoverEditBar = null;
             _hoverWatchRemoveNode = null;
             _hoverWatchRemoveTarget = null;
             _hoverPowerSwitch = null;

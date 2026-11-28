@@ -141,6 +141,27 @@ namespace Vgs.Core
                 // ---- Action menu ----
                 { "ACTION_MENU_TITLE_FORMAT", "Action for \"{0}\"" },
                 { "ACTION_MENU_EMPTY", "No actions available" },
+
+                // ---- Action arguments (ADR-0050) ----
+                { "PARAMETER_DIALOG_TITLE", "Action parameters" },
+                { "PARAMETER_CONFIRM", "OK" },
+                { "PARAMETER_CANCEL", "Cancel" },
+                { "PARAMETER_KIND_TEXT", "Text" },
+                { "PARAMETER_KIND_NUMBER", "Number" },
+                { "PARAMETER_KIND_SWITCH", "On/Off" },
+                { "WARN_PARAMETER_INVALID_FORMAT",
+                  "Link not added: \"{0}\" got a value that is not of the required type" },
+                { "WARN_PARAMETER_RANGE_FORMAT",
+                  "Link not added: \"{0}\" got a value outside the range of that type" },
+                { "WARN_PARAMETER_NOT_ALLOWED_FORMAT",
+                  "Link not added: \"{0}\" got a value that is not one of the allowed ones ({1})" },
+                { "PARAMETER_CHOICE_AUTO", "auto" },
+                { "PARAMETER_CHOICE_CW", "clockwise" },
+                { "PARAMETER_CHOICE_CCW", "counter-clockwise" },
+                { "PARAMETER_HINT_WHOLE_NUMBER", "a whole number" },
+                { "PARAMETER_HINT_SEVERAL_FORMAT", "{0} values, comma-separated" },
+                { "PARAMETER_HINT_CHOICE_FORMAT", "allowed: {0}" },
+                { "PARAMETER_HINT_MEANING_FORMAT", "{0} — {1}" },
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  sources: {0}" },
                 { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
 
@@ -280,6 +301,27 @@ namespace Vgs.Core
                 // ---- Action menu ----
                 { "ACTION_MENU_TITLE_FORMAT", "Действие для «{0}»" },
                 { "ACTION_MENU_EMPTY", "Нет доступных действий" },
+
+                // ---- Параметры действия (ADR-0050) ----
+                { "PARAMETER_DIALOG_TITLE", "Параметры действия" },
+                { "PARAMETER_CONFIRM", "ОК" },
+                { "PARAMETER_CANCEL", "Отмена" },
+                { "PARAMETER_KIND_TEXT", "Строка" },
+                { "PARAMETER_KIND_NUMBER", "Число" },
+                { "PARAMETER_KIND_SWITCH", "Вкл/Выкл" },
+                { "WARN_PARAMETER_INVALID_FORMAT",
+                  "Связь не добавлена: для «{0}» введено значение не того типа" },
+                { "WARN_PARAMETER_RANGE_FORMAT",
+                  "Связь не добавлена: для «{0}» введено значение вне диапазона этого типа" },
+                { "WARN_PARAMETER_NOT_ALLOWED_FORMAT",
+                  "Связь не добавлена: для «{0}» введено значение не из допустимых ({1})" },
+                { "PARAMETER_CHOICE_AUTO", "авто" },
+                { "PARAMETER_CHOICE_CW", "по часовой" },
+                { "PARAMETER_CHOICE_CCW", "против часовой" },
+                { "PARAMETER_HINT_WHOLE_NUMBER", "целое число" },
+                { "PARAMETER_HINT_SEVERAL_FORMAT", "значений: {0}, через запятую" },
+                { "PARAMETER_HINT_CHOICE_FORMAT", "допустимо: {0}" },
+                { "PARAMETER_HINT_MEANING_FORMAT", "{0} — {1}" },
                 { "ACTION_MENU_FAN_IN_FORMAT", "  ·  источников: {0}" },
                 { "ACTION_MENU_RANGE_FORMAT", "{0}-{1} / {2}" },
 
@@ -320,3 +362,6 @@ namespace Vgs.Core
         }
     }
 }
+
+
+

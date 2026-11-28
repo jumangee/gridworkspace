@@ -310,6 +310,24 @@ namespace Vgs.Model
         /// </summary>
         public static void FillActions(Node node, IList<string> actionIds, IList<string> actionNames)
         {
+            FillActions(node, actionIds, actionNames, null);
+        }
+
+        /// <summary>
+        /// The same, with the argument types the game reports for each action (ADR-0050).
+        ///
+        /// <b>Why the types travel with the port.</b> Whether an action needs values is a fact
+        /// about the block's type, read once when the port list is built — and it is what the
+        /// editor asks before it opens the argument dialog, and what the draw path asks before it
+        /// puts the edit button on an input bar. Asking a live block from the draw path is
+        /// exactly what ADR-0003 forbids.
+        ///
+        /// <paramref name="parameterTypes"/> is parallel to <paramref name="actionIds"/> and may
+        /// be null; an entry that is null or empty means "this action takes no arguments".
+        /// </summary>
+        public static void FillActions(Node node, IList<string> actionIds, IList<string> actionNames,
+                                       IList<TypeCode[]> parameterTypes)
+        {
             node.Actions.Clear();
             if (actionIds == null) return;
 
@@ -322,8 +340,13 @@ namespace Vgs.Model
                 string name = actionNames != null && i < actionNames.Count ? actionNames[i] : null;
                 if (string.IsNullOrEmpty(name)) name = Humanize(id);
 
+                TypeCode[] types = parameterTypes != null && i < parameterTypes.Count
+                    ? parameterTypes[i]
+                    : null;
+
                 float anchor = count == 1 ? 0.5f : (float)i / (count - 1);
-                node.Actions.Add(new Port(id, name, PortKind.Action, PortDirection.Input, anchor));
+                node.Actions.Add(new Port(id, name, PortKind.Action, PortDirection.Input, anchor,
+                                          PortGroup.Single, types));
             }
         }
 
@@ -387,9 +410,28 @@ namespace Vgs.Model
         public static void ComputeGroupActionIds(IList<GroupMemberActions> members, List<string> into,
                                                  List<string> intoNames)
         {
+            ComputeGroupActionIds(members, into, intoNames, null);
+        }
+
+        /// <summary>
+        /// The same rule, and additionally the argument types of every surviving action
+        /// (ADR-0050), taken from the member whose list the id came from.
+        ///
+        /// A group's port must declare the same arguments as the member's own port: the item the
+        /// editor writes names the group and one action, and the game applies it to each member —
+        /// so an item without the arguments the action needs would be an item that does nothing.
+        /// With mixed types the first member's types are used; a member whose action takes
+        /// different arguments simply ignores the call, which is the game's own behaviour
+        /// (<c>docs/01-research/api-action-parameters.md</c> §4).
+        /// </summary>
+        public static void ComputeGroupActionIds(IList<GroupMemberActions> members, List<string> into,
+                                                 List<string> intoNames,
+                                                 List<TypeCode[]> intoParameterTypes)
+        {
             if (into == null) return;
             into.Clear();
             if (intoNames != null) intoNames.Clear();
+            if (intoParameterTypes != null) intoParameterTypes.Clear();
             if (members == null || members.Count == 0) return;
 
             // The first readable member defines the base: its type and its action order. A
@@ -420,7 +462,10 @@ namespace Vgs.Model
                     string id = first.ActionIds[i];
                     if (string.IsNullOrEmpty(id)) continue;
                     if (ContainsId(into, id)) continue;
-                    if (EnabledAnywhere(members, id)) Add(into, intoNames, id, NameOf(first, i));
+                    if (EnabledAnywhere(members, id))
+                    {
+                        Add(into, intoNames, intoParameterTypes, id, NameOf(first, i), ParametersOf(first, i));
+                    }
                 }
                 return;
             }
@@ -443,14 +488,44 @@ namespace Vgs.Model
                     if (member == null || ReferenceEquals(member, first)) continue;
                     if (!ContainsId(member.EnabledActionIds, id)) everywhere = false;
                 }
-                if (everywhere) Add(into, intoNames, id, NameOf(first, id));
+                if (everywhere)
+                {
+                    Add(into, intoNames, intoParameterTypes, id, NameOf(first, id), ParametersOf(first, id));
+                }
             }
         }
 
-        private static void Add(List<string> ids, List<string> names, string id, string name)
+        private static void Add(List<string> ids, List<string> names, List<TypeCode[]> parameterTypes,
+                                string id, string name, TypeCode[] types)
         {
             ids.Add(id);
             if (names != null) names.Add(name);
+            if (parameterTypes != null) parameterTypes.Add(types);
+        }
+
+        /// <summary>
+        /// Argument types of the action at position <paramref name="index"/> of a member's own
+        /// list, or null when the member carries none.
+        /// </summary>
+        private static TypeCode[] ParametersOf(GroupMemberActions member, int index)
+        {
+            IList<TypeCode[]> types = member.ActionParameterTypes;
+            if (types == null || index < 0 || index >= types.Count) return null;
+            return types[index];
+        }
+
+        /// <summary>Argument types of an action id within one member's list, or null.</summary>
+        private static TypeCode[] ParametersOf(GroupMemberActions member, string id)
+        {
+            IList<TypeCode[]> types = member.ActionParameterTypes;
+            if (types == null) return null;
+
+            IList<string> ids = member.ActionIds;
+            for (int i = 0; i < ids.Count && i < types.Count; i++)
+            {
+                if (string.Equals(ids[i], id, StringComparison.Ordinal)) return types[i];
+            }
+            return null;
         }
 
         /// <summary>

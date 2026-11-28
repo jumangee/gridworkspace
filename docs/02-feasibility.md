@@ -321,10 +321,14 @@ public static MyScissorScope UsingScissorRectangle(RectangleF normalizedRectangl
 
 `ITerminalAction.Apply(IMyTerminalBlock)` [ПРОВЕРЕНО]. Для базовых связей он больше не
 нужен: действие исполняет игра, запуская тулбар. Остаётся для того, что тулбар выразить не
-может, — вычислений, условий и действий с параметрами.
+может, — вычислений и условий.
 
 Параметризованные действия (`ActionWithParameters`, `TerminalActionParameter`) в этой
-сборке тоже есть — понадобятся для действий с аргументом (например, `SetValue`).
+сборке тоже есть, и они **реализованы** ([ADR-0050](adr/0050-action-parameters.md)):
+`MyToolbarApiExtensions.GetActionParameterDefinitions` отдаёт типы аргументов действия,
+`GetParameters` читает значения из элемента тулбара, `Set` пишет их обратно. Границ и шага
+игра не публикует — только тип, поэтому проверяется диапазон типа, а не действия.
+Проверено по IL, см. [`01-research/api-action-parameters.md`](01-research/api-action-parameters.md).
 
 ---
 

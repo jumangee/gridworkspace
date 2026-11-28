@@ -69,6 +69,14 @@ namespace Vgs.Model
         public readonly string ActionId;
 
         /// <summary>
+        /// The arguments the item passes to its action, or <see cref="ParameterSet.None"/>
+        /// (ADR-0050). They are part of the item's identity for the same reason the action id is:
+        /// two items that name the same block and action but pass different arguments are two
+        /// different requests, and a cell holding one of them does not hold the other.
+        /// </summary>
+        public readonly ParameterSet Parameters;
+
+        /// <summary>
         /// Name of the game's item kind for <see cref="CellKind.Other"/>, otherwise null. Kept
         /// only so a log line can say what was found instead of "something"; it never affects
         /// a decision.
@@ -77,27 +85,41 @@ namespace Vgs.Model
 
         /// <summary>An empty cell: the only value the planner may write into.</summary>
         public static readonly CellContents Empty =
-            new CellContents(CellKind.Empty, 0, null, null, null);
+            new CellContents(CellKind.Empty, 0, null, null, null, ParameterSet.None);
 
-        private CellContents(CellKind kind, long blockEntityId, string groupName, string actionId, string label)
+        private CellContents(CellKind kind, long blockEntityId, string groupName, string actionId,
+                             string label, ParameterSet parameters)
         {
             Kind = kind;
             BlockEntityId = blockEntityId;
             GroupName = groupName;
             ActionId = actionId;
             Label = label;
+            Parameters = parameters ?? ParameterSet.None;
         }
 
-        /// <summary>A block-plus-action item.</summary>
+        /// <summary>A block-plus-action item with no arguments.</summary>
         public static CellContents BlockAction(long blockEntityId, string actionId)
         {
-            return new CellContents(CellKind.BlockAction, blockEntityId, null, actionId, null);
+            return BlockAction(blockEntityId, actionId, ParameterSet.None);
         }
 
-        /// <summary>A group-plus-action item.</summary>
+        /// <summary>A block-plus-action item, with the arguments its toolbar item carries.</summary>
+        public static CellContents BlockAction(long blockEntityId, string actionId, ParameterSet parameters)
+        {
+            return new CellContents(CellKind.BlockAction, blockEntityId, null, actionId, null, parameters);
+        }
+
+        /// <summary>A group-plus-action item with no arguments.</summary>
         public static CellContents GroupAction(string groupName, string actionId)
         {
-            return new CellContents(CellKind.GroupAction, 0, groupName, actionId, null);
+            return GroupAction(groupName, actionId, ParameterSet.None);
+        }
+
+        /// <summary>A group-plus-action item, with the arguments its toolbar item carries.</summary>
+        public static CellContents GroupAction(string groupName, string actionId, ParameterSet parameters)
+        {
+            return new CellContents(CellKind.GroupAction, 0, groupName, actionId, null, parameters);
         }
 
         /// <summary>
@@ -106,7 +128,7 @@ namespace Vgs.Model
         /// </summary>
         public static CellContents Other(string label)
         {
-            return new CellContents(CellKind.Other, 0, null, null, label);
+            return new CellContents(CellKind.Other, 0, null, null, label, ParameterSet.None);
         }
 
         /// <summary>True only for <see cref="CellKind.Empty"/> — the single writable case.</summary>
@@ -118,25 +140,44 @@ namespace Vgs.Model
         /// <summary>True for a group-plus-action item.</summary>
         public bool IsGroupAction { get { return Kind == CellKind.GroupAction; } }
 
-        /// <summary>True when the cell describes exactly this block-plus-action connection.</summary>
+        /// <summary>
+        /// True when the cell describes exactly this block-plus-action connection, arguments
+        /// included: a cell holding <c>Run</c> with one argument does not hold <c>Run</c> with
+        /// another, and treating the two as equal would leave the picture showing arguments the
+        /// block does not have.
+        /// </summary>
         public bool HoldsBlockAction(long blockEntityId, string actionId)
         {
+            return HoldsBlockAction(blockEntityId, actionId, ParameterSet.None);
+        }
+
+        /// <summary>Same, with the arguments the connection asks for.</summary>
+        public bool HoldsBlockAction(long blockEntityId, string actionId, ParameterSet parameters)
+        {
             return IsBlockAction && BlockEntityId == blockEntityId
-                   && string.Equals(ActionId, actionId, StringComparison.Ordinal);
+                   && string.Equals(ActionId, actionId, StringComparison.Ordinal)
+                   && Parameters.SameAs(parameters);
         }
 
         /// <summary>True when the cell describes exactly this group-plus-action connection.</summary>
         public bool HoldsGroupAction(string groupName, string actionId)
         {
+            return HoldsGroupAction(groupName, actionId, ParameterSet.None);
+        }
+
+        /// <summary>Same, with the arguments the connection asks for.</summary>
+        public bool HoldsGroupAction(string groupName, string actionId, ParameterSet parameters)
+        {
             return IsGroupAction && string.Equals(GroupName, groupName, StringComparison.Ordinal)
-                   && string.Equals(ActionId, actionId, StringComparison.Ordinal);
+                   && string.Equals(ActionId, actionId, StringComparison.Ordinal)
+                   && Parameters.SameAs(parameters);
         }
 
         public override string ToString()
         {
             if (IsEmpty) return "empty";
-            if (IsGroupAction) return "group:" + GroupName + "." + ActionId;
-            if (IsBlockAction) return BlockEntityId + "." + ActionId;
+            if (IsGroupAction) return "group:" + GroupName + "." + ActionId + " " + Parameters;
+            if (IsBlockAction) return BlockEntityId + "." + ActionId + " " + Parameters;
             return Label == null ? "other" : "other:" + Label;
         }
     }

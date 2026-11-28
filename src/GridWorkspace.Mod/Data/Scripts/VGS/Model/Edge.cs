@@ -46,6 +46,19 @@ namespace Vgs.Model
         /// <summary>Cell of the source block's toolbar that holds this connection's item.</summary>
         public readonly ToolbarCell Cell;
 
+        /// <summary>
+        /// The arguments this connection passes to the target's action, or
+        /// <see cref="ParameterSet.None"/> when the action takes none (ADR-0050).
+        ///
+        /// <b>Not bookkeeping either.</b> The game stores an action's arguments inside the toolbar
+        /// item, so a connection whose item carries arguments it does not show would be a
+        /// connection that does something other than what the picture says. This field is the
+        /// editor's reading of that item — written from the dialog when the player creates the
+        /// connection, and re-read from the block on every reconcile pass, so an item edited in
+        /// the vanilla terminal updates the picture (ADR-0018).
+        /// </summary>
+        public readonly ParameterSet Parameters;
+
         /// <summary>True when this connection ends on a group instead of a single block.</summary>
         public bool TargetsGroup
         {
@@ -59,12 +72,18 @@ namespace Vgs.Model
 
         public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
                     ToolbarCell cell)
-            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell, null)
+            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell, ParameterSet.None)
+        {
+        }
+
+        public Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
+                    ToolbarCell cell, ParameterSet parameters)
+            : this(sourceEntityId, sourcePortKey, targetEntityId, targetPortKey, cell, parameters, null)
         {
         }
 
         private Edge(long sourceEntityId, string sourcePortKey, long targetEntityId, string targetPortKey,
-                     ToolbarCell cell, string targetGroupName)
+                     ToolbarCell cell, ParameterSet parameters, string targetGroupName)
         {
             SourceEntityId = sourceEntityId;
             SourcePortKey = sourcePortKey;
@@ -72,6 +91,7 @@ namespace Vgs.Model
             TargetGroupName = targetGroupName;
             TargetPortKey = targetPortKey;
             Cell = cell;
+            Parameters = parameters ?? ParameterSet.None;
         }
 
         /// <summary>
@@ -82,7 +102,25 @@ namespace Vgs.Model
         public static Edge ToGroup(long sourceEntityId, string sourcePortKey, string groupName,
                                    string targetPortKey, ToolbarCell cell)
         {
-            return new Edge(sourceEntityId, sourcePortKey, 0, targetPortKey, cell, groupName);
+            return ToGroup(sourceEntityId, sourcePortKey, groupName, targetPortKey, cell, ParameterSet.None);
+        }
+
+        /// <summary>The same, with the arguments the group item carries.</summary>
+        public static Edge ToGroup(long sourceEntityId, string sourcePortKey, string groupName,
+                                   string targetPortKey, ToolbarCell cell, ParameterSet parameters)
+        {
+            return new Edge(sourceEntityId, sourcePortKey, 0, targetPortKey, cell, parameters, groupName);
+        }
+
+        /// <summary>
+        /// A copy of this connection with different arguments, in the same cell. Used when the
+        /// player edits the arguments of an existing connection: everything else about it — the
+        /// event, the target, the cell — stays exactly as it was.
+        /// </summary>
+        public Edge WithParameters(ParameterSet parameters)
+        {
+            return new Edge(SourceEntityId, SourcePortKey, TargetEntityId, TargetPortKey, Cell,
+                            parameters, TargetGroupName);
         }
 
         public bool SameAs(Edge other)
@@ -93,7 +131,8 @@ namespace Vgs.Model
                 && string.Equals(TargetGroupName, other.TargetGroupName, StringComparison.Ordinal)
                 && string.Equals(SourcePortKey, other.SourcePortKey, StringComparison.Ordinal)
                 && string.Equals(TargetPortKey, other.TargetPortKey, StringComparison.Ordinal)
-                && Cell.SameAs(other.Cell);
+                && Cell.SameAs(other.Cell)
+                && Parameters.SameAs(other.Parameters);
         }
 
         /// <summary>True when both edges describe the same item in the same toolbar cell.</summary>

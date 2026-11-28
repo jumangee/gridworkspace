@@ -14,6 +14,7 @@ The SVGs in this folder are copied verbatim from **Font Awesome Free 7.3.1**
 | `share-from-square-regular.svg` | `share-from-square` | Regular | `svgs/regular/share-from-square.svg` |
 | `toggle-on-solid.svg` | `toggle-on` | Solid | `svgs/solid/toggle-on.svg` |
 | `toggle-off-solid.svg` | `toggle-off` | Solid | `svgs/solid/toggle-off.svg` |
+| `pen-to-square-solid.svg` | `pen-to-square` | Solid | `svgs/solid/pen-to-square.svg` |
 
 > The jump-to-terminal button was asked for as `up-right-from-square` **Regular**. That icon has no
 > Regular cut in the free set — `metadata/icons.json` lists `styles: ["solid"]` for it, and

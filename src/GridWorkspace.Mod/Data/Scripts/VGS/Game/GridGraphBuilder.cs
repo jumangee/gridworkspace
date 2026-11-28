@@ -543,8 +543,9 @@ namespace Vgs.Game
 
             var actions = new List<string>();
             var actionNames = new List<string>();
-            node.HasTerminal = TryReadActions(block, actions, actionNames);
-            BlockPortCatalog.FillActions(node, actions, actionNames);
+            var actionParameters = new List<TypeCode[]>();
+            node.HasTerminal = TryReadActions(block, actions, actionNames, actionParameters);
+            BlockPortCatalog.FillActions(node, actions, actionNames, actionParameters);
             BlockPortCatalog.FillEvents(node);
 
             // Whether the block has an on/off switch is a fact about its type, read once here with
@@ -588,11 +589,12 @@ namespace Vgs.Game
             // refresh would drop the user's port-level selections and churn allocations.
             var actions = new List<string>();
             var actionNames = new List<string>();
-            bool hasTerminal = TryReadActions(block, actions, actionNames);
+            var actionParameters = new List<TypeCode[]>();
+            bool hasTerminal = TryReadActions(block, actions, actionNames, actionParameters);
             if (hasTerminal != node.HasTerminal || !SameActions(node, actions))
             {
                 node.HasTerminal = hasTerminal;
-                BlockPortCatalog.FillActions(node, actions, actionNames);
+                BlockPortCatalog.FillActions(node, actions, actionNames, actionParameters);
 
                 // FillActions replaces the Port objects, so the drawing slots computed for the
                 // old ones are gone; LayoutPorts (called at the end of Refresh) reassigns them.
@@ -818,6 +820,7 @@ namespace Vgs.Game
             var actionIds = new List<string>();
             var enabledIds = new List<string>();
             var memberNames = new List<string>();
+            var memberTypes = new List<TypeCode[]>();
 
             int budget = VgsConstants.MaxGroupMembersScanned;
             int count = groups.Count < VgsConstants.MaxGroupsScanned
@@ -839,7 +842,8 @@ namespace Vgs.Game
                 if (string.IsNullOrEmpty(name)) continue;
 
                 GroupOutcome outcome = SyncOneGroup(graph, group, name, members, memberActions,
-                                                   blocks, actionIds, enabledIds, memberNames, ref budget);
+                                                   blocks, actionIds, enabledIds, memberNames,
+                                                   memberTypes, ref budget);
 
                 if (outcome == GroupOutcome.Alive) alive.Add(name);
                 else if (outcome == GroupOutcome.Undetermined) undetermined.Add(name);
@@ -908,7 +912,7 @@ namespace Vgs.Game
                                                  List<long> members, List<GroupMemberActions> memberActions,
                                                  List<IMyTerminalBlock> blocks, List<string> actionIds,
                                                  List<string> enabledIds, List<string> memberNames,
-                                                 ref int budget)
+                                                 List<TypeCode[]> memberTypes, ref int budget)
         {
             blocks.Clear();
             try
@@ -964,12 +968,13 @@ namespace Vgs.Game
                 actionIds.Clear();
                 enabledIds.Clear();
                 memberNames.Clear();
-                ReadMemberActions(block, actionIds, enabledIds, memberNames);
+                memberTypes.Clear();
+                ReadMemberActions(block, actionIds, enabledIds, memberNames, memberTypes);
 
                 memberActions.Add(new GroupMemberActions(
                     SafeTypeKey(block), IsFunctional(block),
                     new List<string>(actionIds), new List<string>(enabledIds),
-                    new List<string>(memberNames)));
+                    new List<string>(memberNames), new List<TypeCode[]>(memberTypes)));
             }
 
             if (truncated)
@@ -993,7 +998,7 @@ namespace Vgs.Game
         /// `IsEnabled` is on the ModAPI mirror, so this costs a whitelist-safe call per action.
         /// </summary>
         private static void ReadMemberActions(IMyTerminalBlock block, List<string> ids, List<string> enabled,
-                                              List<string> names)
+                                              List<string> names, List<TypeCode[]> parameterTypes)
         {
             try
             {
@@ -1007,7 +1012,8 @@ namespace Vgs.Game
                 for (int i = 0; i < actions.Count; i++)
                 {
                     bool isEnabled;
-                    if (!TryAddAction(block, actions[i], hiddenControls, ids, names, out isEnabled)) continue;
+                    if (!TryAddAction(block, actions[i], hiddenControls, ids, names, parameterTypes,
+                                      out isEnabled)) continue;
                     if (isEnabled) enabled.Add(ids[ids.Count - 1]);
                 }
             }
@@ -1098,11 +1104,11 @@ namespace Vgs.Game
 
                 CellContents contents = ToolbarWriter.TryDescribe(toolbar, edge.Cell.Index);
 
-                bool present = edge.TargetsGroup
-                    ? contents.HoldsGroupAction(edge.TargetGroupName, edge.TargetPortKey)
-                    : contents.HoldsBlockAction(edge.TargetEntityId, edge.TargetPortKey);
-
-                if (!present) graph.RemoveEdge(edge);
+                // The arguments are part of the item (ADR-0050): a cell whose values were edited
+                // in the vanilla terminal no longer holds this connection, and the edge is
+                // rebuilt below from what the cell says now — that is how an edit made in the
+                // terminal reaches the schema (ADR-0018).
+                if (!ToolbarParameters.SameItem(contents, edge)) graph.RemoveEdge(edge);
             }
 
             // 2. Add an edge for every known item that has none.
@@ -1125,12 +1131,12 @@ namespace Vgs.Game
                 if (contents.IsGroupAction)
                 {
                     graph.TryConnectToGroup(node.EntityId, port.Key, contents.GroupName,
-                                            contents.ActionId, cell);
+                                            contents.ActionId, cell, contents.Parameters);
                 }
                 else if (contents.IsBlockAction)
                 {
                     graph.TryConnect(node.EntityId, port.Key, contents.BlockEntityId,
-                                     contents.ActionId, cell);
+                                     contents.ActionId, cell, contents.Parameters);
                 }
             }
         }
@@ -1172,10 +1178,20 @@ namespace Vgs.Game
             public readonly List<string> Ids;
             public readonly List<string> Names;
 
-            public ActionSet(List<string> ids, List<string> names)
+            /// <summary>
+            /// Argument types parallel to <see cref="Ids"/> (ADR-0050), or null for an action
+            /// that takes none. Part of the cached set because it is a property of the block's
+            /// *type*, exactly like the ids and the captions: the game registers an action's
+            /// parameter list together with the action itself, so it cannot change while the
+            /// session lasts, and reading it per refresh would be a world read per block.
+            /// </summary>
+            public readonly List<TypeCode[]> ParameterTypes;
+
+            public ActionSet(List<string> ids, List<string> names, List<TypeCode[]> parameterTypes)
             {
                 Ids = ids;
                 Names = names;
+                ParameterTypes = parameterTypes;
             }
         }
 
@@ -1220,6 +1236,7 @@ namespace Vgs.Game
         {
             var ids = new List<string>(32);
             var names = new List<string>(32);
+            var parameterTypes = new List<TypeCode[]>(32);
             var hiddenControls = new List<string>(8);
 
             CollectHiddenControls(block, hiddenControls);
@@ -1233,7 +1250,7 @@ namespace Vgs.Game
                 for (int i = 0; i < actions.Count; i++)
                 {
                     bool enabled;
-                    TryAddAction(block, actions[i], hiddenControls, ids, names, out enabled);
+                    TryAddAction(block, actions[i], hiddenControls, ids, names, parameterTypes, out enabled);
                 }
             }
             catch (Exception e)
@@ -1245,7 +1262,7 @@ namespace Vgs.Game
                 return null;
             }
 
-            return new ActionSet(ids, names);
+            return new ActionSet(ids, names, parameterTypes);
         }
 
         /// <summary>
@@ -1357,6 +1374,20 @@ namespace Vgs.Game
                                          List<string> hiddenControls,
                                          List<string> ids, List<string> names, out bool enabled)
         {
+            return TryAddAction(block, action, hiddenControls, ids, names, null, out enabled);
+        }
+
+        /// <summary>
+        /// The same, and additionally the argument types the game reports for the action
+        /// (ADR-0050). <paramref name="types"/> is parallel to <paramref name="ids"/> and may be
+        /// null; an entry may be null, which means "this action takes no arguments".
+        /// </summary>
+        private static bool TryAddAction(IMyTerminalBlock block,
+                                         Sandbox.ModAPI.Interfaces.ITerminalAction action,
+                                         List<string> hiddenControls,
+                                         List<string> ids, List<string> names,
+                                         List<TypeCode[]> types, out bool enabled)
+        {
             enabled = false;
             if (action == null) return false;
 
@@ -1395,6 +1426,7 @@ namespace Vgs.Game
 
             ids.Add(id);
             if (names != null) names.Add(ActionName(action));
+            if (types != null) types.Add(ToolbarParameters.Definitions(block, id));
             return true;
         }
 
@@ -1415,7 +1447,8 @@ namespace Vgs.Game
         /// order (ADR-0037). Both come from the type's cached set (ADR-0038), so this is a copy,
         /// not a world read.
         /// </summary>
-        private static bool TryReadActions(IMyTerminalBlock block, List<string> into, List<string> names)
+        private static bool TryReadActions(IMyTerminalBlock block, List<string> into, List<string> names,
+                                           List<TypeCode[]> parameterTypes)
         {
             ActionSet set = ReadActionSet(block);
             if (set == null) return false;
@@ -1424,6 +1457,7 @@ namespace Vgs.Game
             {
                 into.Add(set.Ids[i]);
                 if (names != null) names.Add(set.Names[i]);
+                if (parameterTypes != null) parameterTypes.Add(set.ParameterTypes[i]);
             }
             return into.Count > 0;
         }
@@ -1575,3 +1609,10 @@ namespace Vgs.Game
         }
     }
 }
+
+
+
+
+
+
+

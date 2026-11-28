@@ -316,6 +316,9 @@ namespace Vgs.Ui
                 {
                     _hoverRemoveNode = null;
                     _hoverRemovePort = null;
+                    _hoverRemoveBar = null;
+                    _hoverEditNode = null;
+                    _hoverEditBar = null;
                 }
                 else if (_hoverRemovePort != null)
                 {
@@ -325,9 +328,44 @@ namespace Vgs.Ui
                     _hoverRemovePort = live;
                     if (live == null) _hoverRemoveNode = null;
                 }
+                else if (_hoverRemoveBar != null)
+                {
+                    // An input bar is rebuilt by the same layout pass, so the object is stale even
+                    // when its node is not. Re-resolve by the request it carries (ADR-0050).
+                    InputBar live = _hoverRemoveNode.FindInputBar(_hoverRemoveBar.Port.Key,
+                                                                  _hoverRemoveBar.Parameters);
+                    _hoverRemoveBar = live;
+                    if (live == null) _hoverRemoveNode = null;
+                }
+            }
+
+            if (_hoverEditNode != null)
+            {
+                if (!_graph.ContainsNode(_hoverEditNode))
+                {
+                    _hoverEditNode = null;
+                    _hoverEditBar = null;
+                }
+                else if (_hoverEditBar != null)
+                {
+                    InputBar live = _hoverEditNode.FindInputBar(_hoverEditBar.Port.Key,
+                                                                _hoverEditBar.Parameters);
+                    _hoverEditBar = live;
+                    if (live == null) _hoverEditNode = null;
+                }
             }
 
             if (_bindSource != null && !_graph.ContainsNode(_bindSource)) CancelBind();
+
+            // The card the bind was aimed at can go away too, and the pending line ends on it: a
+            // line to a card that is no longer in the graph would point at empty canvas while the
+            // action menu still listed the block's actions (ADR-0052 §5). The gesture is abandoned
+            // rather than re-aimed — there is nothing left to aim at.
+            if (_bindTarget != null && !_graph.ContainsNode(_bindTarget))
+            {
+                VgsLog.Info("bind cancelled: its target block disappeared");
+                CancelBind();
+            }
 
             // A controller can be destroyed, or stop being one, while its watch mode is open.
             // The mode is cancelled rather than silently re-aimed: the port it was going to
@@ -389,6 +427,33 @@ namespace Vgs.Ui
                 // while a menu is open. This runs in Update, never in Draw.
                 FillMenuRows(_menuTarget);
             }
+
+            // The argument dialog holds the same kind of references as every mode above: a node,
+            // a port and a connection. A refresh that rebuilds the target's action list replaces
+            // every Port object, and a form built from a stale one would write values for an
+            // action the block no longer has. The dialog is therefore abandoned rather than
+            // re-aimed — the player was typing into a request that no longer exists (ADR-0050).
+            if (_paramForm != null)
+            {
+                bool gone = !_graph.ContainsNode(_paramTarget);
+
+                if (!gone && _paramAction != null && _paramTarget != null)
+                {
+                    gone = _paramTarget.FindAction(_paramAction.Key) == null;
+                }
+
+                if (!gone && _paramMode == ParameterDialogMode.Create && _paramBindSource != null)
+                {
+                    gone = !_graph.ContainsNode(_paramBindSource);
+                }
+
+                if (gone)
+                {
+                    VgsLog.Info("parameter dialog closed: its action or block disappeared");
+                    CloseParameterDialog();
+                    if (_bindSource != null) CancelBind();
+                }
+            }
         }
 
         private static bool SamePorts(List<Port> rows, List<Port> ports)
@@ -403,3 +468,4 @@ namespace Vgs.Ui
 
     }
 }
+

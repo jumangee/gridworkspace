@@ -75,6 +75,17 @@ $sources = @(
     (Join-Path $sourceRoot 'Model\BlockSearch.cs'),
     (Join-Path $sourceRoot 'Model\TextEditor.cs'),
     (Join-Path $sourceRoot 'Model\CellContents.cs'),
+    # Action arguments (ADR-0050): the value a connection passes to an action, the set of them
+    # that identifies one request, the bar that draws that request, and the form the player fills.
+    # All four are pure data and pure rules — "is this text a number of that type", "are these two
+    # requests the same", "which field is wrong" — which is exactly what an offline assertion can
+    # decide and what a compile cannot.
+    (Join-Path $sourceRoot 'Model\ActionParameter.cs'),
+    (Join-Path $sourceRoot 'Model\ParameterSpec.cs'),
+    (Join-Path $sourceRoot 'Model\ActionParameterHints.cs'),
+    (Join-Path $sourceRoot 'Model\ActionParameterTable.g.cs'),
+    (Join-Path $sourceRoot 'Model\InputBar.cs'),
+    (Join-Path $sourceRoot 'Model\ParameterForm.cs'),
     # The conveyor reduction (ADR-0040): the raw lines and the logical links between drawn
     # nodes. Pure data, so the rule "a hidden block is walked through, not cut at" is a
     # sentence in the gate instead of a picture somebody has to judge in the game.
@@ -302,6 +313,45 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# ---- the action-argument table must match the game it was derived from (ADR-0052) ----
+#
+# `ActionParameterTable.g.cs` is generated from the installed assemblies: the types are the
+# handlers' `unbox.any` targets and the captions are the request methods' `MyStringId` fields.
+# A hand-edited table would be a guess, and a stale one would write values the action cannot read —
+# the defect ADR-0051/0052 exist to prevent. So the scan is re-run here and its output compared
+# byte for byte with the checked-in file, exactly as the icon atlas is.
+Write-Host ''
+Write-Host '=== action-argument table matches the game (ADR-0052) ==='
+$scanScript = Join-Path $PSScriptRoot 'scan-action-parameters.ps1'
+$tableFile = Join-Path $sourceRoot 'Model\ActionParameterTable.g.cs'
+if (-not (Test-Path $scanScript)) {
+    Write-Host 'OFFLINE CHECK INCONCLUSIVE — scan-action-parameters.ps1 is missing' -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path $tableFile)) {
+    Write-Host 'OFFLINE FAILED — Model\ActionParameterTable.g.cs is missing' -ForegroundColor Red
+    Write-Host 'Run: pwsh -File tools/scan-action-parameters.ps1 -EmitTable -Out <that file>'
+    exit 1
+}
+
+$freshTable = Join-Path ([System.IO.Path]::GetTempPath()) ('vgs-params-' + [guid]::NewGuid().ToString('n') + '.cs')
+& $scanScript -EmitTable -Out $freshTable | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $freshTable)) {
+    Write-Host 'OFFLINE CHECK INCONCLUSIVE — the scan did not produce a table' -ForegroundColor Red
+    if (Test-Path $freshTable) { Remove-Item $freshTable -Force }
+    exit 1
+}
+
+$freshText = (Get-Content $freshTable -Raw) -replace "`r`n", "`n"
+$tableText = (Get-Content $tableFile -Raw) -replace "`r`n", "`n"
+Remove-Item $freshTable -Force
+if ($freshText -ne $tableText) {
+    Write-Host 'OFFLINE FAILED — ActionParameterTable.g.cs does not match the installed game' -ForegroundColor Red
+    Write-Host 'Run: pwsh -File tools/scan-action-parameters.ps1 -EmitTable -Out src/GridWorkspace.Mod/Data/Scripts/VGS/Model/ActionParameterTable.g.cs'
+    exit 1
+}
+Write-Host 'ACTION PARAMETER TABLE OK — matches a fresh scan of the game assemblies' -ForegroundColor Green
+
 # ---- and each .png must be a loadable file (ADR-0019) ----
 #
 # `-Verify` proves the table was generated from the current sources. It does not prove the file
@@ -495,4 +545,5 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 exit 0
+
 

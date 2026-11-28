@@ -418,13 +418,30 @@ classDiagram
     class ToolbarWriter {
         <<static>>
         +TryWrite(IMyTerminalBlock, Node, Port, IMyTerminalBlock, string, out ToolbarCell) WriteResult
+        +TryWrite(IMyTerminalBlock, Node, Port, IMyTerminalBlock, string, ParameterSet, out ToolbarCell) WriteResult
         +TryWriteGroup(IMyTerminalBlock, Node, Port, string, string, out ToolbarCell) WriteResult
+        +TryWriteGroup(IMyTerminalBlock, Node, Port, string, string, ParameterSet, out ToolbarCell) WriteResult
+        +TryRewrite(IMyTerminalBlock, Node, ToolbarCell, string, ParameterSet, Func~CellContents,bool~) WriteResult
         +TryClear(IMyTerminalBlock, Node, ToolbarCell) bool
         +TryDescribe(IMyToolbar, int) CellContents
-        -WriteItem(IMyTerminalBlock, Node, Port, MyToolbarItemInfo, Func, Func, out ToolbarCell) WriteResult
+        -WriteItem(IMyTerminalBlock, Node, Port, MyToolbarItemInfo, ParameterSet, Func, Func, out ToolbarCell) WriteResult
         -ReadCell(IMyToolbar, int) CellContents
         -PageHolds(IMyToolbar, ToolbarLayout, int, Func) bool
         -ClearCell(IMyToolbar, int) bool
+    }
+
+    class ActionParameterDefaults {
+        <<static>>
+        +For(IMyTerminalBlock, string, IList~TypeCode~)$ ParameterSet
+    }
+
+    class ToolbarParameters {
+        <<static>>
+        +Definitions(IMyTerminalBlock, string) TypeCode[]
+        +Read(IMyToolbar, int) ParameterSet
+        +ToGame(ParameterSet) List~TerminalActionParameter~
+        +Set(IMyToolbarChangeBuilder, int, MyToolbarItemInfo, ParameterSet) void
+        +SameItem(CellContents, Edge) bool
     }
 
     class CellContents {
@@ -432,16 +449,121 @@ classDiagram
         +long BlockEntityId
         +string GroupName
         +string ActionId
+        +ParameterSet Parameters
         +string Label
         +CellContents Empty$
         +bool IsEmpty
         +bool IsBlockAction
         +bool IsGroupAction
-        +BlockAction(long, string)$ CellContents
-        +GroupAction(string, string)$ CellContents
+        +BlockAction(long, string, ParameterSet)$ CellContents
+        +GroupAction(string, string, ParameterSet)$ CellContents
         +Other(string)$ CellContents
-        +HoldsBlockAction(long, string) bool
-        +HoldsGroupAction(string, string) bool
+        +HoldsBlockAction(long, string, ParameterSet) bool
+        +HoldsGroupAction(string, string, ParameterSet) bool
+    }
+
+    class ParameterSpec {
+        +TypeCode Type
+        +ParameterKind Kind
+        +string Name
+        +ParameterDefault DefaultFrom
+        +string DefaultText
+        +bool HasRange
+        +float Min
+        +float Max
+        +string[] Choices
+        +string[] ChoiceKeys
+        +bool IsChoice
+        +FromDeclared(TypeCode)$ ParameterSpec
+        +Typed(TypeCode, ParameterKind, string, ParameterDefault)$ ParameterSpec
+        +WithType(TypeCode) ParameterSpec
+        +WithRange(float, float) ParameterSpec
+        +WithDefault(string) ParameterSpec
+        +WithDefault(ParameterDefault) ParameterSpec
+        +AsChoice(string[], string[], string) ParameterSpec
+        +WithSlots(int) ParameterSpec
+        +int Slots
+        +TryValidate(string, out ActionParameter, out ParameterError) bool
+        +IsAllowedChoice(string) bool
+        +ChoiceKeyOf(string) string
+    }
+
+    class ActionParameterHints {
+        <<static>>
+        +string RunAction
+        +string RotateToAngleAction
+        +For(string, IList~TypeCode~, VgsLanguage)$ ParameterSpec[]
+        +At(string, int, TypeCode, VgsLanguage) ParameterSpec
+        +Refine(string, int, ParameterSpec) ParameterSpec
+        +IsDescribed(string) bool
+        +HasKnownTypes(string) bool
+        +Described$ IEnumerable~string~
+    }
+
+    class ActionParameterTable {
+        <<static, generated>>
+        +Get(string) Row
+        +Ids$ IEnumerable~string~
+    }
+
+    class Row {
+        +TypeCode[] Types
+        +string[] NamesEn
+        +string[] NamesRu
+        +int[] GroupSizes
+    }
+
+    class ActionParameter {
+        <<struct>>
+        +TypeCode Code
+        +string Text
+        +bool IsEmpty
+        +bool IsTextual
+        +bool IsNumeric
+        +TryCreate(TypeCode, string, out ActionParameter, out ParameterError)$ bool
+        +FromValue(TypeCode, object)$ ActionParameter
+        +Describe() string
+    }
+
+    class ParameterSet {
+        +ParameterSet None$
+        +int Count
+        +bool IsEmpty
+        +ActionParameter Item~int~
+        +string Signature
+        +string Display
+        +Of(IList~ActionParameter~)$ ParameterSet
+        +SameAs(ParameterSet) bool
+    }
+
+    class InputBar {
+        +Port Port
+        +ParameterSet Parameters
+        +string Label
+        +int Slot
+        +bool HasParameters
+    }
+
+    class ParameterForm {
+        +int Count
+        +int Focus
+        +ParameterError Error
+        +int ErrorIndex
+        +string ActionCaption
+        +ParameterForm(IList~TypeCode~, ParameterSet)
+        +ParameterForm(string, string, VgsLanguage, IList~TypeCode~, ParameterSet)
+        +TypeAt(int) TypeCode
+        +SpecAt(int) ParameterSpec
+        +ValueAt(int) string
+        +EditorAt(int) TextEditor
+        +LabelAt(int) string
+        +SetLabel(int, string) void
+        +HintAt(int) string
+        +SetHint(int, string) void
+        +FocusAt(int) void
+        +FocusNext() void
+        +FocusPrevious() void
+        +TryBuild(out ParameterSet) bool
     }
 
     class CellKind {
@@ -932,6 +1054,10 @@ classDiagram
         +CountEdgesFromOutput(long, string) int
         +CollectEdgesForPort(long, string, PortDirection, List~Edge~) void
         +CollectEdgesForPort(Node, string, PortDirection, List~Edge~) void
+        +CollectEdgesForBar(Node, InputBar, List~Edge~) void
+        +TryReplaceEdgeParameters(Edge, ParameterSet) bool
+        +TryConnect(long, string, long, string, ToolbarCell, ParameterSet) bool
+        +TryConnectToGroup(long, string, string, string, ToolbarCell, ParameterSet) bool
         +RemoveEdge(Edge) bool
         +ClearConveyors() void
         +AddConveyor(ConveyorLink) void
@@ -980,11 +1106,13 @@ classDiagram
         +List~long~ Members
         +List~Port~ Actions
         +List~Port~ Events
+        +List~InputBar~ InputBars
         +Port PrimaryEvent
         +SetFrame(Vector2, Vector2)
         +PrimaryEventFor(PortGroup) Port
         +FindAction(key) Port
         +FindEvent(key) Port
+        +FindInputBar(key, ParameterSet) InputBar
     }
 
     class ControllerState {
@@ -1028,6 +1156,8 @@ classDiagram
         +PortGroup Group
         +float Anchor
         +int Slot
+        +IList~TypeCode~ ParameterTypes
+        +bool HasParameters
     }
 
     class BlockState {
@@ -1090,8 +1220,10 @@ classDiagram
         +string TargetGroupName
         +string TargetPortKey
         +ToolbarCell Cell
+        +ParameterSet Parameters
         +bool TargetsGroup
-        +ToGroup(long, string, string, string, ToolbarCell)$ Edge
+        +ToGroup(long, string, string, string, ToolbarCell, ParameterSet)$ Edge
+        +WithParameters(ParameterSet) Edge
         +SameAs(Edge) bool
         +SameCellAs(Edge) bool
     }
@@ -1103,9 +1235,9 @@ classDiagram
         +string FalseKeySuffix
         +ResolveCategory(subtypeId) BlockCategory
         +Descriptor(BlockCategory) CategoryDescriptor
-        +FillActions(Node, IList~string~, IList~string~)
+        +FillActions(Node, IList~string~, IList~string~, IList~TypeCode[]~)
         +FillEvents(Node)
-        +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~, List~string~)
+        +ComputeGroupActionIds(IList~GroupMemberActions~, List~string~, List~string~, List~TypeCode[]~)
         +EventKey(baseKey, PortGroup) string
         +EventDisplayName(baseKey, PortGroup) string
         +Humanize(key) string
@@ -1256,7 +1388,8 @@ classDiagram
     Node --> ToolbarLayout
     Edge --> ToolbarCell : занимает ячейку
     Edge ..> Node : ссылается по EntityId или по имени группы
-    GridGraph ..> Port : LayoutPorts назначает Slot
+    GridGraph ..> Port : LayoutPorts назначает Slot (исходящие)
+    GridGraph ..> InputBar : LayoutPorts собирает полосы входящих портов
     GridGraph ..> ToolbarLayout : проверяет ячейку
     GridGraph ..> GroupMemberActions : правило действий группы
     GridGraph ..> Node : OffsetGroupMembers двигает участников
@@ -1297,7 +1430,7 @@ classDiagram
 
 ```
 Vgs.Core   →  Vgs.Core
-Vgs.Model  →  Vgs.Model            (и VRageMath)
+Vgs.Model  →  Vgs.Model            (и VRageMath, и VgsLanguage из Core)
 Vgs.Game   →  Vgs.Model, Vgs.Core, Vgs.Ui (открыть экран и спросить, открыт ли он)
 Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновления, никогда из отрисовки)
 ```
@@ -1329,6 +1462,13 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 
 Исключение, зафиксированное в ADR-0003: `VRageMath` разрешён в `Vgs.Model` — это
 библиотека значимых типов (`Vector2`, `Vector3I`) без доступа к сущностям.
+
+Второе исключение, зафиксированное в ADR-0052: `Vgs.Model` читает **`Vgs.Core.VgsLanguage`** —
+чистое перечисление без единого игрового типа. Оно нужно потому, что подпись аргумента
+действия существует в двух языках (`ActionParameterTable`), и выбирать её должен тот, кто знает
+язык, — модель, а не экран: альтернатива (передавать в модель уже выбранные строки) вынесла бы
+работу с таблицей аргументов в слой отрисовки, где её нельзя проверить офлайн. Проверяемость
+модели не страдает: `offline-check.ps1` компилирует `Model` вместе с `Core` и запускает без игры.
 
 ---
 
@@ -1435,6 +1575,20 @@ Vgs.Ui     →  Vgs.Model, Vgs.Core, Vgs.Game (из ввода и обновле
 - **порт рисуется только при наличии связи**: `LayoutPorts()` назначает `Port.Slot` из
   рёбер, `-1` — «не рисовать». Проход обходит и блоки, и группы: полоса порта группы теряется
   по тому же правилу, что и полоса блока.
+- **аргумент действия описывается генерируемой таблицей** ([ADR-0052](adr/0052-derived-action-arguments.md)):
+  `Port.ParameterTypes` — то, что объявила игра, и для встроенных действий это заглушка
+  (`TypeCode.Empty`); настоящий тип и подпись берутся из `ActionParameterTable`, которую
+  порождает `tools/scan-action-parameters.ps1` и проверяет `offline-check.ps1`. Число
+  аргументов всегда равно объявленному: таблица описывает, но не добавляет. **Имя аргумента —
+  подпись диалога, который игра строит для этого аргумента**; откатов и подстановок нет.
+  **Число полей — число диалогов, а не число аргументов**: один диалог может заполнять
+  несколько параметров (цвет — три `Int32` за одним выбором), и тогда поле одно, а значения
+  вводятся через запятую;
+- **полоса входящего порта — на запрос, а не на порт** ([ADR-0050](adr/0050-action-parameters.md)):
+  `LayoutPorts()` собирает `Node.InputBars` по рёбрам, и два запроса одного действия
+  (`Run` со строкой `scan` и `Run` со строкой `build`) дают две полосы, две линии и два
+  независимых «x». `Port.Slot` у входящего порта всегда `-1`; геометрия спрашивается у бара
+  (`PortGeometry.TryInputBarRect`). Одна линия — по-прежнему на пару (исходящий порт, запрос).
 
 Последний пункт — производное состояние, и это единственное место в модели, где поле
 переписывается не при создании. Поэтому `LayoutPorts()` вызывается **после любого изменения
@@ -1481,7 +1635,9 @@ public bool IsEventController { get { return Controller != null; } }
 | `EditorHotkey.cs` | **второй вход** в тот же экран — клавиша **M** (ADR-0045): опрос `IsNewKeyPressed` раз в тик и все условия допуска (локальный игрок, экран не открыт, без модификаторов, не чат, не другой экран, не терминал, игрок **в кокпите**). Открывает через `VgsEditorScreen.OpenFor`, поэтому всё, что происходит после входа, у кнопки и у клавиши одно и то же |
 | `GridGraphBuilder.cs` | построение и обновление `GridGraph` из `IMyCubeGrid`, сверка связей с тулбарами, фильтр скрытых блоков |
 | `ToolbarProbe.cs` | форма тулбара блока: компонент `IMyToolbarProvider` → `ToolbarLayout` |
-| `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока |
+| `ToolbarWriter.cs` | запись и очистка элемента в реальном тулбаре блока, включая аргументы действия (ADR-0050): `TryWrite`/`TryWriteGroup` с `ParameterSet`, `TryRewrite` — перезапись ячейки новыми аргументами одним пакетом (без окна, в котором ячейка пуста), чтение аргументов вместе с элементом в `TryDescribe` |
+| `ToolbarParameters.cs` | единственное место, где словарь аргументов игры встречается со словарём модели (ADR-0050): `Definitions` — типы аргументов действия из `GetActionParameterDefinitions`; `Read` — значения из ячейки через `GetParameters`; `ToGame` — обратно в `TerminalActionParameter`; `Set` — запись через `MyToolbarApiExtensions.Set`; `SameItem` — «эта ячейка всё ещё держит эту связь» вместе с аргументами. **Объявленные типы — только для чтения**; для записи настоящий тип берётся из `ActionParameterTable` (ADR-0052) |
+| `ActionParameterDefaults.cs` | значения по умолчанию для окна аргументов, прочитанные **у блока** (ADR-0052): `TerminalRunArgument` programmable block, `TargetVelocityRPM` и `LowerLimitDeg`/`UpperLimitDeg` ротора. Умолчание, которое нельзя прочитать, — это пустое поле, а не выдуманное число |
 | `TerminalActionRunner.cs` | разовый запуск действия блока или группы **сейчас**, без связи и без записи в тулбар (ADR-0041): поиск действия по id на блоке → `ITerminalAction.Apply`, для группы — по каждому функциональному члену из терминальной системы. Повторяет ровно то, что делает игра при срабатывании элемента тулбара, включая отсутствие проверки `IsEnabled` (`01-research/api-toolbar.md` §4.3) |
 | `NodeStateStore.cs` | позиция карточки, флаг видимости и список отслеживания контроллера в `MyModStorageComponent` блока |
 | `GridViewStore.cs` | камера, масштаб и четыре режима показа в `MyModStorageComponent` **грида** (ADR-0022, ADR-0040): состояние общее для всех кокпитов конструкта |
@@ -1780,11 +1936,13 @@ public IList<ConveyorLink> Conveyors { get; }   // GridGraph
 | `NodeSelection.cs` | набор выделенных узлов: клик заменяет, Shift+клик переключает, рамка выделяет накрытые **карточки**, перенос раскрывает набор в список карточек (группа → её участники, карточка один раз). Тождество ссылок, а не равенство. **Действий над набором нет** — это состояние картинки (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `Marquee.cs` | жест рамки выделения: точка нажатия, текущая точка, порог «это уже не клик» в пикселях и нормализация прямоугольника в любом из четырёх направлений (ADR-0048). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
 | `SearchField.cs` | поле поиска как самостоятельный тип: запрос, каретка, выделение, прокрутка и кэш позиций; шрифт подаётся делегатом, поэтому арифметика проверяется офлайн |
+| `VgsEditorScreen.Parameters.cs` | **частичный класс**: окно параметров действия (ADR-0050) — открытие из привязки и из кнопки-пера, подтверждение (проверка формы → запись в тулбар → связь в графе), правка существующей связи (`TryRewrite`), отмена, удаление одного запроса (`RemoveBarConnections`), клавиатура окна, **отчёт о покрытии** — строка в логе с id действия, аргументы которого этот билд не описывает (ADR-0052 §4) |
+| `VgsEditorScreen.ParameterDialog.cs` | **частичный класс**: прямоугольники окна параметров (окно, строки полей, кнопки), его отрисовка и обработка указателя. Один метод на прямоугольник, потому что рисование и hit-test обязаны спрашивать одно и то же |
 | `ViewState.cs` | состояние вида: камера, зум, четыре режима показа (скрытые блоки, субгриды, границы гридов, конвейерная сеть) и последние записанные значения; правило «когда писать» — здесь, сам вызов грида — в экране |
 | `VgsPalette.cs` | палитра: все цвета редактора в одном месте. Файлы отрисовки импортируют её через `using static`, поэтому имена остались прежними (`ColNode`, `ColDamage`, …) |
 | `GridFrames.cs` | рамка грида и её вкладка с именем: какие карточки охватывает, где углы в пикселях окна, как из них выводятся четыре края. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0032](adr/0032-construct-graph.md)) |
 | `CanvasRect.cs` | прямоугольник холста (окно минус шапка и нижняя панель) и единственный предикат «этот прямоугольник на холсте?» для отрисовки, прохода состояния, рамок гридов и их вкладок. Координаты внутри — **относительно холста**, а не окна: сравнение абсолютной координаты с *размером* холста резало низ на высоту шапки (R-015). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
-| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, портов, кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли линия отслеживания (`ShouldDrawWatchLine` — самопросмотр её не рисует, ADR-0036) |
+| `PortGeometry.cs` | геометрия карточки, её ряда кнопок, полос портов (исходящих — по порту, входящих — по запросу, ADR-0050), кнопки отслеживания и рамки группы — единственный источник правды для отрисовки **и** hit-testing; объявляет `CardButtonKind`; решает, рисуется ли линия отслеживания (`ShouldDrawWatchLine` — самопросмотр её не рисует, ADR-0036) |
 | `EdgeRouting.cs` | маршрут линии: ортогональные отрезки, приход в цель слева; петля вокруг карточки для связи блока с собой (ADR-0036); скругление маршрута в путь связи — изгиб от середины отрезка до середины следующего (ADR-0046) |
 | `LineRaster.cs` | путь линии → точки в пикселях safe-области: 2 × 2 px на обеих осях и на любом зуме, ритм отсчитывается по длине пути, поэтому изгиб его не сбивает. Один растеризатор на оба вида линии — связь (зазор 1 px) и наблюдение (зазор 2 px). Там же пунктирный прямоугольник рамки выделения: четыре ребра, каждое начинается и заканчивается штрихом, шаг считается из длины ребра. **Без** ссылок на `Sandbox.*` — проверяется офлайн ([ADR-0046](adr/0046-curved-connection-lines.md), [ADR-0047](adr/0047-dotted-connection-lines.md), [ADR-0048](adr/0048-multi-node-selection.md)) |
 | `PipeRouter.cs` | две рельсы трубы по тому же маршруту: зазор, пропорции, скругление изгиба лесенкой осевых кусков (ADR-0040); третьим выходом — **центральная линия** для заливки подсвеченной трубы ([ADR-0049](adr/0049-line-highlight.md)). **Без** ссылок на `Sandbox.*` — проверяется офлайн |
@@ -2729,6 +2887,21 @@ groupName, actionId)` (`MyToolbarItemKind.GroupAction`). Он применяет
 3. Обновить этот документ: диаграмму классов, правила зависимостей, таблицу решений.
 4. Если код уже расходится с решением — запустить
    [совместное ревью](review/joint-review.md), а не править документ под код.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

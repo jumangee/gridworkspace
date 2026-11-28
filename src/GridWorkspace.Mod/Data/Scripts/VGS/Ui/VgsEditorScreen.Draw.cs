@@ -70,6 +70,10 @@ namespace Vgs.Ui
 
                 if (_menuTarget != null) DrawActionMenu();
 
+                // The argument dialog is modal and centred, so it is painted last of all: over
+                // the menu it replaced, over the bar and over the header (ADR-0050).
+                if (_paramForm != null) DrawParameterDialog();
+
                 // The modes popup hangs above the bar's top edge and overlaps the canvas, so it
                 // is drawn after everything it covers.
                 if (_modesMenuOpen) DrawModesMenu();
@@ -427,10 +431,16 @@ namespace Vgs.Ui
             Port inPort = target.FindAction(edge.TargetPortKey);
             if (outPort == null || inPort == null) return false;
 
+            // The line ends on the bar of *this request* (ADR-0050): two connections that ask
+            // the same action for different arguments end on two different bars, so the
+            // arguments a line carries are readable from the line itself.
+            InputBar inBar = target.FindInputBar(inPort.Key, edge.Parameters);
+            if (inBar == null) return false;
+
             float aspect = VgsScreenDraw.ClientAspect;
             Vector2 from, to;
             if (!PortGeometry.TryPortDot(source, outPort, aspect, out from)) return false;
-            if (!PortGeometry.TryPortDot(target, inPort, aspect, out to)) return false;
+            if (!PortGeometry.TryInputBarDot(target, inBar, aspect, out to)) return false;
 
             Vector2 start = GraphToScreen(from, canvasTopLeft);
             Vector2 end = GraphToScreen(to, canvasTopLeft);
@@ -464,20 +474,44 @@ namespace Vgs.Ui
         /// </summary>
         private void DrawPendingLine(Vector2 topLeft, Vector2 size)
         {
-            if (_bindSource == null || _bindPort == null || !_mouseValid) return;
+            if (_bindSource == null || _bindPort == null) return;
 
             Vector2 from;
             if (!PortGeometry.TryPendingSourceDot(_bindSource, _bindPort,
                                                   VgsScreenDraw.ClientAspect, out from)) return;
 
             Vector2 start = GraphToScreen(from, topLeft);
-            Vector2 end = _mouse;
 
-            DrawRoute(start, end, ColLinePending, topLeft, size);
+            // <b>Two halves of one gesture.</b> Until a card is chosen the line ends at the
+            // pointer, with a dot there: the player is aiming. Once the card is chosen the line
+            // ends at that card and carries no dot — the target is decided, and what is still open
+            // is the action and its values, which the menu and the dialog ask for (ADR-0052 §5).
+            //
+            // The end point is the card's centre, not a port: the port does not exist yet (an
+            // input bar appears only with its first edge), and a line into one of the card's real
+            // ports would name an action the player has not picked. Cards are drawn after lines,
+            // so the visible end is the card's border — which reads as "the connection is with
+            // this block", exactly the claim being made.
+            if (_bindTarget != null)
+            {
+                Vector2 cardTopLeft, cardSize;
+                PortGeometry.CardRect(_bindTarget, out cardTopLeft, out cardSize);
+
+                var cardCentre = new Vector2(cardTopLeft.X + cardSize.X * 0.5f,
+                                             cardTopLeft.Y + cardSize.Y * 0.5f);
+
+                DrawRoute(start, GraphToScreen(cardCentre, topLeft), ColLinePending, topLeft, size);
+                return;
+            }
+
+            if (!_mouseValid) return;
+
+            DrawRoute(start, _mouse, ColLinePending, topLeft, size);
 
             // A dot under the cursor makes the line read as "attached to the pointer" rather
             // than as a line that happens to end there.
-            VgsScreenDraw.Disc(end, VgsConstants.PortControlRadius * _view.Zoom, topLeft, size, ColLinePending);
+            VgsScreenDraw.Disc(_mouse, VgsConstants.PortControlRadius * _view.Zoom, topLeft, size,
+                               ColLinePending);
         }
 
         /// <summary>
@@ -1582,9 +1616,13 @@ namespace Vgs.Ui
                 float alpha = AlphaOf(group);
                 Color border = Fade(selected ? ColGroupSelected : ColGroupBorder, alpha);
 
-                for (int p = 0; p < group.Actions.Count; p++)
+                // A group has input bars only — one per request, like any other node (ADR-0050).
+                // Drawing them through the port would draw nothing at all: an action port has no
+                // bar of its own any more, which is what makes two requests of one action visible
+                // as two bars.
+                for (int p = 0; p < group.InputBars.Count; p++)
                 {
-                    DrawPortBar(group, group.Actions[p], border, alpha, clipTopLeft, clipSize);
+                    DrawInputBar(group, group.InputBars[p], border, alpha, clipTopLeft, clipSize);
                 }
             }
         }
@@ -1757,16 +1795,21 @@ namespace Vgs.Ui
         {
             for (int i = 0; i < node.Events.Count; i++)
                 DrawPortBar(node, node.Events[i], border, alpha, clipTopLeft, clipSize);
-            for (int i = 0; i < node.Actions.Count; i++)
-                DrawPortBar(node, node.Actions[i], border, alpha, clipTopLeft, clipSize);
+
+            // Inputs are drawn from the bars, not from the ports (ADR-0050): one action asked
+            // with two different argument sets is two bars, and the bar — not the port — is what
+            // carries the label with those arguments.
+            for (int i = 0; i < node.InputBars.Count; i++)
+                DrawInputBar(node, node.InputBars[i], border, alpha, clipTopLeft, clipSize);
 
             // The watch stack follows the input stack in the same column (ADR-0017).
             DrawWatchBars(node, border, alpha, clipTopLeft, clipSize);
         }
 
         /// <summary>
-        /// Draws one port bar: its background, its frame, its label, the connection dot and the
-        /// remove button.
+        /// <summary>
+        /// Draws one <b>event</b> port bar: its background, its frame, its label, the connection
+        /// dot and the remove button.
         ///
         /// <b>The frame is the card's frame.</b> A port belongs to the block, so it is drawn in
         /// the card's own border colour — including the selected and hovered variants — and only
@@ -1788,32 +1831,110 @@ namespace Vgs.Ui
             Vector2 topLeft, size;
             if (!PortGeometry.TryPortBarRect(node, port, out topLeft, out size)) return;
 
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            Vector2 labelTopLeft, labelSize;
+            bool hasLabel = PortGeometry.TryPortLabelRect(node, port, aspect, out labelTopLeft,
+                                                          out labelSize);
+
+            Vector2 dotCenter, removeCenter;
+            bool hasDot = PortGeometry.TryPortDot(node, port, aspect, out dotCenter);
+            bool hasRemove = PortGeometry.TryPortRemoveButton(node, port, aspect, out removeCenter);
+
+            bool removeHot = ReferenceEquals(node, _hoverRemoveNode)
+                             && ReferenceEquals(port, _hoverRemovePort);
+
+            DrawBar(border, topLeft, size, port.DisplayName, hasLabel, labelTopLeft, labelSize,
+                    ColPortOut, ColPortOutFill, alpha,
+                    hasDot, dotCenter, hasRemove, removeCenter, removeHot,
+                    false, Vector2.Zero, false,
+                    clipTopLeft, clipSize);
+        }
+
+        /// <summary>
+        /// Draws one <b>input</b> bar: an action asked with one set of arguments (ADR-0050).
+        ///
+        /// <b>Same bar, one control more.</b> The dot is on the left, the remove "x" on the right,
+        /// and — when the action takes arguments — a pen between them, one pitch inwards. The pen
+        /// is the only difference from an event bar, and it is drawn only where it does
+        /// something: a bar with no arguments has nothing to edit, so it carries no pen and its
+        /// label keeps the full span.
+        ///
+        /// <b>The label is the request, not the action.</b> It reads <c>Run · "scan"</c>: the
+        /// action's own name and then the values, so two bars of one action are told apart
+        /// without opening anything. That is what makes "which of these two lines runs which
+        /// script" answerable from the picture.
+        /// </summary>
+        private void DrawInputBar(Node node, InputBar bar, Color border, float alpha,
+                                  Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            if (bar.Slot < 0) return;
+
+            Vector2 topLeft, size;
+            if (!PortGeometry.TryInputBarRect(node, bar, out topLeft, out size)) return;
+
+            float aspect = VgsScreenDraw.ClientAspect;
+
+            Vector2 labelTopLeft, labelSize;
+            bool hasLabel = PortGeometry.TryInputBarLabelRect(node, bar, aspect, out labelTopLeft,
+                                                              out labelSize);
+
+            Vector2 dotCenter, removeCenter, editCenter;
+            bool hasDot = PortGeometry.TryInputBarDot(node, bar, aspect, out dotCenter);
+            bool hasRemove = PortGeometry.TryInputBarRemoveButton(node, bar, aspect, out removeCenter);
+            bool hasEdit = PortGeometry.TryInputBarEditButton(node, bar, aspect, out editCenter);
+
+            bool removeHot = ReferenceEquals(node, _hoverRemoveNode)
+                             && ReferenceEquals(bar, _hoverRemoveBar);
+            bool editHot = ReferenceEquals(node, _hoverEditNode)
+                           && ReferenceEquals(bar, _hoverEditBar);
+
+            DrawBar(border, topLeft, size, bar.Label, hasLabel, labelTopLeft, labelSize,
+                    ColPortIn, ColPortInFill, alpha,
+                    hasDot, dotCenter, hasRemove, removeCenter, removeHot,
+                    hasEdit, editCenter, editHot,
+                    clipTopLeft, clipSize);
+        }
+
+        /// <summary>
+        /// The drawing both kinds of bar share: background, frame, label, dot, remove, and the
+        /// optional pen.
+        ///
+        /// <b>One function, because the two bars must not drift apart.</b> An input and an event
+        /// bar are the same shape with different ends; duplicating the background, the frame and
+        /// the text placement would let one of them keep an old padding while the other moved —
+        /// the column would then read as two different kinds of element.
+        /// </summary>
+        private void DrawBar(Color border, Vector2 topLeft, Vector2 size, string label,
+                             bool hasLabel, Vector2 labelTopLeft, Vector2 labelSize,
+                             Color accentBase, Color fillBase, float alpha,
+                             bool hasDot, Vector2 dotCenter,
+                             bool hasRemove, Vector2 removeCenter, bool removeHot,
+                             bool hasEdit, Vector2 editCenter, bool editHot,
+                             Vector2 clipTopLeft, Vector2 clipSize)
+        {
             Vector2 screenTopLeft = GraphToScreen(topLeft, clipTopLeft);
             Vector2 screenSize = size * _view.Zoom;
 
-            bool output = port.Direction == PortDirection.Output;
-
-            // The port follows the card through the search: a bar that stayed bright under a
+            // The bar follows the card through the search: a bar that stayed bright under a
             // ghost card would be the brightest thing on the canvas and read as a match.
-            Color fill = Fade(output ? ColPortOutFill : ColPortInFill, alpha);
-            Color accent = output ? ColPortOut : ColPortIn;
+            Color fill = Fade(fillBase, alpha);
+            Color accent = accentBase;
             Color accentFaded = Fade(accent, alpha);
 
             VgsScreenDraw.RectClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, fill);
             VgsScreenDraw.BorderClipped(screenTopLeft, screenSize, clipTopLeft, clipSize, border,
                                         Hairline);
 
-            // The label is clipped to the span between the two controls, so a long action name
-            // can neither spill over the next card nor run under a disc.
-            Vector2 labelTopLeft, labelSize;
-            if (PortGeometry.TryPortLabelRect(node, port, VgsScreenDraw.ClientAspect,
-                                              out labelTopLeft, out labelSize))
+            // The label is clipped to the span between the controls, so a long action name — or
+            // a long argument — can neither spill over the next card nor run under a disc.
+            if (hasLabel)
             {
                 Vector2 labelScreen = GraphToScreen(labelTopLeft, clipTopLeft);
                 float textHeight = PortLabelHeight;
                 if (textHeight <= 0f) textHeight = screenSize.Y * VgsConstants.PortLabelFallbackHeightRatio;
 
-                VgsScreenDraw.Text(port.DisplayName,
+                VgsScreenDraw.Text(label,
                                    new Vector2(labelScreen.X,
                                                PortGeometry.CentredTextTop(labelScreen.Y,
                                                                            screenSize.Y, textHeight)),
@@ -1824,29 +1945,29 @@ namespace Vgs.Ui
             float radius = VgsConstants.PortControlRadius * _view.Zoom;
 
             // The dot: where the line attaches, one control-width and one four-pixel gap inside
-            // the edge the line uses — right for an output, left for an input. Same shape both
-            // ways on purpose; the side it sits on is the property the router relies on.
-            Vector2 dotCenter;
-            if (PortGeometry.TryPortDot(node, port, VgsScreenDraw.ClientAspect, out dotCenter))
+            // the edge the line uses. Same shape both ways on purpose; the side it sits on is the
+            // property the router relies on.
+            if (hasDot)
             {
                 DrawPortDot(GraphToScreen(dotCenter, clipTopLeft), radius, accentFaded, clipTopLeft,
                             clipSize);
             }
 
-            // The remove button: the dot's mirror image, on the other side of the same bar.
-            Vector2 removeCenter;
-            if (PortGeometry.TryPortRemoveButton(node, port, VgsScreenDraw.ClientAspect, out removeCenter))
+            if (hasRemove)
             {
-                bool hot = ReferenceEquals(node, _hoverRemoveNode)
-                           && ReferenceEquals(port, _hoverRemovePort);
-
-                // Accent, not the bar's fill: the mark is now bare, so its colour has to carry
-                // the contrast instead of the white disc that used to sit behind it. The alpha is
+                // Accent, not the bar's fill: the mark is bare, so its colour has to carry the
+                // contrast instead of the white disc that used to sit behind it. The alpha is
                 // passed separately rather than pre-applied, because the hot colour is chosen
                 // inside — a caller-side fade would leave the hover state at full opacity on a
                 // ghost bar.
-                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), accent, alpha, hot,
+                DrawPortRemoveButton(GraphToScreen(removeCenter, clipTopLeft), accent, alpha, removeHot,
                                      clipTopLeft, clipSize);
+            }
+
+            if (hasEdit)
+            {
+                DrawPortEditButton(GraphToScreen(editCenter, clipTopLeft), radius, accent, alpha,
+                                   editHot, clipTopLeft, clipSize);
             }
         }
 
@@ -1875,6 +1996,38 @@ namespace Vgs.Ui
             }
 
             VgsScreenDraw.Disc(screenCenter, radius, clipTopLeft, clipSize, color);
+        }
+
+        /// <summary>
+        /// Draws an input bar's <b>edit</b> button: the bare <c>pen-to-square</c> icon, in the
+        /// port's accent colour (ADR-0050).
+        ///
+        /// <b>Bare, like the dot and the cross beside it.</b> The three controls of a bar are one
+        /// kind of thing — marks the pointer can hit — so a disc behind only this one would read
+        /// as a different kind of element. The hover brightens the mark, the same feedback the
+        /// other two give.
+        ///
+        /// <b>The fallback glyph is a pen that is not a pen.</b> The editor's fallback marks are
+        /// ASCII on purpose (a glyph missing from the font draws as a box, ADR-0019 §6), and the
+        /// closest ASCII mark to a pen is <see cref="VgsText.PortEditGlyph"/>. It is used only
+        /// when the atlas is unavailable, which is the same condition every other icon falls back
+        /// under.
+        /// </summary>
+        private void DrawPortEditButton(Vector2 screenCenter, float radius, Color accent, float alpha,
+                                        bool hot, Vector2 clipTopLeft, Vector2 clipSize)
+        {
+            float diameter = radius * 2f;
+            Color mark = Fade(hot ? ColPlusFillHot : accent, alpha);
+
+            if (VgsScreenDraw.Icon(VgsIcon.PenToSquare, screenCenter,
+                                   diameter * VgsConstants.PortEditIconRatio, mark,
+                                   clipTopLeft, clipSize))
+            {
+                return;
+            }
+
+            VgsScreenDraw.TextCentered(VgsText.PortEditGlyph, screenCenter,
+                                       VgsConstants.PortRemoveGlyphScale * _view.Zoom, mark);
         }
 
         /// <summary>

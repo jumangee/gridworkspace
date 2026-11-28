@@ -118,6 +118,13 @@ namespace Vgs.Ui
     /// has a negative slot and is not drawn at all. Nothing here computes a slot — this type
     /// only turns one into a rectangle.
     ///
+    /// <b>An input bar has its own slot, because it has its own request.</b> Since an action may
+    /// take arguments, one action port can need several bars — one per distinct set of values —
+    /// so the slot lives on <see cref="InputBar"/> and its geometry is
+    /// <c>TryInputBarRect</c>/<c>TryInputBarDot</c>/… (ADR-0050). The methods here that take a
+    /// <see cref="Port"/> therefore answer only for an output port, and return false for an
+    /// input one: a bar drawn through them would be a bar with no arguments.
+    ///
     /// <b>Round things and the aspect ratio.</b> The layout's X and Y units are different
     /// lengths: X spans the window's width, Y its height. A circle therefore cannot be
     /// expressed as "same extent in both axes" — that draws an ellipse. Every method that
@@ -1614,8 +1621,16 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Rectangle of the bar for one port, in graph units. Returns false for a port that is
-        /// not drawn (no connection, or no free slot).
+        /// Rectangle of the bar for one <b>event</b> port, in graph units. Returns false for a
+        /// port that is not drawn (no connection, or no free slot).
+        ///
+        /// <b>An input port has no bar of its own.</b> Since an action can be asked with
+        /// arguments, one action port may need several bars — one per distinct request — and a
+        /// single slot on the port cannot describe that. Input bars are
+        /// <see cref="InputBar"/>s and their geometry is <see cref="TryInputBarRect"/>
+        /// (ADR-0050). This method therefore answers false for every action port, which is also
+        /// what keeps the old call sites honest: an input bar drawn through here would be a bar
+        /// without arguments.
         ///
         /// Both directions share one width and one left edge, so the bars of a node form a
         /// single flush column under it. The column hangs from the node's <em>body</em> — the
@@ -1628,20 +1643,12 @@ namespace Vgs.Ui
             size = Vector2.Zero;
 
             if (node == null || port == null || port.Slot < 0) return false;
+            if (port.Direction != PortDirection.Output) return false;
 
             Vector2 bodyTopLeft, bodySize;
             if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return false;
 
             float y = bodyTopLeft.Y + bodySize.Y + port.Slot * PortBarStride;
-
-            // Input bars sit below the whole output stack, then stack downwards themselves.
-            // The separating gap is added only when there *is* a stack above: otherwise the
-            // first input bar would float away from the card it belongs to.
-            if (port.Direction == PortDirection.Input)
-            {
-                float outputHeight = OutputStackHeight(node);
-                if (outputHeight > 0f) y += outputHeight + VgsConstants.PortStackSpacing;
-            }
 
             topLeft = new Vector2(bodyTopLeft.X, y);
             size = new Vector2(bodySize.X, VgsConstants.PortBarHeight);
@@ -1649,9 +1656,38 @@ namespace Vgs.Ui
         }
 
         /// <summary>
-        /// Centre of the connection dot on a port bar: inside the bar, one control-width and
-        /// one four-pixel gap clear of the edge the line uses — the right edge for an output,
-        /// the left edge for an input.
+        /// Rectangle of one <b>input</b> bar, in graph units: an action asked with one set of
+        /// arguments (ADR-0050). Returns false for a bar the layout did not place (slot below
+        /// zero — the stack is full, or no connection carries that request).
+        ///
+        /// The input stack starts under the whole output stack, with the same separating gap the
+        /// port bars have always had: the gap is added only when there *is* a stack above, or the
+        /// first input bar would float away from the card it belongs to.
+        /// </summary>
+        public static bool TryInputBarRect(Node node, InputBar bar, out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            if (node == null || bar == null || bar.Slot < 0) return false;
+
+            Vector2 bodyTopLeft, bodySize;
+            if (!TryBodyRect(node, out bodyTopLeft, out bodySize)) return false;
+
+            float y = bodyTopLeft.Y + bodySize.Y;
+            float outputHeight = OutputStackHeight(node);
+            if (outputHeight > 0f) y += outputHeight + VgsConstants.PortStackSpacing;
+
+            y += bar.Slot * PortBarStride;
+
+            topLeft = new Vector2(bodyTopLeft.X, y);
+            size = new Vector2(bodySize.X, VgsConstants.PortBarHeight);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the connection dot on an event port bar: inside the bar, one control-width
+        /// and one four-pixel gap clear of the edge the line uses — the right edge.
         ///
         /// <paramref name="aspectX"/> is the client height ÷ width. The dot is a circle on
         /// screen, so its horizontal half-extent is <c>PortControlRadius * aspectX</c>. The gap
@@ -1670,16 +1706,30 @@ namespace Vgs.Ui
             float offset = ControlOffset(aspectX);
             float y = topLeft.Y + size.Y * 0.5f;
 
-            center = port.Direction == PortDirection.Output
-                ? new Vector2(topLeft.X + size.X - offset, y)
-                : new Vector2(topLeft.X + offset, y);
+            center = new Vector2(topLeft.X + size.X - offset, y);
             return true;
         }
 
         /// <summary>
-        /// Centre of the remove button on a port bar: the connection dot's mirror image, same
-        /// size, on the opposite side of the bar. Clicking it deletes every connection the port
-        /// carries (<see cref="VgsEditorScreen.RemovePortConnections"/>).
+        /// Centre of the connection dot on an input bar: the mirror image of an event port's —
+        /// inside the bar, clear of its <b>left</b> edge, because that is where a line arrives.
+        /// </summary>
+        public static bool TryInputBarDot(Node node, InputBar bar, float aspectX, out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryInputBarRect(node, bar, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            center = new Vector2(topLeft.X + ControlOffset(aspectX), topLeft.Y + size.Y * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the remove button on an event port bar: the connection dot's mirror image,
+        /// same size, on the opposite side of the bar.
         ///
         /// It is derived from the same two constants as the dot rather than from its own, so
         /// the two controls cannot drift into different sizes or different gaps — a bar whose
@@ -1694,17 +1744,61 @@ namespace Vgs.Ui
 
             if (aspectX <= 0f) aspectX = 1f;
 
-            float offset = ControlOffset(aspectX);
-            float y = topLeft.Y + size.Y * 0.5f;
-
-            center = port.Direction == PortDirection.Output
-                ? new Vector2(topLeft.X + offset, y)
-                : new Vector2(topLeft.X + size.X - offset, y);
+            center = new Vector2(topLeft.X + ControlOffset(aspectX), topLeft.Y + size.Y * 0.5f);
             return true;
         }
 
         /// <summary>
-        /// The port whose remove button is under a graph-space point, or null.
+        /// Centre of the remove button on an input bar: the right end, the dot's mirror image.
+        /// </summary>
+        public static bool TryInputBarRemoveButton(Node node, InputBar bar, float aspectX,
+                                                   out Vector2 center)
+        {
+            center = Vector2.Zero;
+
+            Vector2 topLeft, size;
+            if (!TryInputBarRect(node, bar, out topLeft, out size)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            center = new Vector2(topLeft.X + size.X - ControlOffset(aspectX),
+                                 topLeft.Y + size.Y * 0.5f);
+            return true;
+        }
+
+        /// <summary>
+        /// Centre of the <b>edit</b> button of an input bar — the pen that opens the argument
+        /// dialog — or false when the bar has no arguments and therefore nothing to edit.
+        ///
+        /// <b>Only a parameterised bar has it.</b> A bar whose action takes no arguments has no
+        /// values to change, and a control that opens an empty dialog is worse than no control:
+        /// the player learns that the pen does nothing. That is the "if it is technically
+        /// impossible, do not draw it" half of the requirement, applied to the case where it *is*
+        /// possible but pointless (ADR-0050).
+        ///
+        /// It sits one control-pitch left of the remove button — the same size, the same gap, one
+        /// row, so the two read as the bar's control pair rather than as two unrelated marks.
+        /// </summary>
+        public static bool TryInputBarEditButton(Node node, InputBar bar, float aspectX,
+                                                 out Vector2 center)
+        {
+            center = Vector2.Zero;
+            if (bar == null || !bar.CanEdit) return false;
+
+            Vector2 removeCentre;
+            if (!TryInputBarRemoveButton(node, bar, aspectX, out removeCentre)) return false;
+
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float pitch = ControlPitch(aspectX);
+            center = new Vector2(removeCentre.X - pitch, removeCentre.Y);
+            return true;
+        }
+
+        /// <summary>
+        /// The port whose remove button is under a graph-space point, or null. <b>Events only:</b>
+        /// an input bar's "x" belongs to one request, not to the action, so it is found by
+        /// <see cref="HitInputBarRemoveButton"/>.
         ///
         /// Only drawn ports are candidates: a port with no connection has no bar and therefore
         /// no button, which is the same rule that keeps an unconnected port off the screen.
@@ -1716,37 +1810,88 @@ namespace Vgs.Ui
             if (node == null) return null;
             if (aspectX <= 0f) aspectX = 1f;
 
-            Port hit = HitRemoveButton(node.Events, node, graphPoint, aspectX);
-            if (hit != null) return hit;
-            return HitRemoveButton(node.Actions, node, graphPoint, aspectX);
-        }
-
-        private static Port HitRemoveButton(System.Collections.Generic.List<Port> ports, Node node,
-                                            Vector2 graphPoint, float aspectX)
-        {
             float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
 
-            for (int i = 0; i < ports.Count; i++)
+            for (int i = 0; i < node.Events.Count; i++)
             {
-                Port port = ports[i];
+                Port port = node.Events[i];
                 if (port.Slot < 0) continue;
 
                 Vector2 center;
                 if (!TryPortRemoveButton(node, port, aspectX, out center)) continue;
-
-                // Same aspect correction as the bind button: in layout units the disc is an
-                // ellipse, so a plain Euclidean distance would make it easy to hit from above
-                // and hard from the side.
-                float dx = (graphPoint.X - center.X) / aspectX;
-                float dy = graphPoint.Y - center.Y;
-                if (dx * dx + dy * dy <= tolerance * tolerance) return port;
+                if (IsOnControl(graphPoint, center, tolerance, aspectX)) return port;
             }
             return null;
         }
 
         /// <summary>
-        /// Rectangle of a port's label, in graph units: the span between the bar's two round
-        /// controls.
+        /// The input bar whose remove button is under a graph-space point, or null.
+        ///
+        /// <b>The bar, not the port, and that is the whole point of arguments.</b> Two requests of
+        /// one action are two bars; pressing "x" on one of them must delete that request and
+        /// leave the other, or the player would lose a connection they never pointed at.
+        /// </summary>
+        public static InputBar HitInputBarRemoveButton(Node node, Vector2 graphPoint, float aspectX)
+        {
+            if (node == null) return null;
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
+
+            for (int i = 0; i < node.InputBars.Count; i++)
+            {
+                InputBar bar = node.InputBars[i];
+                if (bar.Slot < 0) continue;
+
+                Vector2 center;
+                if (!TryInputBarRemoveButton(node, bar, aspectX, out center)) continue;
+                if (IsOnControl(graphPoint, center, tolerance, aspectX)) return bar;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The input bar whose edit button is under a graph-space point, or null. A bar with no
+        /// arguments has no button, so it can never be returned here.
+        /// </summary>
+        public static InputBar HitInputBarEditButton(Node node, Vector2 graphPoint, float aspectX)
+        {
+            if (node == null) return null;
+            if (aspectX <= 0f) aspectX = 1f;
+
+            float tolerance = VgsConstants.PortControlRadius * VgsConstants.PortControlHitTolerance;
+
+            for (int i = 0; i < node.InputBars.Count; i++)
+            {
+                InputBar bar = node.InputBars[i];
+                if (bar.Slot < 0 || !bar.CanEdit) continue;
+
+                Vector2 center;
+                if (!TryInputBarEditButton(node, bar, aspectX, out center)) continue;
+                if (IsOnControl(graphPoint, center, tolerance, aspectX)) return bar;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// True when a point is on a round control centred at <paramref name="center"/>.
+        ///
+        /// The x distance is divided by the client aspect before it is compared with the radius:
+        /// in layout units the disc is an ellipse, so a plain Euclidean distance would make it
+        /// easy to hit from above and hard from the side — the same correction every round
+        /// control in this file applies.
+        /// </summary>
+        private static bool IsOnControl(Vector2 graphPoint, Vector2 center, float tolerance,
+                                        float aspectX)
+        {
+            float dx = (graphPoint.X - center.X) / aspectX;
+            float dy = graphPoint.Y - center.Y;
+            return dx * dx + dy * dy <= tolerance * tolerance;
+        }
+
+        /// <summary>
+        /// Rectangle of an event port's label, in graph units: the span between the bar's two
+        /// round controls.
         ///
         /// Both controls sit one at each end, so the span is the same for an input and an
         /// output — which is why the label never depends on the port's direction. Returns false
@@ -1762,14 +1907,57 @@ namespace Vgs.Ui
             Vector2 barTopLeft, barSize;
             if (!TryPortBarRect(node, port, out barTopLeft, out barSize)) return false;
 
-            if (aspectX <= 0f) aspectX = 1f;
+            return LabelSpan(barTopLeft, barSize, 1, aspectX, out topLeft, out size);
+        }
 
-            float inset = ControlOffset(aspectX) + ControlHalfWidth(aspectX)
-                          + VgsConstants.PortLabelPadding;
-            float width = barSize.X - inset * 2f;
+        /// <summary>
+        /// Rectangle of an input bar's label: the action's name and its arguments, between the
+        /// dot and whichever controls sit on the right end.
+        ///
+        /// <b>One control more on a parameterised bar</b> — the pen — so the label loses exactly
+        /// one pitch. Sharing the arithmetic with the event label (through
+        /// <see cref="LabelSpan"/>) is what keeps the two bars' text starting at the same place
+        /// instead of drifting apart as the aspect changes.
+        /// </summary>
+        public static bool TryInputBarLabelRect(Node node, InputBar bar, float aspectX,
+                                                out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            Vector2 barTopLeft, barSize;
+            if (!TryInputBarRect(node, bar, out barTopLeft, out barSize)) return false;
+
+            int rightControls = bar.CanEdit ? 2 : 1;
+            return LabelSpan(barTopLeft, barSize, rightControls, aspectX, out topLeft, out size);
+        }
+
+        /// <summary>
+        /// The label's span inside a bar: one control's width plus the gap on the left (the
+        /// dot), and <paramref name="rightControls"/> pitches plus the gap on the right. False
+        /// when the controls leave no room.
+        /// </summary>
+        private static bool LabelSpan(Vector2 barTopLeft, Vector2 barSize, int rightControls,
+                                      float aspectX, out Vector2 topLeft, out Vector2 size)
+        {
+            topLeft = Vector2.Zero;
+            size = Vector2.Zero;
+
+            if (aspectX <= 0f) aspectX = 1f;
+            if (rightControls < 1) rightControls = 1;
+
+            float left = ControlOffset(aspectX) + ControlHalfWidth(aspectX) + VgsConstants.PortLabelPadding;
+
+            // The right end holds `rightControls` controls of one pitch each; the leftmost of
+            // them is the one the text must clear.
+            float right = ControlOffset(aspectX) + ControlHalfWidth(aspectX)
+                          + VgsConstants.PortLabelPadding
+                          + (rightControls - 1) * ControlPitch(aspectX);
+
+            float width = barSize.X - left - right;
             if (width <= 0f) return false;
 
-            topLeft = new Vector2(barTopLeft.X + inset, barTopLeft.Y);
+            topLeft = new Vector2(barTopLeft.X + left, barTopLeft.Y);
             size = new Vector2(width, barSize.Y);
             return true;
         }
@@ -1780,6 +1968,14 @@ namespace Vgs.Ui
             return VgsConstants.PortControlRadius * aspectX;
         }
 
+        /// <summary>
+        /// Horizontal distance between the centres of two neighbouring controls on one bar: a
+        /// control's full width plus the gap between them, in layout X units.
+        /// </summary>
+        private static float ControlPitch(float aspectX)
+        {
+            return ControlHalfWidth(aspectX) * 2f + VgsConstants.PortControlMargin * aspectX;
+        }
         /// <summary>
         /// Top edge that puts a line of text of <paramref name="textHeight"/> on the centre line
         /// of a box starting at <paramref name="boxTop"/> and <paramref name="boxHeight"/> tall.
@@ -1856,18 +2052,35 @@ namespace Vgs.Ui
             return total;
         }
 
-        /// <summary>Number of bars of one direction that are actually drawn on this node.</summary>
+        /// <summary>
+        /// Number of bars of one direction that are actually drawn on this node: event ports for
+        /// an output, <see cref="Node.InputBars"/> for an input (ADR-0050).
+        ///
+        /// The two are counted from different lists on purpose — an event port is one bar, an
+        /// action port is one bar *per request* — and every stack-height, culling and hit-test
+        /// rule reads this one number, so the two kinds cannot disagree about how tall the
+        /// column is.
+        /// </summary>
         public static int DrawnPortCount(Node node, PortDirection direction)
         {
             if (node == null) return 0;
 
-            System.Collections.Generic.List<Port> ports =
-                direction == PortDirection.Output ? node.Events : node.Actions;
-
             int count = 0;
-            for (int i = 0; i < ports.Count; i++)
+
+            if (direction == PortDirection.Output)
             {
-                if (ports[i].Slot >= 0) count++;
+                System.Collections.Generic.List<Port> events = node.Events;
+                for (int i = 0; i < events.Count; i++)
+                {
+                    if (events[i].Slot >= 0) count++;
+                }
+                return count;
+            }
+
+            System.Collections.Generic.List<InputBar> bars = node.InputBars;
+            for (int i = 0; i < bars.Count; i++)
+            {
+                if (bars[i].Slot >= 0) count++;
             }
             return count;
         }
@@ -1937,8 +2150,24 @@ namespace Vgs.Ui
             }
 
             return HitAnyPortBar(node.Events, node, graphPoint)
-                || HitAnyPortBar(node.Actions, node, graphPoint)
+                || HitAnyInputBar(node, graphPoint)
                 || HitAnyWatchBar(node, graphPoint);
+        }
+
+        /// <summary>
+        /// True when the point is on one of the node's drawn input bars (ADR-0050). Input bars
+        /// are hit through their own rectangles, because a port no longer has one.
+        /// </summary>
+        private static bool HitAnyInputBar(Node node, Vector2 graphPoint)
+        {
+            List<InputBar> bars = node.InputBars;
+            for (int i = 0; i < bars.Count; i++)
+            {
+                Vector2 topLeft, size;
+                if (!TryInputBarRect(node, bars[i], out topLeft, out size)) continue;
+                if (Contains(topLeft, size, graphPoint)) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -1980,3 +2209,5 @@ namespace Vgs.Ui
         }
     }
 }
+
+

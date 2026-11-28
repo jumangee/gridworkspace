@@ -55,6 +55,19 @@ namespace Vgs.Model
         /// </summary>
         public readonly IList<string> EnabledActionIds;
 
+        /// <summary>
+        /// Argument types parallel to <see cref="ActionIds"/>, or null when the caller has none.
+        ///
+        /// <b>Why the member carries them.</b> A group's port is captioned from the member whose
+        /// list the id came from, and it must declare the same arguments as that member's own
+        /// port — otherwise the group's input bar would not know that the action it stands for
+        /// needs values, and the editor would write an item the game cannot run (ADR-0050). Like
+        /// the names, they are taken from the first readable member: with mixed types the game
+        /// applies the item to each member separately, and a member whose action takes different
+        /// arguments ignores the call — which is the game's answer, not the editor's.
+        /// </summary>
+        public readonly IList<TypeCode[]> ActionParameterTypes;
+
         public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds)
             : this(typeKey, isFunctional, actionIds, actionIds)
         {
@@ -68,12 +81,20 @@ namespace Vgs.Model
 
         public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
                                   IList<string> enabledActionIds, IList<string> actionNames)
+            : this(typeKey, isFunctional, actionIds, enabledActionIds, actionNames, null)
+        {
+        }
+
+        public GroupMemberActions(string typeKey, bool isFunctional, IList<string> actionIds,
+                                  IList<string> enabledActionIds, IList<string> actionNames,
+                                  IList<TypeCode[]> actionParameterTypes)
         {
             TypeKey = typeKey ?? string.Empty;
             IsFunctional = isFunctional;
             ActionIds = actionIds ?? new List<string>(0);
             EnabledActionIds = enabledActionIds ?? new List<string>(0);
             ActionNames = actionNames ?? new List<string>(0);
+            ActionParameterTypes = actionParameterTypes;
         }
     }
 

@@ -354,6 +354,24 @@ namespace Vgs.Model
         /// <summary>Input ports: terminal actions this block can be told to perform.</summary>
         public readonly List<Port> Actions = new List<Port>();
 
+        /// <summary>
+        /// The bars drawn for this node's input ports, one per distinct <em>request</em> — an
+        /// action plus the arguments it is being asked with (ADR-0050, <see cref="InputBar"/>).
+        ///
+        /// <b>Rebuilt by <see cref="GridGraph.LayoutPorts"/>, never edited by the UI.</b> A bar
+        /// exists while at least one connection asks for that action with those arguments, so the
+        /// list is derived from the edges exactly as the event ports' slots are. A node with no
+        /// incoming connections has an empty list, which is why a card with forty actions still
+        /// looks like a card with four.
+        ///
+        /// <b>Why not on the port.</b> The port is a property of the block's type and there is one
+        /// per action; a request is a property of a connection and there may be several per
+        /// action. Keeping the bars here is what lets two timers ask one programmable block to
+        /// <c>Run</c> two different scripts without the picture having to choose which of the two
+        /// arguments to show.
+        /// </summary>
+        public readonly List<InputBar> InputBars = new List<InputBar>();
+
         /// <summary>Output ports: events this block can announce, one per fire group.</summary>
         public readonly List<Port> Events = new List<Port>();
 
@@ -541,6 +559,24 @@ namespace Vgs.Model
             for (int i = 0; i < Actions.Count; i++)
             {
                 if (string.Equals(Actions[i].Key, key, StringComparison.Ordinal)) return Actions[i];
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The drawn bar of this node that carries exactly this request — action
+        /// <paramref name="key"/> asked with <paramref name="parameters"/> — or null when nothing
+        /// asks for it. This is how the draw path finds the dot a line ends on and how the "x"
+        /// button decides which connections it removes (ADR-0050).
+        /// </summary>
+        public InputBar FindInputBar(string key, ParameterSet parameters)
+        {
+            for (int i = 0; i < InputBars.Count; i++)
+            {
+                InputBar bar = InputBars[i];
+                if (bar.Port == null) continue;
+                if (!string.Equals(bar.Port.Key, key, StringComparison.Ordinal)) continue;
+                if (bar.Parameters.SameAs(parameters)) return bar;
             }
             return null;
         }
